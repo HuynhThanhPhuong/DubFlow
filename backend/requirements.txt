@@ -5,3 +5,4 @@ httpx==0.28.1
 pydantic==2.11.4
 redis==5.2.1
 rq==2.3.3
+numpy==2.2.6
