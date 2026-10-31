@@ -61,3 +61,14 @@ def vote_text(readings):
 def static_rows(segments, duration, ratio=.8):
     """Segments covering at least `ratio` of the duration (logo / fixed text), to exclude from subtitles."""
     return [s for s in segments if duration > 0 and (s['e'] - s['s']) / duration >= ratio]
+
+
+def auto_band(row_density, height, top, frac=.25, pad=6):
+    """Cumulative per-row 'white with dark outline' density (rows top..height) -> (y0, y1) source px or None."""
+    d = np.asarray(row_density, dtype=float)
+    if d.size == 0 or d.max() <= 0:
+        return None
+    rows = np.where(d >= frac * d.max())[0]
+    runs = np.split(rows, np.where(np.diff(rows) > 1)[0] + 1)
+    best = max(runs, key=len)
+    return max(0, int(top + best[0]) - pad), min(int(height), int(top + best[-1] + 1) + pad)

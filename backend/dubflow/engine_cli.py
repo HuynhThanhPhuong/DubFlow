@@ -347,6 +347,105 @@ def ocr(directory, request):
     write(directory/marker,dict(mask_version=2,ocr_fps=fps,warnings=[]))
 
 
+def subtrack(directory, request):
+    """Burned-in subtitle track: 2 fps pass finds the band, 10 fps pass segments lines, OCR votes text."""
+    import cv2
+    import numpy as np
+    import subprocess
+    from subtitle_track import auto_band, segment_frames, static_rows, vote_text
+    directory = Path(directory)
+    ff, source = request['ffmpeg'], request['source']
+    width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
+    fps = 10
+
+    def trace(gray):
+        white, dark = gray > 205, (gray < 110).astype(np.uint8)
+        near = cv2.dilate(dark, cv2.getStructuringElement(cv2.MORPH_CROSS, (7, 7))) > 0
+        return white & near
+
+    def frames_of(fps_, crop_y, crop_h):
+        proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_},crop={width}:{crop_h}:0:{crop_y},format=gray',
+                                 '-f', 'rawvideo', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        n = width * crop_h
+        try:
+            while True:
+                raw = proc.stdout.read(n)
+                if len(raw) < n:
+                    break
+                yield np.frombuffer(raw, np.uint8).reshape(crop_h, width)
+        finally:
+            proc.stdout.close(); proc.wait()
+
+    out = dict(version=1, fps=fps, band=None, segments=[])
+    top = int(height * .65)
+    density = np.zeros(height - top)
+    for g in frames_of(2, top, height - top):
+        density += trace(g).sum(1)
+    band = auto_band(density, height, top)
+    if band is None:
+        write(directory/'subtrack.json', out)
+        return
+    y0, y1 = band
+    out['band'] = [y0, y1]
+    h = y1 - y0
+    frames = []
+    for k, g in enumerate(frames_of(fps, y0, h)):
+        t = trace(g)
+        cols = np.where(t.sum(0) >= 2)[0]
+        item = dict(t=k / fps, box=None, sig=None)
+        frames.append(item)
+        if t.sum() < 250 or not len(cols):
+            continue
+        c = width // 2
+        near = cols[np.argmin(abs(cols - c))]
+        if abs(near - c) > 250:
+            continue
+        x0 = x1 = near
+        for x in cols[cols > near]:
+            if x - x1 > 70: break
+            x1 = x
+        for x in cols[cols < near][::-1]:
+            if x0 - x > 70: break
+            x0 = x
+        item['box'] = (int(x0), y0, int(x1), y1)
+        item['sig'] = cv2.resize(t[:, x0:x1 + 1].astype(np.float32), (128, 16), interpolation=cv2.INTER_AREA) > .15
+    segments = segment_frames(frames, fps)
+    skip = {id(s) for s in static_rows(segments, duration)}
+    segments = [s for s in segments if id(s) not in skip]
+
+    reader = None
+    for seg in segments:
+        if reader is None:
+            from rapidocr_onnxruntime import RapidOCR
+            reader = RapidOCR(det_limit_side_len=736, det_limit_type='max', intra_op_num_threads=2, inter_op_num_threads=1,
+                              det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
+        readings = []
+        span = seg['e'] - seg['s']
+        for q in (.25, .5, .75):
+            at = min(seg['s'] + span * q, duration - .05)
+            raw = subprocess.run([ff, '-v', 'error', '-ss', f'{at:.3f}', '-i', source, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+            if len(raw) != width * height * 3:
+                continue
+            image = np.frombuffer(raw, np.uint8).reshape(height, width, 3)
+            cx0, cx1 = max(0, seg['x0'] - 8), min(width, seg['x1'] + 8)
+            cy0, cy1 = max(0, seg['y0'] - 8), min(height, seg['y1'] + 8)
+            result, _ = reader(np.ascontiguousarray(image[cy0:cy1, cx0:cx1]))
+            lines = []
+            for box, text, score in result or []:
+                if score >= .6 and text.strip():
+                    xs, ys = zip(*box)
+                    lines.append((min(ys), min(xs), text.strip(), float(score)))
+            # same row (within half a line) ordered by x, rows ordered by y
+            lines.sort()
+            if lines:
+                readings.append(''.join(l[2] for l in lines))
+        text, ratio = vote_text(readings)
+        out['segments'].append(dict(s=round(seg['s'], 3), e=round(seg['e'], 3), x0=seg['x0'], y0=seg['y0'], x1=seg['x1'], y1=seg['y1'],
+                                    text=text, confidence=round(ratio, 3), readings=readings))
+    write(directory/'subtrack.json', out)
+
+
 def translate(directory, request):
     from translation import translate_files
     translate_files(directory, request)
@@ -358,7 +457,7 @@ def main():
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,translate=translate)
+    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,translate=translate)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers

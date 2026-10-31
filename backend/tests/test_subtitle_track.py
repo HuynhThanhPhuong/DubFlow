@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dubflow.subtitle_track import segment_frames, vote_text, static_rows
+from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band
 
 
 def sig(seed):  # nét chữ khác nhau theo seed
@@ -50,6 +50,18 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(len(static_rows(segs,100)),1)
     def test_short_row_is_not_static(self):
         self.assertEqual(static_rows([dict(s=0,e=5,x0=0,y0=0,x1=1,y1=1,frames=[])],100),[])
+
+class AutoBandTests(unittest.TestCase):
+    def test_finds_dense_rows(self):
+        d=np.zeros(1080); d[980:1051]=100
+        y0,y1=auto_band(d,1080,0)
+        self.assertTrue(970<=y0<=980 and 1050<=y1<=1060)
+    def test_offset_top(self):
+        d=np.zeros(378); d[980-702:1051-702]=50
+        y0,y1=auto_band(d,1080,702)
+        self.assertTrue(970<=y0<=980 and 1050<=y1<=1060)
+    def test_empty_is_none(self):
+        self.assertIsNone(auto_band(np.zeros(378),1080,702))
 
 
 if __name__=='__main__':

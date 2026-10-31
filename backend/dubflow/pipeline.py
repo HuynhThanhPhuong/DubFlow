@@ -163,7 +163,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
     # Secret API key travels via process environment, never persistent stage input.
     api_key = payload.pop('translation_api_key', '')
     request = directory/'engine-request.json'
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'translation_python' if stage == 'translate' else 'ocr_python' if stage == 'ocr' else 'speaker_python' if stage=='speakers' else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'translation_python' if stage == 'translate' else 'ocr_python' if stage in ('ocr','subtrack') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', DUBFLOW_TRANSLATION_KEY=api_key, PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
