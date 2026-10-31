@@ -60,6 +60,18 @@ class SubtitleStyleTests(unittest.TestCase):
         lines = wrap_lines(s, style_for(1080, 1920)['size'], 1060)
         self.assertTrue(len(lines) <= 2 or overflows(s, None, 1080, 1920))
 
+    def test_overlapping_cues_use_lane_offsets_in_ass_units(self):
+        box = [860, 990, 1060, 1010]
+        cues = [dict(start=0, end=2, text='Một', box=box), dict(start=1, end=3, text='Hai', box=box), dict(start=2.5, end=4, text='Ba', box=box)]
+        from dubflow.subtitle_style import assign_lanes
+        self.assertEqual(assign_lanes(cues), [0, 1, 0])
+        ass = p.make_ass(cues, [], 1920, 1080)
+        ys = [int(y) for y in re.findall(r'\\pos\(960,(\d+)\)', ass)]
+        self.assertEqual(ys, [1000, 1000 - 3 * 78, 1000])
+
+    def test_filter_path_apostrophe(self):
+        self.assertEqual(ffmpeg_filter_path(Path('C:/it\'s/f')).split('/')[1], "it'\\''s")
+
     def test_filter_path_escaping(self):
         self.assertEqual(ffmpeg_filter_path(Path('C:/a b/fonts')).startswith('C\\:/'), True)
         self.assertNotIn('\\\\', ffmpeg_filter_path(Path('C:/a/b')).replace('\\:', ''))

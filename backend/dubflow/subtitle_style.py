@@ -81,7 +81,30 @@ def wrap_lines(text: str, size: float, max_width: float, max_lines: int = 2) -> 
 def ffmpeg_filter_path(path) -> str:
     """Escape a filesystem path for use inside a single-quoted ffmpeg filter option."""
     text = Path(path).resolve().as_posix()
-    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "'\\\\\\''")
+    # inside '...' only the quote itself needs closing/escaping/reopening; ':' is escaped for the option parser
+    return text.replace(":", "\\:").replace("'", "'\\''")
+
+
+def assign_lanes(cues) -> list[int]:
+    """Lane per cue (input order): first free lane scanning cues in start order.
+    Mirrored exactly by frontend SubtitlePreview.assignLanes."""
+    order = sorted(range(len(cues)), key=lambda i: cues[i]['start'])
+    ends: list[float] = []
+    lanes = [0] * len(cues)
+    for i in order:
+        c = cues[i]
+        lane = next((k for k, end in enumerate(ends) if end <= c['start']), len(ends))
+        if lane == len(ends):
+            ends.append(c['end'])
+        else:
+            ends[lane] = c['end']
+        lanes[i] = lane
+    return lanes
+
+
+def lane_y(y: float, lane: int, fs: float) -> float:
+    """Vertical position after moving up `lane` slots; fs is the ASS font size (cell height)."""
+    return max(fs * 1.5, y - lane * fs * 3)
 
 def available_width(box, width: int) -> float:
     x = (box[0] + box[2]) / 2 if box and len(box) == 4 else width / 2

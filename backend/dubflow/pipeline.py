@@ -531,9 +531,9 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height):
     if __package__:
-        from .subtitle_style import style_for, fit_lines, ass_size, available_width
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y
     else:
-        from subtitle_style import style_for, fit_lines, ass_size, available_width
+        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y
     st = style_for(width, height)
     font_size = ass_size(st['size'])  # libass cell height of the visible size
     out = f'''[Script Info]
@@ -558,25 +558,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     regions = refined_regions(regions, width, height)
     # OCR controls erasure footprints; the cue's own box (or bottom centre) places the text.
     from statistics import median
-    subtitle_regions = [r for r in regions if r.get('kind')=='subtitle']
     def layout(matches):
         left=min(r['x'] for r in matches)
         top=min(r['y'] for r in matches)
         right=max(r['x']+r['width'] for r in matches)
         bottom=max(r['y']+r['height'] for r in matches)
         return (left+right)/2,(top+bottom)/2
-    lanes=[]
-    for cue in sorted(cues,key=lambda c:c['start']):
+    lane_of=assign_lanes(cues)
+    for index in sorted(range(len(cues)),key=lambda i:cues[i]['start']):
+        cue=cues[index]
         box=cue.get('box')
         if box and len(box)==4:
             x,y,align=(box[0]+box[2])/2,(box[1]+box[3])/2,5
         else:
             x,y,align=width/2,height-st['margin_v'],2
-        lane=next((i for i,end in enumerate(lanes) if end<=cue['start']),len(lanes))
-        if lane==len(lanes):lanes.append(cue['end'])
-        else:lanes[lane]=cue['end']
         # Real overlapping dialogue stays legible instead of occupying one position.
-        y=max(font_size*1.5,y-lane*font_size*3)
+        y=lane_y(y,lane_of[index],font_size)
         available=available_width(box,width)
         lines,size=fit_lines(cue['text'],st['size'],available,st['max_lines'])
         out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,ass_size(size),align)

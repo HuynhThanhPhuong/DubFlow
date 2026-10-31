@@ -58,6 +58,23 @@ export function fitLines(text: string, size: number, maxWidth: number, maxLines 
   return { lines: wrapText(text, size * 0.85, maxWidth), size: size * 0.85 };
 }
 
+// Exact mirror of backend subtitle_style.assign_lanes / lane_y (first free lane in start order).
+export function assignLanes(cues: { start: number; end: number }[]): number[] {
+  const order = cues.map((_, i) => i).sort((a, b) => cues[a].start - cues[b].start || a - b);
+  const ends: number[] = [];
+  const lanes: number[] = new Array(cues.length).fill(0);
+  for (const i of order) {
+    let lane = ends.findIndex((end) => end <= cues[i].start);
+    if (lane < 0) {
+      lane = ends.length;
+      ends.push(cues[i].end);
+    } else ends[lane] = cues[i].end;
+    lanes[i] = lane;
+  }
+  return lanes;
+}
+export const laneY = (y: number, lane: number, fs: number) => Math.max(fs * 1.5, y - lane * fs * 3);
+
 type MaskRegion = Partial<Region> & {preview_mask_url?: string};
 type TimedRegion = Region & { boxes?: MaskRegion[]; preview_mask_url?: string };
 export function SubtitlePreview({
@@ -79,9 +96,9 @@ export function SubtitlePreview({
   blurOriginal: boolean;
   subtitleStyle?: SubtitleStyle | null;
 }) {
-  const active = cues.filter(
-    (c) => c.text.trim() && c.start <= now && now < c.end,
-  );
+  const lyrics = cues.filter((c) => c.text.trim());
+  const laneOf = assignLanes(lyrics);
+  const active = lyrics.map((c, i) => ({ c, lane: laneOf[i] })).filter(({ c }) => c.start <= now && now < c.end);
   const measured = regions
     .flatMap((parent) =>
       (parent.boxes ?? [parent]).map((box) => ({
@@ -105,7 +122,7 @@ export function SubtitlePreview({
   const st = subtitleStyle ?? {
     font: "Roboto",
     bold: true,
-    size: Math.round(height * 0.055),
+    size: Math.round(height * (height > width ? 0.045 : 0.055)),
     outline: Math.round((3 * height) / 1080 * 10) / 10,
     max_lines: 2,
     margin_v: Math.round(height * 0.04),
@@ -134,11 +151,12 @@ export function SubtitlePreview({
             }}
           />
         ))}
-      {active.map((c, lane) => {
+      {active.map(({ c, lane }) => {
         const box = c.box && c.box.length === 4 ? c.box : null;
         const x = box ? (box[0] + box[2]) / 2 : width / 2;
         const y = box ? (box[1] + box[3]) / 2 : height - st.margin_v;
-        const laneY = Math.max(st.size * 1.5, y - lane * st.size * 3);
+        const fs = Math.max(8, Math.round(st.size * LIBASS_CELL));
+        const yLane = laneY(y, lane, fs);
         const available = Math.max(20, 2 * Math.min(x, width - x) - 20);
         const fit = fitLines(c.text, st.size, available, st.max_lines);
         return (
@@ -148,7 +166,7 @@ export function SubtitlePreview({
             aria-label="Phụ đề Việt xem trước"
             style={{
               left: `${(x / width) * 100}%`,
-              top: `${(laneY / height) * 100}%`,
+              top: `${(yLane / height) * 100}%`,
               maxWidth: `${(available / width) * 100}%`,
               fontSize: ratio ? fit.size * ratio : 16,
               WebkitTextStrokeWidth: outline * 2,
@@ -168,6 +186,7 @@ export function SubtitlePreview({
               left: `${((r.x + r.width / 2) / width) * 100}%`,
               top: `${((r.y + r.height / 2) / height) * 100}%`,
               fontSize: ratio ? r.height * 0.78 * ratio : 16,
+              WebkitTextStrokeWidth: outline * 2,
             }}
           >
             {r.translation}

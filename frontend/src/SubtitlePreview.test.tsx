@@ -1,6 +1,6 @@
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { SubtitlePreview, fitVideoRect, fitLines } from "./SubtitlePreview";
+import { SubtitlePreview, fitVideoRect, fitLines, assignLanes } from "./SubtitlePreview";
 afterEach(cleanup);
 it("fits source coordinates inside letterboxed video without using black bars", () => {
   const box = fitVideoRect(1000, 400, 1920, 1080);
@@ -112,4 +112,21 @@ it("fitLines mirrors the backend wrap and shrinks at most 15%", () => {
   expect(fitLines(sentence, 59, 1900).lines).toHaveLength(2);
   expect(fitLines(sentence, 59, 1900).size).toBe(59);
   expect(fitLines(sentence, 86, 1060).size).toBeCloseTo(86 * 0.85, 5); // portrait overflow: shrunk, still > 2 lines
+});
+it("offsets overlapping cues by the same lane rule as the ASS export", () => {
+  const box = [860, 990, 1060, 1010];
+  const cues = [
+    { id: "a", start: 0, end: 2, speaker: "m", original: "x", text: "Một", box },
+    { id: "b", start: 1, end: 3, speaker: "m", original: "x", text: "Hai", box },
+    { id: "c", start: 2.5, end: 4, speaker: "m", original: "x", text: "Ba", box },
+  ];
+  expect(assignLanes(cues)).toEqual([0, 1, 0]);
+  const style = { font: "Roboto", bold: true, size: 59, outline: 3, max_lines: 2, margin_v: 43 };
+  const { container } = render(
+    <SubtitlePreview cues={cues} now={1.5} regions={[]} width={1920} height={1080} rect={fitVideoRect(960, 540, 1920, 1080)} blurOriginal={false} subtitleStyle={style} />,
+  );
+  const tops = Array.from(container.querySelectorAll<HTMLElement>(".vietnamese-preview")).map((e) => parseFloat(e.style.top));
+  // fs = round(59 * 2701/2048) = 78 -> lane 1 is 3*78 px above
+  expect(tops[0]).toBeCloseTo((1000 / 1080) * 100, 3);
+  expect(tops[1]).toBeCloseTo(((1000 - 3 * 78) / 1080) * 100, 3);
 });
