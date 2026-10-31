@@ -114,12 +114,17 @@ def _agreement(ocr, asr):
 def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
     """OCR segments are the primary source; ASR fills uncaptioned speech. OCR text is never rewritten.
 
-    `mismatch` is informational here (review flags source_agreement < mismatch)."""
+    OCR cues get source_mismatch = source_agreement < mismatch. An ASR cue partly covered by OCR is
+    kept (full original, verbatim) over its largest uncovered interval when that is >= .8 s
+    (source_partial=True); otherwise it is skipped."""
     segs = sorted(segments, key=lambda s: (s['s'], s['e']))
     asrs = sorted(asr_cues, key=lambda c: (c['start'], c['end']))
     out = []
+    segs = [sg for sg in segs if min(float(sg['e']), float(duration)) > float(sg['s'])]
     for i, sg in enumerate(segs, 1):
         s, e = float(sg['s']), min(float(sg['e']), float(duration))
+        if e <= s:
+            continue
         hits = [(c, _overlap(s, e, c['start'], c['end'])) for c in asrs]
         hits = [(c, o) for c, o in hits if o > 1e-9]
         parts = []
@@ -134,21 +139,37 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
                    speaker=best['speaker'] if best else 'unconfirmed', status='needs_review',
                    source='ocr+asr' if hits else 'ocr', source_ids=[c['id'] for c, _ in hits] or [f'ocr-{i:06}'],
                    box=[sg['x0'], sg['y0'], sg['x1'], sg['y1']], source_agreement=_agreement(sg['text'], asr_text))
+        cue['source_mismatch'] = cue['source_agreement'] < mismatch
         if hits:
             cue['asr_text'] = asr_text
         out.append(cue)
     for c in asrs:
         d = c['end'] - c['start']
-        cov = sum(_overlap(c['start'], c['end'], sg['s'], sg['e']) for sg in segs)  # OCR segments do not overlap each other
-        if d > 0 and cov / d >= uncovered:
+        if d <= 0:
             continue
-        out.append(dict(c, source='asr', source_agreement=1.0))
+        pos, gaps = c['start'], []
+        for sg in segs:
+            if sg['e'] <= c['start'] or sg['s'] >= c['end']:
+                continue
+            if sg['s'] > pos:
+                gaps.append((pos, sg['s']))
+            pos = max(pos, sg['e'])
+        if pos < c['end']:
+            gaps.append((pos, c['end']))
+        cov = d - sum(b - a for a, b in gaps)
+        if cov / d < uncovered:
+            out.append(dict(c, source='asr', source_agreement=1.0))
+            continue
+        a, b = max(gaps, key=lambda g: g[1] - g[0], default=(0, 0))
+        if b - a >= .8 - 1e-9:
+            out.append(dict(c, start=a, end=b, source='asr', source_agreement=1.0, source_partial=True))
     return sorted(out, key=lambda c: (c['start'], c['end']))
 
 
 def snap_to_speech(cues, rms, hop, threshold=None, pad=.05):
     """Move cue edges onto real speech (rms above threshold), at most .5 s beyond the original
-    timing and never into the previous/next cue."""
+    timing and never into the previous/next cue. Only for ASR-timed cues: OCR cue times follow the
+    on-screen subtitle and must not be snapped."""
     rms = np.asarray(rms, dtype=float)
     if threshold is None:
         threshold = max(0.01, float(np.median(rms)) * 2) if rms.size else 0.01

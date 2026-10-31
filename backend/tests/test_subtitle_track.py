@@ -92,8 +92,20 @@ class BuildSourceCuesTests(unittest.TestCase):
         extra=[c for c in out if c['source']=='asr']
         self.assertEqual((extra[0]['start'],extra[0]['end'],extra[0]['original']),(5,7,'我们走吧'))
     def test_covered_asr_not_duplicated(self):
-        out=build_source_cues([seg(0,2,'你好')],[asr(1,1,3,'你好吗')],10)
+        out=build_source_cues([seg(0,2,'你好')],[asr(1,1,2.7,'你好吗')],10)
         self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_partial_asr_gap_kept_when_long(self):
+        out=build_source_cues([seg(0,2,'你好')],[asr(1,0,4,'你好谢谢再见')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual(len(extra),1); self.assertTrue(extra[0]['source_partial'])
+        self.assertEqual((extra[0]['start'],extra[0]['end'],extra[0]['original']),(2,4,'你好谢谢再见'))
+    def test_partial_asr_gap_skipped_when_short(self):
+        out=build_source_cues([seg(0,3.5,'你好')],[asr(1,0,4,'你好谢谢')],10)
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_inverted_segment_skipped_and_flag_set(self):
+        self.assertEqual(build_source_cues([seg(9.5,12,'你好')],[],9),[])
+        out=build_source_cues([seg(0,2,'广告时间')],[asr(1,0,2,'今天天气很好')],10)
+        self.assertTrue(out[0]['source_mismatch'])
     def test_mismatch_lowers_agreement(self):
         out=build_source_cues([seg(0,2,'广告时间')],[asr(1,0,2,'今天天气很好')],10)
         self.assertLess(out[0]['source_agreement'],.6); self.assertEqual(out[0]['original'],'广告时间')

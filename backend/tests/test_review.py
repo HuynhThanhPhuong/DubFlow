@@ -39,8 +39,10 @@ class ReviewTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_source_mismatch_flag_only_below_threshold(self):
-        write(self.folder/'cues.json',[dict(self.cues[0],id='m',source_agreement=.3),dict(self.cues[0],id='ok',start=3,end=4,source_agreement=.9)])
-        flags=[f for f in review.quality_report(self.folder,self.job)['flags'] if f['code']=='SOURCE_MISMATCH']
+        write(self.folder/'cues.json',[dict(self.cues[0],id='m',source_mismatch=True),dict(self.cues[0],id='ok',start=3,end=4,source_mismatch=False,source_partial=True)])
+        report=review.quality_report(self.folder,self.job)
+        flags=[f for f in report['flags'] if f['code']=='SOURCE_MISMATCH']
+        self.assertEqual([f['cue_ids'] for f in report['flags'] if f['code']=='ASR_PARTIAL'],[['ok']])
         self.assertEqual([f['cue_ids'] for f in flags],[['m']]); self.assertEqual(flags[0]['severity'],'review')
         self.assertEqual(flags[0]['message'],'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
 
