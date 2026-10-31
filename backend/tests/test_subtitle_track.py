@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines
+from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines, build_source_cues, snap_to_speech
 
 
 def sig(seed):  # nét chữ khác nhau theo seed
@@ -73,6 +73,54 @@ class OrderLinesTests(unittest.TestCase):
         self.assertEqual(order_lines(b),'ABDE')
     def test_empty(self):
         self.assertEqual(order_lines([]),'')
+
+def seg(s,e,text): return dict(s=s,e=e,x0=1,y0=2,x1=3,y1=4,text=text,confidence=.9,readings=[text])
+def asr(i,s,e,text,speaker='unconfirmed'):
+    return dict(id=f'asr-{i:06}',start=s,end=e,speaker=speaker,original=text,text='',source_ids=[f'asr-{i:06}'],status='needs_review',speaker_hint=True)
+
+
+class BuildSourceCuesTests(unittest.TestCase):
+    def test_ocr_is_primary_and_asr_text_is_attached(self):
+        out=build_source_cues([seg(0,1,'你好'),seg(1,2,'谢谢')],[asr(1,.1,1.9,'你好谢谢','S1')],10)
+        self.assertEqual([(c['start'],c['end'],c['original'],c['source']) for c in out],[(0,1,'你好','ocr+asr'),(1,2,'谢谢','ocr+asr')])
+        self.assertEqual([c['id'] for c in out],['ocr-000001','ocr-000002'])
+        self.assertEqual(out[0]['asr_text'],'你好'); self.assertEqual(out[0]['box'],[1,2,3,4])
+        self.assertEqual(out[0]['speaker'],'S1'); self.assertEqual(out[0]['text'],''); self.assertEqual(out[0]['status'],'needs_review')
+        self.assertGreaterEqual(out[0]['source_agreement'],.6)
+    def test_uncovered_asr_is_added(self):
+        out=build_source_cues([seg(0,1,'你好')],[asr(1,5,7,'我们走吧')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual((extra[0]['start'],extra[0]['end'],extra[0]['original']),(5,7,'我们走吧'))
+    def test_covered_asr_not_duplicated(self):
+        out=build_source_cues([seg(0,2,'你好')],[asr(1,1,3,'你好吗')],10)
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_mismatch_lowers_agreement(self):
+        out=build_source_cues([seg(0,2,'广告时间')],[asr(1,0,2,'今天天气很好')],10)
+        self.assertLess(out[0]['source_agreement'],.6); self.assertEqual(out[0]['original'],'广告时间')
+    def test_no_ocr_returns_asr(self):
+        out=build_source_cues([],[asr(1,0,1,'你好'),asr(2,2,3,'谢谢')],10)
+        self.assertEqual([(c['id'],c['start'],c['end'],c['original'],c['source']) for c in out],
+                         [('asr-000001',0,1,'你好','asr'),('asr-000002',2,3,'谢谢','asr')])
+    def test_speaker_unconfirmed_without_asr_overlap(self):
+        self.assertEqual(build_source_cues([seg(0,1,'你好')],[],10)[0]['speaker'],'unconfirmed')
+    def test_speaker_from_largest_overlap(self):
+        out=build_source_cues([seg(0,3,'你好谢谢')],[asr(1,0,1,'你好','A'),asr(2,1,3,'谢谢','B')],10)
+        self.assertEqual(out[0]['speaker'],'B')
+
+
+class SnapTests(unittest.TestCase):
+    def rms(self):
+        r=np.zeros(500)+.001; r[120:280]=.3; return r
+    def test_snaps_to_speech_edges(self):
+        out=snap_to_speech([dict(start=1.0,end=3.0)],self.rms(),.01)
+        self.assertAlmostEqual(out[0]['start'],1.15,places=2); self.assertAlmostEqual(out[0]['end'],2.85,places=2)
+    def test_does_not_overlap_next_cue(self):
+        out=snap_to_speech([dict(start=1.0,end=3.0),dict(start=2.82,end=4.0)],self.rms(),.01)
+        self.assertLessEqual(out[0]['end'],2.82+1e-9)
+    def test_no_speech_keeps_cue(self):
+        out=snap_to_speech([dict(start=3.5,end=4.0)],self.rms(),.01)
+        self.assertEqual((out[0]['start'],out[0]['end']),(3.5,4.0))
+
 
 if __name__=='__main__':
     unittest.main()

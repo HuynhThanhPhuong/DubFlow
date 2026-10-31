@@ -156,6 +156,8 @@ def quality_report(folder, job, state=None):
             flag('LANGUAGE_SUSPECT',[c['id']], 'Lời Việt còn ký tự Trung; kiểm tra ngôn ngữ hoặc tên riêng.')
         elif len(text.split())>=5 and text.isascii() and re.search(r'\b(the|you|your|with|have|this|that|only)\b',text,re.I):
             flag('LANGUAGE_SUSPECT',[c['id']], 'Câu có dấu hiệu là tiếng Anh; cần kiểm tra ngôn ngữ. Đây chỉ là sàng lọc.')
+        if isinstance(c.get('source_agreement'),(int,float)) and c['source_agreement']<.6:
+            flag('SOURCE_MISMATCH',[c['id']], 'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
         source_numbers=re.findall(r'\d+(?:[.,]\d+)?',c.get('original',''))
         target_numbers=re.findall(r'\d+(?:[.,]\d+)?',text)
         if source_numbers!=target_numbers:
