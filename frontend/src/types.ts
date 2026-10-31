@@ -29,6 +29,15 @@ export interface Job {
   ready_count: number;
   dry_url?: string | null;
   zip_url?: string | null;
+  subtitle_style?: SubtitleStyle;
+}
+export interface SubtitleStyle {
+  font: string;
+  bold: boolean;
+  size: number;
+  outline: number;
+  max_lines: number;
+  margin_v: number;
 }
 export interface Cue {
   id: string;
@@ -50,6 +59,7 @@ export interface Cue {
   source_mismatch?: boolean;
   source_partial?: boolean;
   ocr_empty?: boolean;
+  box?: number[] | null;
 }
 export interface Region {
   id: string;

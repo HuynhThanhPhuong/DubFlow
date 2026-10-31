@@ -1,6 +1,6 @@
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { SubtitlePreview, fitVideoRect } from "./SubtitlePreview";
+import { SubtitlePreview, fitVideoRect, fitLines, LIBASS_CELL } from "./SubtitlePreview";
 afterEach(cleanup);
 it("fits source coordinates inside letterboxed video without using black bars", () => {
   const box = fitVideoRect(1000, 400, 1920, 1080);
@@ -74,4 +74,39 @@ it("uses OCR time windows for masks/notes and handles overlapping translated dia
   expect(screen.queryByText("Câu nam")).toBeNull();
   expect(screen.getByText("Câu nữ")).toBeTruthy();
   expect(container.querySelectorAll(".preview-source-mask")).toHaveLength(0);
+});
+it("uses the shared Roboto style scaled to the displayed height and the cue box centre", () => {
+  const cues = [
+    { id: "a", start: 0, end: 2, speaker: "m", original: "x", text: "Xin chào", box: [400, 900, 1000, 1000] },
+    { id: "b", start: 0, end: 2, speaker: "m", original: "x", text: "Không có khung" },
+  ];
+  const style = { font: "Roboto", bold: true, size: 59, outline: 3, max_lines: 2, margin_v: 43 };
+  const { container } = render(
+    <SubtitlePreview
+      cues={cues}
+      now={1}
+      regions={[]}
+      width={1920}
+      height={1080}
+      rect={fitVideoRect(960, 540, 1920, 1080)}
+      blurOriginal={false}
+      subtitleStyle={style}
+    />,
+  );
+  const [boxed, bottom] = Array.from(container.querySelectorAll<HTMLElement>(".vietnamese-preview"));
+  expect(parseFloat(boxed.style.fontSize)).toBeCloseTo(29.5 / LIBASS_CELL, 1);
+  expect(boxed.style.getPropertyValue("-webkit-text-stroke-width") || (boxed.style as unknown as Record<string, string>).webkitTextStrokeWidth).toBeTruthy();
+  expect(parseFloat(boxed.style.left)).toBeCloseTo((700 / 1920) * 100, 3);
+  expect(parseFloat(boxed.style.top)).toBeCloseTo((950 / 1080) * 100, 3);
+  expect(bottom.className).toContain("at-bottom");
+  expect(parseFloat(bottom.style.left)).toBeCloseTo(50, 3);
+});
+it("fitLines mirrors the backend wrap and shrinks at most 15%", () => {
+  expect(fitLines("Xin chào các bạn", 59, 1700).lines).toHaveLength(1);
+  const long = Array(14).fill("abcdefg").join(" ");
+  const fit = fitLines(long, 59, 1700, 2);
+  expect(fit.lines.length).toBeLessThanOrEqual(2);
+  expect(fit.size).toBeLessThan(59);
+  expect(fit.size).toBeGreaterThanOrEqual(59 * 0.85);
+  expect(fitLines("Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn", 106, 1060).size).toBeCloseTo(106 * 0.85, 5);
 });

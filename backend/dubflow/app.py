@@ -27,6 +27,7 @@ from .media import atomic_json, contained, parse_srt, poster, probe, read_json, 
 from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest
 from . import review
 from .store import Store
+from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
 from .voices import all_voices, check_audio, get_voice, public_voice, voice_ref
 
@@ -103,6 +104,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['poster_url'] = base + '/poster' if (folder / 'poster.jpg').exists() else None
         value['output_url'] = base + '/output' if (folder / 'output.mp4').exists() and job['status'] == 'done' else None
         value['dry_url'] = base + '/audio' if (folder / 'dry.wav').exists() else None
+        value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
 
     def invalidate(job_id):
@@ -178,6 +180,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
         lock = settings.data_dir / 'worker-heartbeat.json'
         return dict(status='ok', queue_backend=settings.queue_backend, capabilities=capabilities, warnings=warnings,
                     worker=read_json(lock, {}), disk_free_bytes=shutil.disk_usage(settings.data_dir).free)
+
+    @app.get('/api/fonts/{name}')
+    def font_file(name: str):
+        if name != FONT_FILE:
+            raise HTTPException(404, 'Không tìm thấy font.')
+        return FileResponse(FONTS_DIR / FONT_FILE, media_type='font/ttf', headers={'Cache-Control': 'public, max-age=86400'})
 
     @app.get('/api/jobs')
     def jobs():

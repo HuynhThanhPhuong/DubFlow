@@ -177,6 +177,7 @@ export function Player({
             height={job.height || 1080}
             rect={rect}
             blurOriginal={blurOriginal}
+            subtitleStyle={job.subtitle_style}
           />
         )}
         {source && !playing && (

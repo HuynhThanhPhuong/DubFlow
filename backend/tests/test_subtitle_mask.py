@@ -34,7 +34,7 @@ class SubtitleMaskTests(unittest.TestCase):
         style=next(line for line in ass.splitlines() if line.startswith('Style:'))
         columns=style.split(',')
         self.assertEqual(columns[6],'&HFF000000')
-        self.assertEqual(columns[15:18],['1','0','0'])
+        self.assertEqual(columns[15:18],['1','3','0'])
 
     def test_legacy_merge_preserves_metadata_and_empty_detection_fallback(self):
         old=region(id='manual',translation='Lời Việt',enabled=False,end=60)
@@ -71,25 +71,26 @@ class SubtitleMaskTests(unittest.TestCase):
         for kind in ('static','transient'):
             self.assertEqual(refined_regions([region(kind=kind)],100,60),[region(kind=kind)])
 
-    def test_overlapping_lines_emit_one_vietnamese_event(self):
-        ass = p.make_ass([dict(start=0,end=2,text='Xin chào')],
+    def test_cue_box_centres_the_vietnamese_line(self):
+        ass = p.make_ass([dict(start=0,end=2,text='Xin chào',box=[20,40,100,62])],
                          [region(),region(x=40,y=52,width=40)],120,90)
         events = [line for line in ass.splitlines() if line.startswith('Dialogue:')]
         self.assertEqual(len(events),1)
         self.assertIn(r'\pos(60,51)',events[0])
+        self.assertIn(r'\an5',events[0])
 
-    def test_ocr_gaps_keep_one_cue_with_fixed_size_and_position(self):
+    def test_cue_without_box_sits_at_bottom_centre_with_fixed_size(self):
         r = region(boxes=[dict(x=10,start=0,end=.5),dict(x=30,start=1,end=2)])
         ass = p.make_ass([dict(start=0,end=2,text='VI')],[r],120,90)
         self.assertEqual(ass.count('Dialogue:'),1)
-        self.assertIn(r'\pos(60,40)',ass)
+        self.assertIn(r'\an2\pos(60,86)',ass)
         self.assertIn('0:00:00.00,0:00:02.00',ass)
-        self.assertEqual(ass.count(r'\fs18'),1)
+        self.assertEqual(ass.count(r'\fs8}'),1)
 
-    def test_short_source_box_does_not_make_vietnamese_tiny(self):
-        ass=p.make_ass([dict(start=0,end=2,text='Đây là lời Việt dài hơn chữ gốc')],
+    def test_ocr_height_does_not_change_vietnamese_size(self):
+        ass=p.make_ass([dict(start=0,end=2,text='Đây là lời Việt')],
                        [region(x=480,y=800,width=100,height=60)],1080,1920)
-        self.assertIn(r'\fs53',ass)
+        self.assertIn(r'\fs106',ass)
 
     def test_all_dialogue_cues_use_one_size_even_without_matching_ocr(self):
         import re

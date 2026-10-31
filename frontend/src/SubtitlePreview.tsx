@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { Cue, Region } from "./types";
+import type { Cue, Region, SubtitleStyle } from "./types";
 import "./subtitle-preview.css";
 
 export function fitVideoRect(
@@ -19,6 +19,38 @@ export function fitVideoRect(
   };
 }
 
+// libass sizes \fs as the font cell height (Roboto winAscent+winDescent = 2701/2048 em),
+// so the CSS em that reproduces an ASS \fs is fs / LIBASS_CELL.
+export const LIBASS_CELL = 2701 / 2048;
+const units = (s: string) => [...s].reduce((n, c) => n + (/\s/.test(c) ? 0.33 : 0.62), 0);
+function wrapText(text: string, size: number, maxWidth: number): string[] {
+  const maxUnits = Math.max(1, maxWidth / size);
+  const lines: string[] = [];
+  for (const paragraph of String(text).split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const proposed = (line + " " + word).trim();
+      if (line && units(proposed) > maxUnits) {
+        lines.push(line);
+        line = word;
+      } else line = proposed;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+// Mirror of backend subtitle_style.fit_lines: shrink up to 15% to fit max_lines.
+export function fitLines(text: string, size: number, maxWidth: number, maxLines = 2) {
+  const first = wrapText(text, size, maxWidth);
+  if (first.length <= maxLines) return { lines: first, size };
+  for (let step = 1; step < 15; step++) {
+    const trial = size * (1 - step / 100);
+    const lines = wrapText(text, trial, maxWidth);
+    if (lines.length <= maxLines) return { lines, size: trial };
+  }
+  return { lines: wrapText(text, size * 0.85, maxWidth), size: size * 0.85 };
+}
+
 type MaskRegion = Partial<Region> & {preview_mask_url?: string};
 type TimedRegion = Region & { boxes?: MaskRegion[]; preview_mask_url?: string };
 export function SubtitlePreview({
@@ -29,6 +61,7 @@ export function SubtitlePreview({
   height,
   rect,
   blurOriginal,
+  subtitleStyle,
 }: {
   cues: Cue[];
   now: number;
@@ -37,6 +70,7 @@ export function SubtitlePreview({
   height: number;
   rect: ReturnType<typeof fitVideoRect>;
   blurOriginal: boolean;
+  subtitleStyle?: SubtitleStyle | null;
 }) {
   const active = cues.filter(
     (c) => c.text.trim() && c.start <= now && now < c.end,
@@ -58,32 +92,20 @@ export function SubtitlePreview({
         r.height > 0,
     );
   const visible = measured.filter((r) => r.start <= now && now < r.end);
-  const allSubs = measured.filter((r) => r.kind === 'subtitle');
-  // Match the renderer: keep one position/font throughout a cue, including OCR gaps.
-  const matched = allSubs.filter((r) => active.some((c) => r.start < c.end && r.end > c.start));
-  const subs = matched.length ? matched : allSubs;
-  const left = subs.length
-    ? ((Math.min(...subs.map((r) => r.x)) +
-        Math.max(...subs.map((r) => r.x + r.width))) /
-        2 /
-        width) *
-      100
-    : 50;
-  const top = subs.length
-    ? ((Math.min(...subs.map((r) => r.y)) +
-        Math.max(...subs.map((r) => r.y + r.height))) /
-        2 /
-        height) *
-      100
-    : 92;
   const style: CSSProperties = rect.width
     ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
     : { inset: 0 };
-  const sizes = allSubs.map((r) => r.height).sort((a,b) => a-b);
-  const middle = Math.floor(sizes.length / 2);
-  const median = sizes.length ? (sizes.length % 2 ? sizes[middle] : (sizes[middle-1]+sizes[middle])/2) : 0;
-  const sourceFont = Math.max(12, Math.round(median ? median * .88 : height * .035));
-  const font = rect.height && height ? sourceFont * rect.height / height : 16;
+  const st = subtitleStyle ?? {
+    font: "Roboto",
+    bold: true,
+    size: Math.round(height * 0.055),
+    outline: Math.round((3 * height) / 1080 * 10) / 10,
+    max_lines: 2,
+    margin_v: Math.round(height * 0.04),
+  };
+  const ratio = rect.height && height ? rect.height / height : 0;
+  // Same typography as the exported ASS: size and outline scale with displayed/video height.
+  const outline = ratio ? st.outline * ratio : 0;
   return (
     <div
       className="subtitle-preview-stage"
@@ -105,17 +127,30 @@ export function SubtitlePreview({
             }}
           />
         ))}
-      {!!active.length && (
-        <div
-          className="vietnamese-preview"
-          aria-label="Phụ đề Việt xem trước"
-          style={{ left: `${left}%`, top: `${top}%`, fontSize: font }}
-        >
-          {active.map((c) => (
-            <span key={c.id}>{c.text}</span>
-          ))}
-        </div>
-      )}
+      {active.map((c, lane) => {
+        const box = c.box && c.box.length === 4 ? c.box : null;
+        const x = box ? (box[0] + box[2]) / 2 : width / 2;
+        const y = box ? (box[1] + box[3]) / 2 : height - st.margin_v;
+        const laneY = Math.max(st.size * 1.5, y - lane * st.size * 3);
+        const available = Math.max(20, 2 * Math.min(x, width - x) - 20);
+        const fit = fitLines(c.text, st.size, available, st.max_lines);
+        return (
+          <div
+            key={c.id}
+            className={`vietnamese-preview${box ? "" : " at-bottom"}`}
+            aria-label="Phụ đề Việt xem trước"
+            style={{
+              left: `${(x / width) * 100}%`,
+              top: `${(laneY / height) * 100}%`,
+              maxWidth: `${(available / width) * 100}%`,
+              fontSize: ratio ? (fit.size * ratio) / LIBASS_CELL : 16,
+              WebkitTextStrokeWidth: outline * 2,
+            }}
+          >
+            <span>{fit.lines.join("\n")}</span>
+          </div>
+        );
+      })}
       {visible
         .filter((r) => r.kind === "transient" && r.translation?.trim())
         .map((r, i) => (
@@ -125,7 +160,7 @@ export function SubtitlePreview({
             style={{
               left: `${((r.x + r.width / 2) / width) * 100}%`,
               top: `${((r.y + r.height / 2) / height) * 100}%`,
-              fontSize: Math.min(font, 24),
+              fontSize: ratio ? r.height * 0.78 * ratio : 16,
             }}
           >
             {r.translation}

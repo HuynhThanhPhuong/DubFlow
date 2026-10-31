@@ -530,6 +530,12 @@ def ass_time(value):
     return f'{c//360000}:{c//6000%60:02}:{c//100%60:02}.{c%100:02}'
 
 def make_ass(cues, regions, width, height):
+    if __package__:
+        from .subtitle_style import style_for, fit_lines
+    else:
+        from subtitle_style import style_for, fit_lines
+    st = style_for(width, height)
+    font_size = st['size']
     out = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -538,7 +544,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{max(12,round(height*.035))},&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,-1,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1
+Style: Default,{st['font']},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,-1,0,0,0,100,100,0,0,1,{st['outline']:g},0,2,10,10,{st['margin_v']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -550,43 +556,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     else:
         from subtitle_mask import refined_regions
     regions = refined_regions(regions, width, height)
-    # OCR controls erasure footprints, never the lifetime or font of a cue.
-    # A single ASS event prevents the large/small fallback flicker at OCR gaps.
+    # OCR controls erasure footprints; the cue's own box (or bottom centre) places the text.
     from statistics import median
     subtitle_regions = [r for r in regions if r.get('kind')=='subtitle']
-    font_size = max(12,round(median([r['height'] for r in subtitle_regions])*.88)) if subtitle_regions else max(12,round(height*.035))
     def layout(matches):
         left=min(r['x'] for r in matches)
         top=min(r['y'] for r in matches)
         right=max(r['x']+r['width'] for r in matches)
         bottom=max(r['y']+r['height'] for r in matches)
         return (left+right)/2,(top+bottom)/2
-    fallback = layout(subtitle_regions) if subtitle_regions else (width/2,height*.92)
     lanes=[]
     for cue in sorted(cues,key=lambda c:c['start']):
-        matches=[r for r in subtitle_regions if r['start']<cue['end'] and r['end']>cue['start']]
-        x,y=layout(matches) if matches else fallback
+        box=cue.get('box')
+        if box and len(box)==4:
+            x,y,align=(box[0]+box[2])/2,(box[1]+box[3])/2,5
+        else:
+            x,y,align=width/2,height-st['margin_v'],2
         lane=next((i for i,end in enumerate(lanes) if end<=cue['start']),len(lanes))
         if lane==len(lanes):lanes.append(cue['end'])
         else:lanes[lane]=cue['end']
         # Real overlapping dialogue stays legible instead of occupying one position.
         y=max(font_size*1.5,y-lane*font_size*3)
         available=max(20,2*min(x,width-x)-20)
-        max_units=available/font_size
-        def units(value):
-            return sum(.33 if c.isspace() else .62 for c in value)
-        lines=[]
-        for paragraph in str(cue['text']).split('\n'):
-            line=''
-            for word in paragraph.split():
-                proposed=(line+' '+word).strip()
-                if line and units(proposed)>max_units:
-                    lines.append(line)
-                    line=word
-                else:
-                    line=proposed
-            lines.append(line)
-        out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,font_size)
+        lines,size=fit_lines(cue['text'],font_size,available,st['max_lines'])
+        out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,size,align)
     # Timed OCR boxes for the same on-screen note also share one typography.
     note_groups=[]
     for r in regions:
@@ -688,7 +681,11 @@ def render(job_dir, settings, emit):
             graph.append(filters)
     resolution = getattr(settings,'resolution','source')
     scale = '' if resolution == 'source' else ',scale=-2:' + ('1080' if resolution=='1080p' else '720')
-    graph.append(f'[{last}]ass=captions.ass{scale}[vout]')
+    if __package__:
+        from .subtitle_style import FONTS_DIR, ffmpeg_filter_path
+    else:
+        from subtitle_style import FONTS_DIR, ffmpeg_filter_path
+    graph.append(f"[{last}]ass=captions.ass:fontsdir='{ffmpeg_filter_path(FONTS_DIR)}'{scale}[vout]")
     if mode == 'vietsub':
         amap = '0:a:0?'
     else:

@@ -288,7 +288,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(p.read(directory/'cues.json')[0]['id'],'u')
 
     def test_ass_regions_use_source_coordinates_and_disable_blur(self):
-        cues=[dict(start=0,end=1,text='Hello')]
+        cues=[dict(start=0,end=1,text='Hello',box=[100,200,400,250])]
         region=dict(x=100,y=200,width=300,height=50,start=0,end=1,kind='subtitle',enabled=True)
         ass=p.make_ass(cues,[region],1080,1920)
         self.assertIn(r'\pos(250,225)',ass)
