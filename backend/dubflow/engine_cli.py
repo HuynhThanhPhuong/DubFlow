@@ -465,7 +465,7 @@ def erase(directory, request):
     import subprocess
     import cv2
     import numpy as np
-    from subtitle_erase import fill_frame, glyph_mask
+    from subtitle_erase import erase_frame, glyph_mask
     directory = Path(directory)
     ff, source = request['ffmpeg'], request['source']
     width, height = int(request['width']), int(request['height'])
@@ -481,13 +481,40 @@ def erase(directory, request):
     ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
     out = directory/'clean.tmp.mp4'
     size = width * height * 3
+    # pass 1: first glyph-free band crop after each segment (a "future" reference), band crops only
+    after, pending, bh = {}, list(range(len(segs))), ry1 - ry0
+    scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps},crop={width}:{bh}:0:{ry0}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        m_ = 0
+        while pending:
+            if m_ % 100 == 0 and (directory/'cancel.request').exists():
+                raise RuntimeError('cancelled')
+            raw = scan.stdout.read(width * bh * 3)
+            if len(raw) < width * bh * 3:
+                break
+            tt = m_ / fps
+            m_ += 1
+            pending = [i for i in pending if tt <= segs[i]['e'] + 2.5]
+            due = [i for i in pending if tt >= segs[i]['e'] + margin]
+            if not due:
+                continue
+            crop = np.frombuffer(raw, np.uint8).reshape(bh, width, 3)
+            if glyph_mask(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), k).sum() < min_px:
+                crop = crop.copy()
+                for i in due:
+                    after[i] = crop
+                pending = [i for i in pending if i not in due]
+    finally:
+        scan.kill(); scan.stdout.close(); scan.wait()
+    seg_index = {id(s): i for i, s in enumerate(segs)}
     reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     writer = subprocess.Popen([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', f'{fps}', '-i', '-',
                                '-i', source, '-map', '0:v', '-map', '1:a?', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast',
                                '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', str(out)],
                               stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    ref_crop, touched, n, first = None, 0, 0, 0
+    ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
     try:
         while True:
             if n % 100 == 0 and (directory/'cancel.request').exists():
@@ -505,13 +532,10 @@ def erase(directory, request):
                     upcoming = s['s']
                     break
                 active.append(s)
-            gray = None
-            ref = None
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if active else None
+            refs = []
             if active:
-                if ref_crop is not None:
-                    ref = frame.copy()
-                    ref[ry0:ry1] = ref_crop
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                refs = [ref_crop, after.get(seg_index[id(max(active, key=lambda s: s['e']))])]
             done = False
             for s in active:
                 x0, y0, x1, y1 = (max(0, int(s['x0'] - grow)), max(0, int(s['y0'] - grow)),
@@ -525,7 +549,10 @@ def erase(directory, request):
                     continue
                 mask = np.zeros((height, width), bool)
                 mask[y0:y1, x0:x1] = grown
-                frame = fill_frame(frame, mask, (x0, y0, x1, y1), ref)
+                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k)
+                fills[how] = fills.get(how, 0) + 1
+                if how == 'ref':
+                    ref_diffs.append(rd)
                 done = True
             if done:
                 touched += 1
@@ -533,7 +560,8 @@ def erase(directory, request):
                 near = upcoming is not None and upcoming - t <= 2
                 band_clean = near and glyph_mask(cv2.cvtColor(frame[ry0:ry1], cv2.COLOR_BGR2GRAY), k).sum() < min_px
                 # a clean reference must not contain subtitle glyphs (the detector starts late)
-                ref_crop = frame[ry0:ry1].copy() if band_clean else (ref_crop if near else None)
+                if band_clean:
+                    ref_crop = frame[ry0:ry1].copy()
             writer.stdin.write(np.ascontiguousarray(frame).tobytes())
             n += 1
         writer.stdin.close()
@@ -547,7 +575,8 @@ def erase(directory, request):
         reader.stdout.close(); reader.wait()
     os.replace(out, directory/'clean.mp4')
     write(directory/'erase.json', dict(version=1, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
-                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3)))
+                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3),
+                                       fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 
 def translate(directory, request):

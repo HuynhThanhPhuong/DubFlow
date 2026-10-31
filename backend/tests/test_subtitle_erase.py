@@ -6,7 +6,7 @@ try:
 except ImportError:  # backend venv has no cv2
     cv2 = None
 if cv2 is not None:
-    from dubflow.subtitle_erase import fill_frame, glyph_mask
+    from dubflow.subtitle_erase import erase_frame, fill_frame, glyph_mask, _ring_of
 
 
 def _bg(h=120, w=360):
@@ -64,6 +64,54 @@ class SubtitleEraseTest(unittest.TestCase):
     def test_pixels_outside_mask_untouched(self):
         out = fill_frame(self.frame, self.mask, self.box, None)
         self.assertTrue(np.array_equal(out[~self.mask], self.frame[~self.mask]))
+
+
+def _textured(h=120, w=360, seed=3):
+    rng = np.random.default_rng(seed)
+    base = cv2.GaussianBlur(rng.normal(120, 40, (h + 40, w + 40)).astype(np.float32), (0, 0), 6)
+    return np.clip(base, 0, 255)
+
+
+def _bgr(g):
+    return cv2.cvtColor(np.clip(g, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class TemporalFillTest(unittest.TestCase):
+    def _scene(self):
+        big = _textured()
+        ref = _bgr(big[20:140, 20:380])
+        clean = _bgr(big[22:142, 25:385])  # camera moved by (5, 2)
+        frame = _with_text(cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY))
+        mask = cv2.dilate(glyph_mask(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 1.0).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+        return ref, clean, frame, mask
+
+    def test_shifted_static_background_is_recovered(self):
+        ref, clean, frame, mask = self._scene()
+        h, w = frame.shape[:2]
+        out, how, diff = erase_frame(frame, mask, (0, 0, w, h), [ref], (0, h), 1.0)
+        self.assertEqual(how, 'ref')
+        err = np.abs(out.astype(int) - clean.astype(int))[mask].mean()
+        self.assertLess(err, 4)
+        self.assertLess(np.abs(np.roll(ref, 5, axis=1).astype(int) - clean.astype(int))[:, 40:-40].mean(), 40)  # shift matters
+
+    def test_no_ref_fill_has_no_faceting(self):
+        _, clean, frame, mask = self._scene()
+        h, w = frame.shape[:2]
+        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0)
+        self.assertEqual(how, 'smooth')
+        g = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        grad = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
+        ring = _ring_of(mask)
+        self.assertLess(grad[mask].mean(), 2 * grad[ring].mean())
+        self.assertEqual((cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)[mask] > 200).sum(), 0)
+
+    def test_untouched_far_from_mask(self):
+        _, _, frame, mask = self._scene()
+        h, w = frame.shape[:2]
+        out, _, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0)
+        far = ~(cv2.dilate(mask.astype(np.uint8), np.ones((41, 41), np.uint8)) > 0)
+        self.assertTrue(np.array_equal(out[far], frame[far]))
 
 
 if __name__ == "__main__":
