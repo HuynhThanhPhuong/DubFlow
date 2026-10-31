@@ -145,9 +145,11 @@ def probe(source, settings):
     video = next(s for s in data['streams'] if s['codec_type'] == 'video')
     info = dict(duration=float(data['format']['duration']), width=int(video['width']), height=int(video['height']))
     try:
-        num, den = str(video.get('avg_frame_rate') or video.get('r_frame_rate')).split('/')
+        rate = str(video.get('avg_frame_rate') or video.get('r_frame_rate'))
+        num, den = rate.split('/')
         if float(den) and float(num) / float(den) > 0:
             info['fps'] = float(num) / float(den)
+            info['fps_arg'] = rate
     except (ValueError, AttributeError):
         pass
     return info
@@ -279,24 +281,47 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
+ERASE_VERSION = 2
+
+def erase_current(directory, source, meta=None, full=True):
+    """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full)."""
+    directory, source = Path(directory), Path(source)
+    done = read(directory/'erase.json', {}) or {}
+    try:
+        stat = source.stat()
+        ok = (done.get('version') == ERASE_VERSION and (directory/'clean.mp4').is_file()
+              and done.get('source_size') == stat.st_size and done.get('source_mtime_ns') == stat.st_mtime_ns
+              and done.get('subtrack_hash') == file_hash(directory/'subtrack.json'))
+        if ok and meta is not None:
+            ok = done.get('fps') == str(meta.get('fps_arg') or meta.get('fps') or 25)
+        if ok and full:
+            ok = done.get('source_hash') == file_hash(source)
+        return ok
+    except OSError:
+        return False
+
 def erase_subtitles(directory, source, meta, settings, emit, warnings):
     """Build clean.mp4 (hard subtitles removed) once per (source, subtrack) pair."""
     track = read(directory/'subtrack.json', {}) or {}
     clean, stamp = directory/'clean.mp4', directory/'erase.json'
     if not track.get('segments') or not getattr(settings, 'ocr_python', None):
         return
-    hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'))
-    done = read(stamp, {})
-    if clean.exists() and done.get('version') == 1 and all(done.get(k) == v for k, v in hashes.items()):
+    if erase_current(directory, source, meta):
         return
+    stat = Path(source).stat()
+    hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'),
+                  source_size=stat.st_size, source_mtime_ns=stat.st_mtime_ns)
     emit('erase', 'Đang xóa sub gốc trên hình', 38)
     clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
     try:
         engine('erase', directory, settings, {'source':str(source), **meta, **hashes}, emit=emit)
     except Cancelled:
+        (directory/'clean.tmp.mp4').unlink(missing_ok=True)
+        shutil.rmtree(directory/'erase-refs', ignore_errors=True)
         raise
     except NeedsReview as exc:
         clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
+        (directory/'clean.tmp.mp4').unlink(missing_ok=True)
         warnings.append('Chưa xóa được sub gốc trên hình: '+str(exc))
 
 def prepare(job_dir, settings, emit):
@@ -619,7 +644,8 @@ def render(job_dir, settings, emit):
     graph, last = [], '0:v'
     mask_regions = refined_regions(regions,meta['width'],meta['height'],meta['duration'])
     use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
-                 and bool((read(directory/'subtrack.json', {}) or {}).get('segments')))
+                 and bool((read(directory/'subtrack.json', {}) or {}).get('segments'))
+                 and erase_current(directory, source, None, full=False))
     if use_clean:  # subtitle glyphs are already erased in clean.mp4; logo/transient masks still apply
         mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle']
         last = 'cleanv'

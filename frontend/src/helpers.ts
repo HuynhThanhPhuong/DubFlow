@@ -67,6 +67,7 @@ export const stageLabels: Record<string, string> = {
   transcribing: "Nhận dạng lời gốc",
   transcribe: "Nhận dạng lời gốc",
   ocr: "Tìm phụ đề và chữ trên hình",
+  erase: "Xoá phụ đề gốc trên hình",
   translate: "Dịch lời Việt",
   translating: "Đang dịch tiếng Việt",
   refs: "Chuẩn bị mẫu giọng",

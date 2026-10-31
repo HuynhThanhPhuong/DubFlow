@@ -114,5 +114,46 @@ class TemporalFillTest(unittest.TestCase):
         self.assertTrue(np.array_equal(out[far], frame[far]))
 
 
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class EraseStageTest(unittest.TestCase):
+    def _run(self, duration, tmp):
+        import json, shutil, subprocess, sys
+        from pathlib import Path
+        ff = shutil.which('ffmpeg') or 'D:/OmniVoice/tools/ffmpeg.exe'
+        if not Path(ff).exists():
+            self.skipTest('ffmpeg unavailable')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        d = Path(tmp)
+        src = d / 'source.mp4'
+        subprocess.run([ff, '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=gray:s=320x240:r=25:d=2', '-f', 'lavfi', '-i', 'sine=d=2',
+                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', str(src)], check=True)
+        (d / 'subtrack.json').write_text(json.dumps(dict(version=1, fps=10, band=[170, 220],
+            segments=[dict(s=.5, e=1.2, x0=60, y0=180, x1=260, y1=210, text='a')])))
+        req = dict(ffmpeg=ff, source=str(src), width=320, height=240, fps_arg='25', duration=duration,
+                   source_hash='h', subtrack_hash='s', source_size=1, source_mtime_ns=2)
+        engine_cli.erase(d, req)
+        return d
+
+    def test_complete_decode_writes_clean_mp4_with_audio(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._run(2.0, tmp)
+            self.assertTrue((d / 'clean.mp4').is_file())
+            self.assertFalse((d / 'clean.tmp.mp4').exists())
+            self.assertFalse((d / 'erase-refs').exists())
+            stamp = json.loads((d / 'erase.json').read_text())
+            self.assertEqual((stamp['version'], stamp['fps']), (2, '25'))
+
+    def test_truncated_decode_is_rejected(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, 'truncated'):
+                self._run(10.0, tmp)  # source has 2 s but metadata claims 10 s
+            self.assertFalse((Path(tmp) / 'clean.mp4').exists())
+            self.assertFalse((Path(tmp) / 'clean.tmp.mp4').exists())
+
+
 if __name__ == "__main__":
     unittest.main()

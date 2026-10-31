@@ -4,6 +4,7 @@ All model resolution is local-only. No web server imports this module's models.
 from __future__ import annotations
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import time
@@ -469,7 +470,9 @@ def erase(directory, request):
     directory = Path(directory)
     ff, source = request['ffmpeg'], request['source']
     width, height = int(request['width']), int(request['height'])
-    fps = float(request.get('fps') or 25)
+    from fractions import Fraction
+    fps_arg = str(request.get('fps_arg') or request.get('fps') or 25)  # rational such as 30000/1001
+    fps = float(Fraction(fps_arg))
     started = time.monotonic()
     track = read(directory/'subtrack.json', {})
     segs = sorted(track.get('segments', []), key=lambda s: s['s'])
@@ -480,11 +483,16 @@ def erase(directory, request):
     band = track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]
     ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
     out = directory/'clean.tmp.mp4'
+    out.unlink(missing_ok=True)
+    refs_dir = directory/'erase-refs'
+    shutil.rmtree(refs_dir, ignore_errors=True)
+    refs_dir.mkdir()
     size = width * height * 3
     # pass 1: first glyph-free band crop after each segment (a "future" reference), band crops only
+    # crops live on disk (erase-refs/) and are loaded one at a time, so memory is bounded by the current segment
     after, pending, bh = {}, list(range(len(segs))), ry1 - ry0
-    scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps},crop={width}:{bh}:0:{ry0}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={width}:{bh}:0:{ry0}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                            stdout=subprocess.PIPE, stderr=None)
     try:
         m_ = 0
         while pending:
@@ -501,20 +509,26 @@ def erase(directory, request):
                 continue
             crop = np.frombuffer(raw, np.uint8).reshape(bh, width, 3)
             if glyph_mask(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), k).sum() < min_px:
-                crop = crop.copy()
+                np.save(refs_dir/f'{m_}.npy', crop)
                 for i in due:
-                    after[i] = crop
+                    after[i] = m_
                 pending = [i for i in pending if i not in due]
     finally:
         scan.kill(); scan.stdout.close(); scan.wait()
     seg_index = {id(s): i for i, s in enumerate(segs)}
-    reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    writer = subprocess.Popen([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', f'{fps}', '-i', '-',
-                               '-i', source, '-map', '0:v', '-map', '1:a?', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast',
-                               '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', str(out)],
-                              stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                              stdout=subprocess.PIPE, stderr=None)
+    try:
+        writer = subprocess.Popen([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', fps_arg, '-i', '-',
+                                   '-i', source, '-map', '0:v', '-map', '1:a?', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast',
+                                   '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', str(out)],
+                                  stdin=subprocess.PIPE, stderr=None)
+    except BaseException:
+        reader.kill(); reader.stdout.close(); reader.wait()
+        shutil.rmtree(refs_dir, ignore_errors=True)
+        raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
+    loaded = (None, None)
     try:
         while True:
             if n % 100 == 0 and (directory/'cancel.request').exists():
@@ -525,6 +539,9 @@ def erase(directory, request):
             frame = np.frombuffer(raw, np.uint8).reshape(height, width, 3)
             t = n / fps
             while first < len(segs) and segs[first]['e'] + margin <= t:
+                gone = after.pop(first, None)
+                if gone is not None and gone not in after.values():
+                    (refs_dir/f'{gone}.npy').unlink(missing_ok=True)
                 first += 1
             active, upcoming = [], None
             for s in segs[first:]:
@@ -535,7 +552,10 @@ def erase(directory, request):
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if active else None
             refs = []
             if active:
-                refs = [ref_crop, after.get(seg_index[id(max(active, key=lambda s: s['e']))])]
+                want = after.get(seg_index[id(max(active, key=lambda s: s['e']))])
+                if want is not None and loaded[0] != want:
+                    loaded = (want, np.load(refs_dir/f'{want}.npy'))
+                refs = [ref_crop, loaded[1] if want is not None else None]
             done = False
             for s in active:
                 x0, y0, x1, y1 = (max(0, int(s['x0'] - grow)), max(0, int(s['y0'] - grow)),
@@ -567,14 +587,22 @@ def erase(directory, request):
         writer.stdin.close()
         if writer.wait() or n == 0:
             raise RuntimeError('erase encoder failed')
+        reader.stdout.close()
+        expected = float(request.get('duration') or 0) * fps
+        if reader.wait() != 0 or (expected and abs(n - expected) > max(2, 0.02 * expected)):
+            raise RuntimeError(f'erase decode truncated: {n} frames, expected about {expected:.0f}')
     except BaseException:
         reader.kill(); writer.kill(); writer.wait()
         out.unlink(missing_ok=True)
         raise
     finally:
-        reader.stdout.close(); reader.wait()
+        if not reader.stdout.closed:
+            reader.stdout.close()
+        reader.wait()
+        shutil.rmtree(refs_dir, ignore_errors=True)
     os.replace(out, directory/'clean.mp4')
-    write(directory/'erase.json', dict(version=1, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+    write(directory/'erase.json', dict(version=2, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+                                       fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 

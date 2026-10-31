@@ -157,6 +157,11 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(build['has_hardsubs'])
             self.assertEqual(build['asr_cues'],1)
 
+    def _stamp(self, directory, **over):
+        st=(directory/'source.mp4').stat()
+        return dict(dict(version=2,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),fps='25',
+                         source_size=st.st_size,source_mtime_ns=st.st_mtime_ns,frames_touched=1,seconds=1),**over)
+
     def _erase_prepare(self, directory, segments, stamp=None):
         (directory/'source.mp4').write_bytes(b'src')
         p.write(directory/'job.json',dict(source_path='source.mp4',mode='vietsub'))
@@ -166,7 +171,7 @@ class PipelineTests(unittest.TestCase):
         p.write(directory/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=segments))
         if stamp:
             if stamp=='match':
-                stamp=dict(version=1,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),frames_touched=1,seconds=1)
+                stamp=self._stamp(directory)
             (directory/'clean.mp4').write_bytes(b'clean')
             p.write(directory/'erase.json',stamp)
         calls=[]
@@ -193,8 +198,17 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             stale=dict(version=1,source_hash='x',subtrack_hash='y')
             self.assertIn('erase',self._erase_prepare(Path(d),seg,stale))
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            (Path(d)/'source.mp4').write_bytes(b'src')
+            p.write(Path(d)/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            old=self._stamp(Path(d),version=1)  # pre-fix clean.mp4 must regenerate
+            self.assertIn('erase',self._erase_prepare(Path(d),seg,old))
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            (Path(d)/'source.mp4').write_bytes(b'src')
+            p.write(Path(d)/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            self.assertIn('erase',self._erase_prepare(Path(d),seg,self._stamp(Path(d),fps='30000/1001')))
 
-    def _render_cmd(self, directory, clean, blur=True, mode='tm'):
+    def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None):
         (directory/'source.mp4').write_bytes(b'src')
         (directory/'dry.wav').write_bytes(b'x')
         cues=[dict(id='1',start=0,end=1,speaker='s',original='o',text='Xin chào')]
@@ -209,6 +223,7 @@ class PipelineTests(unittest.TestCase):
             p.write(directory/'manifest.json',dict(mode='tm',input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))
         if clean:
             (directory/'clean.mp4').write_bytes(b'c')
+            p.write(directory/'erase.json',self._stamp(directory,**(stamp or {})))
         with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run') as run:
             try:
                 p.render(directory,SimpleNamespace(blur_original=blur),lambda *a:None)
@@ -232,6 +247,13 @@ class PipelineTests(unittest.TestCase):
             plain=(old/'render-filter.txt').read_text()
             self.assertNotIn('cleanv',plain)
             self.assertEqual(plain.count('overlay='),3)  # subtitle mask still used without clean.mp4
+
+    def test_render_ignores_stale_clean_mp4(self):
+        for over,expect in (({},True),(dict(version=1),False),(dict(source_size=1),False),(dict(subtrack_hash='x'),False)):
+            with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+                directory=Path(d)
+                self._render_cmd(directory,True,stamp=over)
+                self.assertEqual('cleanv' in (directory/'render-filter.txt').read_text(),expect,over)
 
     def test_render_without_clean_or_blur_is_unchanged(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
