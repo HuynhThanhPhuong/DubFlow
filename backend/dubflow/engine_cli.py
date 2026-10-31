@@ -74,7 +74,7 @@ def transcribe(directory, request):
     result['timestamp_granularity'] = 'segment'
     write(directory/'source-asr.json', result)
     cues=source_chunks(result,request['duration'])
-    write(directory/'cues.json',cues)
+    write(directory/'source-asr-cues.json',cues)
 
 
 def refs(directory, request):

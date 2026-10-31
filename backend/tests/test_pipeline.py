@@ -96,12 +96,75 @@ class PipelineTests(unittest.TestCase):
             p.write(directory/'regions.json',[])
             p.write(directory/'ocr-complete.json',{})
             def stage(name,directory,settings,payload,**kwargs):
-                self.assertEqual(name,'transcribe')
-                p.write(directory/'cues.json',[dict(id='1',start=0,end=1,speaker='s',original='原文',text='')])
-            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage):
+                if name=='transcribe':
+                    p.write(directory/'source-asr-cues.json',[dict(id='1',start=0,end=1,speaker='s',original='原文',text='')])
+                else:
+                    p.write(directory/'subtrack.json',dict(version=1,segments=[]))
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'audio_rms',return_value=([0.0]*150,.02)):
                 with self.assertRaisesRegex(p.NeedsReview,'tiếng Việt'):
                     p.prepare(directory,SimpleNamespace(),lambda *a:None)
             self.assertEqual(p.read(directory/'cues.json')[0]['original'],'原文')
+
+    def _prepare_source(self, directory, segments, rms, vocals=False):
+        p.write(directory/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+        p.write(directory/'regions.json',[])
+        p.write(directory/'ocr-complete.json',{})
+        if vocals:
+            (directory/'vocals.wav').write_bytes(b'x')
+        calls,rms_paths=[],[]
+        def stage(name,directory,settings,payload,**kwargs):
+            calls.append(name)
+            if name=='transcribe':
+                p.write(directory/'source-asr-cues.json',[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text='')])
+            elif name=='subtrack':
+                p.write(directory/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=segments))
+        def fake_rms(path,*a,**k):
+            rms_paths.append(Path(path).name)
+            return rms,.02
+        with patch.object(p,'probe',return_value=dict(duration=5,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'audio_rms',side_effect=fake_rms):
+            try:
+                p.prepare(directory,SimpleNamespace(),lambda *a:None)
+            except p.NeedsReview:
+                pass
+        return calls,rms_paths
+
+    def test_prepare_builds_ocr_cues_when_hardsubs(self):
+        segs=[dict(s=1.0,e=2.0,x0=1,y0=2,x1=3,y1=4,text='你好吗',confidence=.9,readings=[]),
+              dict(s=3.0,e=4.0,x0=1,y0=2,x1=3,y1=4,text='再见',confidence=.9,readings=[])]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            calls,_=self._prepare_source(directory,segs,[0.0]*250)
+            self.assertEqual(calls[:2],['transcribe','subtrack'])
+            cues=p.read(directory/'cues.json')
+            self.assertEqual([c['id'][:4] for c in cues],['ocr-','ocr-'])
+            build=p.read(directory/'source-build.json')
+            self.assertTrue(build['has_hardsubs'])
+            self.assertEqual((build['ocr_cues'],build['asr_cues']),(2,0))
+
+    def test_prepare_snaps_asr_cues_without_hardsubs(self):
+        rms=[0.0]*250
+        for i in range(60,80): rms[i]=1.0   # speech 1.2s-1.6s
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            _,paths=self._prepare_source(directory,[],rms,vocals=True)
+            self.assertEqual(paths,['vocals.wav'])
+            cues=p.read(directory/'cues.json')
+            self.assertEqual(len(cues),1)
+            self.assertEqual(cues[0]['source'],'asr')
+            self.assertAlmostEqual(cues[0]['start'],1.15,places=2)
+            self.assertAlmostEqual(cues[0]['end'],1.65,places=2)
+            build=p.read(directory/'source-build.json')
+            self.assertFalse(build['has_hardsubs'])
+            self.assertEqual(build['asr_cues'],1)
+
+    def test_prepare_keeps_existing_cues(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            p.write(directory/'cues.json',[dict(id='u',start=0,end=1,speaker='s',original='x',text='y')])
+            calls,_=self._prepare_source(directory,[],[0.0]*10)
+            self.assertNotIn('transcribe',calls)
+            self.assertNotIn('subtrack',calls)
+            self.assertEqual(p.read(directory/'cues.json')[0]['id'],'u')
 
     def test_ass_regions_use_source_coordinates_and_disable_blur(self):
         cues=[dict(start=0,end=1,text='Hello')]

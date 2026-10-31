@@ -175,7 +175,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             last = [time.monotonic()]
             def poll():
                 if emit and time.monotonic()-last[0]>=2:
-                    progress = {'separate':5,'transcribe':20,'ocr':35,'translate':45,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
+                    progress = {'separate':5,'transcribe':20,'subtrack':30,'ocr':35,'translate':45,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
                     emit(stage, f'{stage} running', progress)
                     last[0] = time.monotonic()
             code = wait_owned(process,directory,poll)
@@ -207,16 +207,67 @@ def refine_text_regions(directory, source, meta, settings, emit):
     return merged
 
 
+def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
+    """RMS per 20 ms frame of the mono 16 kHz decode of `path`; returns (rms, hop_seconds)."""
+    import numpy as np
+    data = subprocess.check_output([ffmpeg,'-v','error','-i',str(path),'-ac','1','-ar',str(sr),'-f','f32le','-'])
+    audio = np.frombuffer(data, dtype=np.float32)
+    n = int(sr*frame)
+    count = audio.size // n
+    if not count:
+        return np.zeros(0), frame
+    frames = audio[:count*n].reshape(count, n).astype(np.float64)
+    return np.sqrt((frames**2).mean(1)), frame
+
+def build_source(directory, source, audio, meta, settings, emit, warnings):
+    """ASR cues + burned-in subtitle OCR -> cues.json and source-build.json."""
+    if __package__:
+        from .subtitle_track import build_source_cues, snap_to_speech
+    else:
+        from subtitle_track import build_source_cues, snap_to_speech
+    asr_cues = read(directory/'source-asr-cues.json', [])
+    emit('subtrack', 'Đang đọc sub trên hình', 30)
+    try:
+        engine('subtrack', directory, settings, {'source':str(source), **meta}, emit=emit)
+    except Cancelled:
+        raise
+    except NeedsReview as exc:
+        warnings.append('Chưa đọc được sub trên hình: '+str(exc))
+        write(directory/'subtrack.json', dict(version=1, segments=[]))
+    segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
+    emit('subtrack', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
+    cues = build_source_cues(segments, asr_cues, meta['duration'])
+    if any(c['source'] == 'asr' for c in cues):
+        rms, hop = audio_rms(audio, getattr(settings, 'ffmpeg', None) or 'ffmpeg')
+        snapped = snap_to_speech(cues, rms, hop)
+        merged = []
+        for i, (old, new) in enumerate(zip(cues, snapped)):
+            if old['source'] == 'asr':
+                lo = cues[i-1]['end'] if i else 0.0
+                hi = cues[i+1]['start'] if i+1 < len(cues) else meta['duration']
+                start, end = max(new['start'], lo), min(new['end'], hi)
+                new = dict(new, start=start, end=end) if end > start else old
+                merged.append(new)
+            else:
+                merged.append(old)
+        cues = merged
+    write(directory/'cues.json', cues)
+    write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments),
+        ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
+        mismatches=sum(bool(c.get('source_mismatch')) for c in cues)))
+
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     emit('separating', 'Separating background and original voices', 5)
     if job.get('mode') == 'dub' and (not (directory/'background.wav').exists() or not (directory/'vocals.wav').exists()):
         engine('separate', directory, settings, {'source':str(source)}, emit=emit)
     fresh_transcript = not read(directory/'cues.json', [])
-    if fresh_transcript:
-        emit('transcribing', 'Transcribing source with cached Whisper', 20)
-        engine('transcribe', directory, settings, {'source':str(directory/'vocals.wav') if (directory/'vocals.wav').exists() else str(source), **meta}, emit=emit)
     warnings = []
+    if fresh_transcript:
+        audio = directory/'vocals.wav' if (directory/'vocals.wav').exists() else source
+        emit('transcribing', 'Transcribing source with cached Whisper', 20)
+        engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
+        build_source(directory, source, audio, meta, settings, emit, warnings)
     if not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
         try:
