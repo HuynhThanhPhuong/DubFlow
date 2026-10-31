@@ -236,6 +236,72 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(engine.call_args.args[0],'refs')
 
 
+    def _run_source(self, directory, asr, segments=None, fail_subtrack=False, rms=None, rms_error=None):
+        p.write(directory/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+        p.write(directory/'regions.json',[])
+        p.write(directory/'ocr-complete.json',{})
+        def stage(name,directory,settings,payload,**kwargs):
+            if name=='transcribe':
+                p.write(directory/'source-asr-cues.json',asr)
+            elif name=='subtrack':
+                if fail_subtrack:
+                    raise p.NeedsReview('subtrack failed')
+                p.write(directory/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=segments or []))
+        with patch.object(p,'probe',return_value=dict(duration=8,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'audio_rms',side_effect=rms_error,return_value=(rms or [0.0]*400,.02)):
+            try:
+                result=p.prepare(directory,SimpleNamespace(),lambda *a:None)
+            except p.NeedsReview:
+                result=None
+        return result
+
+    def test_subtrack_failure_falls_back_to_asr_with_warning(self):
+        asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text='')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._run_source(directory,asr,fail_subtrack=True)
+            cues=p.read(directory/'cues.json')
+            self.assertEqual([c['id'] for c in cues],['a1'])
+            build=p.read(directory/'source-build.json')
+            self.assertTrue(build['ocr_failed'])
+            self.assertFalse(build['has_hardsubs'])
+
+    def test_mixed_job_keeps_ocr_times_and_snaps_asr(self):
+        seg=dict(s=1.0,e=2.0,x0=1,y0=2,x1=3,y1=4,text='你好吗',confidence=.9,readings=[])
+        asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text=''),
+             dict(id='a2',start=4.0,end=5.0,speaker='s',original='没有字幕的话',text='')]
+        rms=[0.0]*400
+        for i in range(210,240): rms[i]=1.0   # speech 4.2s-4.8s
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._run_source(directory,asr,segments=[seg],rms=rms)
+            cues=p.read(directory/'cues.json')
+            ocr=[c for c in cues if c['id'].startswith('ocr-')]
+            snapped=[c for c in cues if c['source']=='asr']
+            self.assertEqual((ocr[0]['start'],ocr[0]['end']),(1.0,2.0))
+            self.assertEqual(len(snapped),1)
+            self.assertAlmostEqual(snapped[0]['start'],4.15,places=2)
+            self.assertAlmostEqual(snapped[0]['end'],4.85,places=2)
+            build=p.read(directory/'source-build.json')
+            self.assertTrue(build['has_hardsubs'])
+            self.assertFalse(build['ocr_failed'])
+
+    def test_rms_failure_keeps_unsnapped_cues_with_warning(self):
+        asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text='')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            result=self._run_source(directory,asr,rms_error=RuntimeError('ffmpeg boom'))
+            cues=p.read(directory/'cues.json')
+            self.assertEqual((cues[0]['start'],cues[0]['end']),(1.0,2.0))
+            p.write(directory/'job.json',p.read(directory/'job.json'))
+        # warnings only surface through prepare's return when the transcript gate passes
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            warnings=[]
+            p.write(directory/'source-asr-cues.json',asr)
+            with patch.object(p,'engine',side_effect=lambda *a,**k:p.write(directory/'subtrack.json',dict(version=1,segments=[]))),patch.object(p,'audio_rms',side_effect=RuntimeError('boom')):
+                p.build_source(directory,directory/'s.mp4',directory/'s.mp4',dict(duration=8),SimpleNamespace(),lambda *a:None,warnings)
+            self.assertTrue(any('Whisper' in w for w in warnings))
+
 class MessageTests(unittest.TestCase):
     def test_persisted_messages_and_raw_logs(self):
         from dubflow.messages import translate_message

@@ -210,7 +210,7 @@ def refine_text_regions(directory, source, meta, settings, emit):
 def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
     """RMS per 20 ms frame of the mono 16 kHz decode of `path`; returns (rms, hop_seconds)."""
     import numpy as np
-    data = subprocess.check_output([ffmpeg,'-v','error','-i',str(path),'-ac','1','-ar',str(sr),'-f','f32le','-'])
+    data = subprocess.check_output([ffmpeg,'-v','error','-i',str(path),'-ac','1','-ar',str(sr),'-f','f32le','-'], timeout=600)
     audio = np.frombuffer(data, dtype=np.float32)
     n = int(sr*frame)
     count = audio.size // n
@@ -227,32 +227,43 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         from subtitle_track import build_source_cues, snap_to_speech
     asr_cues = read(directory/'source-asr-cues.json', [])
     emit('subtrack', 'Đang đọc sub trên hình', 30)
+    ocr_failed = False
     try:
         engine('subtrack', directory, settings, {'source':str(source), **meta}, emit=emit)
     except Cancelled:
         raise
     except NeedsReview as exc:
+        ocr_failed = True
         warnings.append('Chưa đọc được sub trên hình: '+str(exc))
         write(directory/'subtrack.json', dict(version=1, segments=[]))
     segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
     emit('subtrack', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
     cues = build_source_cues(segments, asr_cues, meta['duration'])
     if any(c['source'] == 'asr' for c in cues):
-        rms, hop = audio_rms(audio, getattr(settings, 'ffmpeg', None) or 'ffmpeg')
-        snapped = snap_to_speech(cues, rms, hop)
-        merged = []
-        for i, (old, new) in enumerate(zip(cues, snapped)):
-            if old['source'] == 'asr':
-                lo = cues[i-1]['end'] if i else 0.0
-                hi = cues[i+1]['start'] if i+1 < len(cues) else meta['duration']
-                start, end = max(new['start'], lo), min(new['end'], hi)
-                new = dict(new, start=start, end=end) if end > start else old
-                merged.append(new)
-            else:
-                merged.append(old)
-        cues = merged
+        check_cancel(directory)
+        try:
+            rms, hop = audio_rms(audio, getattr(settings, 'ffmpeg', None) or 'ffmpeg')
+            snapped = snap_to_speech(cues, rms, hop)
+            if len(snapped) != len(cues):
+                raise ValueError('snap length mismatch')
+            merged = []
+            for i, (old, new) in enumerate(zip(cues, snapped)):
+                if old['source'] == 'asr':
+                    lo = cues[i-1]['end'] if i else 0.0
+                    hi = cues[i+1]['start'] if i+1 < len(cues) else meta['duration']
+                    start, end = max(new['start'], lo), min(new['end'], hi)
+                    merged.append(dict(new, start=start, end=end) if end > start else old)
+                else:
+                    merged.append(old)
+            cues = merged
+        except Cancelled:
+            raise
+        except Exception:
+            warnings.append('Không căn được biên lời nói; giữ mốc Whisper gốc.')
+    if not cues:
+        warnings.append('Không tìm thấy sub trên hình lẫn lời nói; hãy thêm hoặc nhập cue thủ công.')
     write(directory/'cues.json', cues)
-    write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments),
+    write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues)))
 
