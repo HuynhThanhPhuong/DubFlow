@@ -16,6 +16,12 @@ class Cue(BaseModel):
     overrun: float | None = None
     source_ids: list[str] = Field(default_factory=list, max_length=1000)
     overlap_group: str | None = Field(default=None, max_length=100)
+    source: Literal['ocr', 'asr', 'ocr+asr'] | None = None
+    asr_text: str | None = Field(default=None, max_length=20000)
+    source_agreement: FiniteFloat | None = None
+    source_mismatch: bool | None = None
+    source_partial: bool | None = None
+    box: list[FiniteFloat] | None = Field(default=None, max_length=4)
 
 
 class Character(BaseModel):

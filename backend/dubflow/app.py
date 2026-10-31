@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -141,7 +142,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 raise HTTPException(409, 'Có câu chưa có bản dịch tiếng Việt. Hãy sửa lời hoặc nhập SRT.')
             prev = cue.start
             ids.add(cue.id)
-        return [c.model_dump() for c in cues]
+        optional = ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'box')
+        return [{k: v for k, v in c.model_dump().items() if k not in optional or v is not None} for c in cues]
 
     def dispatch(job_id, action):
         (job_dir(job_id) / 'cancel.request').unlink(missing_ok=True)
@@ -422,8 +424,17 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return values
 
     @app.post('/api/jobs/{job_id}/analyze')
-    def analyze(job_id: str):
+    def analyze(job_id: str, reset_source: int = 0):
         writable(job_id)
+        if reset_source:
+            folder = job_dir(job_id)
+            cues = folder / 'cues.json'
+            if cues.exists():
+                stamp = time.strftime('%Y%m%d-%H%M%S')
+                shutil.copy2(cues, folder / f'cues.before-reset-{stamp}.json')
+            for name in ('cues.json', 'subtrack.json', 'source-build.json', 'source-asr-cues.json'):
+                (folder / name).unlink(missing_ok=True)
+            store.update_job(job_id, cue_count=0)
         return dispatch(job_id, 'analyze')
 
     @app.post('/api/jobs/{job_id}/translate')

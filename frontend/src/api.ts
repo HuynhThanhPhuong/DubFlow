@@ -89,6 +89,8 @@ export const api = {
   ) => request<Job>(`/jobs/${key(id)}`, json("PUT", data)),
   action: (id: string, action: "analyze" | "translate" | "render" | "cancel") =>
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),
+  resetSource: (id: string) =>
+    request<Job>(`/jobs/${key(id)}/analyze?reset_source=1`, json("POST")),
   render: (id:string,kind:'auto'|'draft'|'final')=>request<Job>(`/jobs/${key(id)}/render`,json('POST',{kind})),
   cues: (id: string) => request<Cue[]>(`/jobs/${key(id)}/cues`),
   saveCues: (id: string, cues: Cue[]) =>

@@ -270,6 +270,25 @@ export default function App() {
       setBusy(false);
     }
   }
+  async function resetSource() {
+    if (!job) return;
+    if (dirty) {
+      setError("Hãy lưu lời dịch trước khi xử lý video.");
+      return;
+    }
+    if (!window.confirm("Lời gốc sẽ được dựng lại từ đầu. Bản dịch hiện tại được sao lưu nhưng sẽ không còn trong trình biên tập. Tiếp tục?")) return;
+    setBusy(true);
+    setError("");
+    try {
+      setJob(await api.resetSource(job.id));
+      setNotice("Đã gửi vào hàng đợi xử lý.");
+      setPollKey((k) => k + 1);
+    } catch (e) {
+      showError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function updateJob(patch: { mode?: Mode; voice_id?: string }) {
     if (!job) return;
     if (dirty) {
@@ -436,6 +455,7 @@ export default function App() {
                   Tuỳ chỉnh
                 </Button>
                 <Button variant="primary" disabled={busy || isBusy(currentJob) || dirty} onClick={() => void action("analyze")}><Layers size={16}/>Phân tích video</Button>
+                <Button disabled={busy || isBusy(currentJob) || dirty} onClick={() => void resetSource()}>Phân tích lại lời gốc</Button>
                 <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length} onClick={()=>setExportOpen(true)}>Xuất video</Button>
                 </div>
               </div>
@@ -571,7 +591,7 @@ export default function App() {
                               </span>
                               <span>{cue.speaker==='unconfirmed'?'Chưa rõ giọng':cue.speaker.startsWith('SPK_')?`Giọng ${Number(cue.speaker.slice(4))+1}`:cue.speaker}</span>
                             </div>
-                            {cue.original && <p className="cue-original" lang="zh">{cue.original}</p>}
+                            {cue.original && <p className="cue-original" lang="zh">{cue.original}</p>}{cue.source && <small className="cue-source">{cue.source === "asr" ? "nghe" : cue.source === "ocr" ? "hình" : "hình + nghe"}</small>}{cue.source_mismatch && cue.asr_text && <p className="cue-asr-text" lang="zh">Nghe được: {cue.asr_text}</p>}
                             {!!cue.auto_flags?.length&&<details className="cue-auto-note"><summary>{cue.auto_flags.length} điểm máy đánh dấu</summary>{cue.auto_flags.map((f,j)=><p key={j}>{f}</p>)}</details>}
                             <textarea
                               placeholder="Nhập lời Việt…"

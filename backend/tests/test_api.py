@@ -93,6 +93,54 @@ class ApiTests(unittest.TestCase):
         r = self.client.put(f"/api/jobs/{j['id']}", json={'mode': 'vietsub'})
         self.assertEqual(r.status_code, 409)
 
+    def _job_with_cues(self, status=None):
+        from dubflow.media import atomic_json
+        data = {'title': 'a', 'mode': 'dub', 'duration': 10}
+        if status:
+            data['status'] = status
+        j = self.app.state.store.create_job(data)
+        folder = self.settings.jobs_dir / j['id']
+        folder.mkdir()
+        atomic_json(folder / 'cues.json', [{'id': '0', 'start': 0, 'end': 2, 'speaker': 'm', 'original': '你好', 'text': 'Xin chào', 'source': 'ocr'}])
+        atomic_json(folder / 'subtrack.json', {})
+        atomic_json(folder / 'source-build.json', {'version': 1})
+        return j, folder
+
+    def test_reset_source_backs_up_cues_and_clears_source_files(self):
+        import json
+        j, folder = self._job_with_cues()
+        r = self.client.post(f"/api/jobs/{j['id']}/analyze?reset_source=1")
+        self.assertEqual(r.status_code, 200, r.text)
+        backups = list(folder.glob('cues.before-reset-*.json'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0].read_text(encoding='utf-8'))[0]['text'], 'Xin chào')
+        for name in ('cues.json', 'subtrack.json', 'source-build.json'):
+            self.assertFalse((folder / name).exists(), name)
+
+    def test_analyze_without_reset_keeps_cues(self):
+        j, folder = self._job_with_cues()
+        r = self.client.post(f"/api/jobs/{j['id']}/analyze")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue((folder / 'cues.json').exists())
+        self.assertEqual(list(folder.glob('cues.before-reset-*.json')), [])
+
+    def test_reset_source_refused_while_busy(self):
+        j, folder = self._job_with_cues(status='processing')
+        r = self.client.post(f"/api/jobs/{j['id']}/analyze?reset_source=1")
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue((folder / 'cues.json').exists())
+
+    def test_put_cues_keeps_source_fields(self):
+        import json
+        j, folder = self._job_with_cues()
+        cue = {'id': '0', 'start': 0, 'end': 2, 'speaker': 'm', 'original': '你好', 'text': 'Xin chào', 'source': 'ocr', 'asr_text': '你们好', 'source_agreement': 0.4, 'source_mismatch': True, 'box': [1, 2, 3, 4]}
+        r = self.client.put(f"/api/jobs/{j['id']}/cues", json=[cue])
+        self.assertEqual(r.status_code, 200, r.text)
+        saved = json.loads((folder / 'cues.json').read_text(encoding='utf-8'))[0]
+        for k in ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'box'):
+            self.assertEqual(saved[k], cue[k])
+        self.assertNotIn('source_partial', saved)
+
     def test_origin_cross_site_post_is_blocked(self):
         r = self.client.post('/api/samples/dialogue', headers={'origin': 'https://untrusted.example'})
         self.assertEqual(r.status_code, 403)

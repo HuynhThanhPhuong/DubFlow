@@ -45,6 +45,10 @@ export interface Cue {
   source_ids?: string[];
   overlap_group?: string | null;
   auto_flags?: string[];
+  source?: 'ocr' | 'asr' | 'ocr+asr';
+  asr_text?: string;
+  source_mismatch?: boolean;
+  source_partial?: boolean;
 }
 export interface Region {
   id: string;
