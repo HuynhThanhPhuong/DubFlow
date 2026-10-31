@@ -50,7 +50,10 @@ export function Player({
       setError("Không phát được video. Hãy thử bấm phát lại.");
     }
   };
-  const source = playerSource(job, view === "output" ? "output" : "source");
+  const cleanSource =
+    view === "preview" && job.clean_url ? mediaUrl(job.clean_url) : "";
+  const source =
+    cleanSource || playerSource(job, view === "output" ? "output" : "source");
   useEffect(() => {
     setView(preferred);
     setError("");
@@ -178,6 +181,7 @@ export function Player({
             rect={rect}
             blurOriginal={blurOriginal}
             subtitleStyle={job.subtitle_style}
+            cleanVideo={!!cleanSource}
           />
         )}
         {source && !playing && (

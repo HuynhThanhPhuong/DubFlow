@@ -74,6 +74,33 @@ describe("native player source selection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Xem bản gốc" }));
     expect(screen.queryByText("Nhìn gì thế?")).toBeNull();
   });
+  it("plays clean_url in the preview view and falls back to the source without it", () => {
+    const cues = [
+      { id: "a", start: 0, end: 1, speaker: "m", original: "你好", text: "Xin chào" },
+    ];
+    const { unmount } = render(
+      <Player
+        job={{ ...job, clean_url: "/api/jobs/j/clean?v=1" }}
+        cues={cues}
+        onTime={vi.fn()}
+        seek={{ time: 0.5, token: 1 }}
+      />,
+    );
+    expect(screen.getByLabelText("Video xem trước").getAttribute("src")).toBe(
+      "/api/jobs/j/clean?v=1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Xem bản gốc" }));
+    expect(screen.getByLabelText("Video gốc").getAttribute("src")).toBe(
+      "/api/jobs/j/source",
+    );
+    unmount();
+    render(
+      <Player job={job} cues={cues} onTime={vi.fn()} seek={{ time: 0.5, token: 1 }} />,
+    );
+    expect(screen.getByLabelText("Video xem trước").getAttribute("src")).toBe(
+      "/api/jobs/j/source",
+    );
+  });
   it("does not overlay another Vietnamese layer on an encoded output", () => {
     render(
       <Player

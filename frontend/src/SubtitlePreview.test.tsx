@@ -75,6 +75,18 @@ it("uses OCR time windows for masks/notes and handles overlapping translated dia
   expect(screen.getByText("Câu nữ")).toBeTruthy();
   expect(container.querySelectorAll(".preview-source-mask")).toHaveLength(0);
 });
+it("hides subtitle-kind masks but keeps other masks when playing the clean video", () => {
+  const base = { start: 0, end: 5, enabled: true, x: 100, y: 800, width: 300, height: 40, text: "", translation: "" };
+  const regions = [
+    { ...base, id: "s", kind: "subtitle" as const },
+    { ...base, id: "w", kind: "static" as const },
+  ];
+  const props = { cues: [], now: 1, regions, width: 1920, height: 1080, rect: fitVideoRect(960, 540, 1920, 1080), blurOriginal: true };
+  const { container, rerender } = render(<SubtitlePreview {...props} />);
+  expect(container.querySelectorAll(".preview-source-mask")).toHaveLength(2);
+  rerender(<SubtitlePreview {...props} cleanVideo />);
+  expect(container.querySelectorAll(".preview-source-mask")).toHaveLength(1);
+});
 it("uses the shared Roboto style scaled to the displayed height and the cue box centre", () => {
   const cues = [
     { id: "a", start: 0, end: 2, speaker: "m", original: "x", text: "Xin chào", box: [400, 900, 1000, 1000] },

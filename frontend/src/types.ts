@@ -23,6 +23,7 @@ export interface Job {
   updated_at: string;
   source_url_path: string;
   output_url?: string | null;
+  clean_url?: string | null;
   poster_url?: string | null;
   warnings: string[];
   cue_count: number;

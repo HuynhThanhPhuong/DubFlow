@@ -86,6 +86,7 @@ export function SubtitlePreview({
   rect,
   blurOriginal,
   subtitleStyle,
+  cleanVideo = false,
 }: {
   cues: Cue[];
   now: number;
@@ -95,6 +96,7 @@ export function SubtitlePreview({
   rect: ReturnType<typeof fitVideoRect>;
   blurOriginal: boolean;
   subtitleStyle?: SubtitleStyle | null;
+  cleanVideo?: boolean;
 }) {
   const lyrics = cues.filter((c) => c.text.trim());
   const laneOf = assignLanes(lyrics);
@@ -111,6 +113,7 @@ export function SubtitlePreview({
     .filter(
       (r) =>
         r.enabled &&
+        !(cleanVideo && r.kind === "subtitle") &&
         [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
         r.width > 0 &&
         r.height > 0,

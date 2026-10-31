@@ -26,6 +26,7 @@ from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
 from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest
 from . import review
+from .pipeline import erase_current
 from .store import Store
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
@@ -104,6 +105,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['poster_url'] = base + '/poster' if (folder / 'poster.jpg').exists() else None
         value['output_url'] = base + '/output' if (folder / 'output.mp4').exists() and job['status'] == 'done' else None
         value['dry_url'] = base + '/audio' if (folder / 'dry.wav').exists() else None
+        clean = folder / 'clean.mp4'
+        value['clean_url'] = None
+        if clean.is_file() and job.get('source_path') and erase_current(folder, job['source_path'], full=False):
+            value['clean_url'] = f'{base}/clean?v={clean.stat().st_mtime_ns}'
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
 
@@ -538,6 +543,14 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if not path.is_file() or not path.resolve().is_relative_to(job_dir(job_id).resolve()):
             raise HTTPException(404, 'Không tìm thấy video nguồn.')
         return FileResponse(path)
+
+    @app.get('/api/jobs/{job_id}/clean')
+    def clean_video(job_id: str):
+        j = job_or_404(job_id)
+        path = job_dir(job_id) / 'clean.mp4'
+        if not path.is_file() or not j.get('source_path') or not erase_current(job_dir(job_id), j['source_path'], full=False):
+            raise HTTPException(404, 'Chưa có video đã xóa sub gốc.')
+        return FileResponse(path, media_type='video/mp4')
 
     @app.get('/api/jobs/{job_id}/poster')
     def get_poster(job_id: str):

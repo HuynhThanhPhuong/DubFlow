@@ -24,6 +24,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((folder/'thumbnails/0.jpg').stat().st_mtime_ns,stamp)
         self.assertEqual(self.client.get(f"/api/jobs/{j['id']}/thumbnails/8").status_code,404)
 
+    def test_clean_url_only_when_clean_video_is_current(self):
+        from dubflow.media import atomic_json
+        from dubflow.pipeline import ERASE_VERSION, file_hash
+        j=self.app.state.store.create_job({'title':'c','mode':'vietsub','duration':2})
+        folder=self.settings.jobs_dir/j['id']; folder.mkdir()
+        source=folder/'source.mp4'; source.write_bytes(b'src')
+        self.app.state.store.update_job(j['id'],source_path=str(source))
+        self.assertIsNone(self.client.get(f"/api/jobs/{j['id']}").json()['clean_url'])
+        self.assertEqual(self.client.get(f"/api/jobs/{j['id']}/clean").status_code,404)
+        (folder/'clean.mp4').write_bytes(b'0123456789'); atomic_json(folder/'subtrack.json',{'segments':[]})
+        st=source.stat()
+        atomic_json(folder/'erase.json',{'version':ERASE_VERSION,'source_size':st.st_size,'source_mtime_ns':st.st_mtime_ns,'subtrack_hash':file_hash(folder/'subtrack.json')})
+        url=self.client.get(f"/api/jobs/{j['id']}").json()['clean_url']
+        self.assertTrue(url.startswith(f"/api/jobs/{j['id']}/clean?v="))
+        r=self.client.get(url,headers={'Range':'bytes=2-4'})
+        self.assertEqual((r.status_code,r.content),(206,b'234'))
+        atomic_json(folder/'subtrack.json',{'segments':[1]})
+        self.assertIsNone(self.client.get(f"/api/jobs/{j['id']}").json()['clean_url'])
+
     def test_zip_excludes_parts_from_an_older_render(self):
         from dubflow.media import atomic_json
         j = self.app.state.store.create_job({'title':'a','mode':'vietsub','status':'done'})
