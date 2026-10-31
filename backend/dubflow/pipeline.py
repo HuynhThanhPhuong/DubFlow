@@ -144,14 +144,23 @@ def probe(source, settings):
     data = json.loads(run([getattr(settings, 'ffprobe', 'ffprobe'), '-v','error','-show_format','-show_streams','-of','json', source]))
     video = next(s for s in data['streams'] if s['codec_type'] == 'video')
     info = dict(duration=float(data['format']['duration']), width=int(video['width']), height=int(video['height']))
-    try:
-        rate = str(video.get('avg_frame_rate') or video.get('r_frame_rate'))
-        num, den = rate.split('/')
-        if float(den) and float(num) / float(den) > 0:
-            info['fps'] = float(num) / float(den)
-            info['fps_arg'] = rate
-    except (ValueError, AttributeError):
-        pass
+    for key in ('avg_frame_rate', 'r_frame_rate'):  # '0/0' (unknown) falls through to the next field
+        try:
+            rate = str(video.get(key))
+            num, den = rate.split('/')
+            if float(den) and float(num) / float(den) > 0:
+                info['fps'] = float(num) / float(den)
+                info['fps_arg'] = rate
+                break
+        except (ValueError, AttributeError):
+            continue
+    try:  # length of the video stream itself: the container may be longer when audio outlasts the video
+        info['video_duration'] = float(video['duration'])
+    except (KeyError, TypeError, ValueError):
+        try:
+            info['video_frames'] = int(video['nb_frames'])
+        except (KeyError, TypeError, ValueError):
+            pass
     return info
 
 def context(job_dir, settings):
@@ -312,6 +321,10 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings):
     hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'),
                   source_size=stat.st_size, source_mtime_ns=stat.st_mtime_ns)
     emit('erase', 'Đang xóa sub gốc trên hình', 38)
+    fps_value = float(meta.get('fps') or 25)
+    expected = (meta.get('video_frames') if not meta.get('video_duration') and meta.get('video_frames')
+                else round(float(meta.get('video_duration') or meta['duration']) * fps_value))
+    hashes['expected_frames'] = int(expected)
     clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
     try:
         engine('erase', directory, settings, {'source':str(source), **meta, **hashes}, emit=emit)

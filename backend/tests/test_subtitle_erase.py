@@ -116,22 +116,31 @@ class TemporalFillTest(unittest.TestCase):
 
 @unittest.skipUnless(cv2 is not None, "cv2 not available")
 class EraseStageTest(unittest.TestCase):
-    def _run(self, duration, tmp):
+    def _run(self, duration, tmp, audio=2, expected=None):
         import json, shutil, subprocess, sys
         from pathlib import Path
-        ff = shutil.which('ffmpeg') or 'D:/OmniVoice/tools/ffmpeg.exe'
-        if not Path(ff).exists():
+        import os
+        ff = os.getenv('DUBFLOW_FFMPEG') or shutil.which('ffmpeg')
+        if not ff:
+            try:
+                from dubflow.config import Settings
+                ff = Settings().ffmpeg  # same resolution as the backend settings
+            except Exception:
+                ff = None
+        if not ff or not (Path(ff).exists() or shutil.which(ff)):
             self.skipTest('ffmpeg unavailable')
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
         import engine_cli
         d = Path(tmp)
         src = d / 'source.mp4'
-        subprocess.run([ff, '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=gray:s=320x240:r=25:d=2', '-f', 'lavfi', '-i', 'sine=d=2',
-                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', str(src)], check=True)
+        subprocess.run([ff, '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=gray:s=320x240:r=25:d=2', '-f', 'lavfi', '-i', f'sine=d={audio}',
+                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(src)], check=True)
         (d / 'subtrack.json').write_text(json.dumps(dict(version=1, fps=10, band=[170, 220],
             segments=[dict(s=.5, e=1.2, x0=60, y0=180, x1=260, y1=210, text='a')])))
         req = dict(ffmpeg=ff, source=str(src), width=320, height=240, fps_arg='25', duration=duration,
                    source_hash='h', subtrack_hash='s', source_size=1, source_mtime_ns=2)
+        if expected:
+            req['expected_frames'] = expected
         engine_cli.erase(d, req)
         return d
 
@@ -144,6 +153,13 @@ class EraseStageTest(unittest.TestCase):
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
             self.assertEqual((stamp['version'], stamp['fps']), (2, '25'))
+
+    def test_audio_longer_than_video_is_not_truncation(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            # container duration is 3 s (audio) but the video stream has 50 frames; expected comes from the video stream
+            d = self._run(3.0, tmp, audio=3, expected=50)
+            self.assertTrue((d / 'clean.mp4').is_file())
 
     def test_truncated_decode_is_rejected(self):
         import tempfile

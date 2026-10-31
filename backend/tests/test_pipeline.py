@@ -265,6 +265,19 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([Path(cmd[i+1]).name for i,x in enumerate(cmd) if x=='-i'],['source.mp4','dry.wav'])
             self.assertNotIn('cleanv',(b/'render-filter.txt').read_text())
 
+    def _probe(self, video):
+        out=json.dumps(dict(format=dict(duration='5'),streams=[dict(codec_type='video',width=320,height=240,**video)]))
+        with patch.object(p,'run',return_value=out):
+            return p.probe('x.mp4',SimpleNamespace(ffprobe='ffprobe'))
+
+    def test_probe_fps_falls_back_when_avg_rate_is_unknown(self):
+        info=self._probe(dict(avg_frame_rate='0/0',r_frame_rate='30000/1001',duration='4.5'))
+        self.assertAlmostEqual(info['fps'],29.97,places=2)
+        self.assertEqual(info['fps_arg'],'30000/1001')
+        self.assertEqual(info['video_duration'],4.5)
+        self.assertNotIn('fps',self._probe(dict(avg_frame_rate='0/0',r_frame_rate='0/0')))
+        self.assertEqual(self._probe(dict(avg_frame_rate='25/1',nb_frames='120'))['video_frames'],120)
+
     def test_prepare_keeps_existing_cues(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory=Path(d)

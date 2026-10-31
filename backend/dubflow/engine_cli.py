@@ -531,6 +531,8 @@ def erase(directory, request):
     loaded = (None, None)
     try:
         while True:
+            # cancel.request is normally handled by the pipeline's wait_owned (kills this process and raises Cancelled);
+            # exiting non-zero here is only the race fallback, and wait_owned re-checks cancel.request after exit.
             if n % 100 == 0 and (directory/'cancel.request').exists():
                 raise RuntimeError('cancelled')
             raw = reader.stdout.read(size)
@@ -588,7 +590,7 @@ def erase(directory, request):
         if writer.wait() or n == 0:
             raise RuntimeError('erase encoder failed')
         reader.stdout.close()
-        expected = float(request.get('duration') or 0) * fps
+        expected = float(request.get('expected_frames') or float(request.get('duration') or 0) * fps)
         if reader.wait() != 0 or (expected and abs(n - expected) > max(2, 0.02 * expected)):
             raise RuntimeError(f'erase decode truncated: {n} frames, expected about {expected:.0f}')
     except BaseException:
