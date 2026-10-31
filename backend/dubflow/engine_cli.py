@@ -460,6 +460,96 @@ def subtrack(directory, request):
     write(directory/'subtrack.json', out)
 
 
+def erase(directory, request):
+    """Remove burned-in subtitle glyphs from every frame -> clean.mp4 (video re-encoded, source audio muxed)."""
+    import subprocess
+    import cv2
+    import numpy as np
+    from subtitle_erase import fill_frame, glyph_mask
+    directory = Path(directory)
+    ff, source = request['ffmpeg'], request['source']
+    width, height = int(request['width']), int(request['height'])
+    fps = float(request.get('fps') or 25)
+    started = time.monotonic()
+    track = read(directory/'subtrack.json', {})
+    segs = sorted(track.get('segments', []), key=lambda s: s['s'])
+    k = max(width, height) / 1920
+    grow, frame_dt = int(round(14 * k)), 1 / fps
+    spread = np.ones((2 * int(round(9 * k)) + 1,) * 2, np.uint8)  # cover the dark outline/shadow, not only the white strokes
+    margin, min_px = 0.25, max(10, 30 * k * k)
+    band = track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]
+    ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
+    out = directory/'clean.tmp.mp4'
+    size = width * height * 3
+    reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    writer = subprocess.Popen([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', f'{fps}', '-i', '-',
+                               '-i', source, '-map', '0:v', '-map', '1:a?', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast',
+                               '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', str(out)],
+                              stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    ref_crop, touched, n, first = None, 0, 0, 0
+    try:
+        while True:
+            if n % 100 == 0 and (directory/'cancel.request').exists():
+                raise RuntimeError('cancelled')
+            raw = reader.stdout.read(size)
+            if len(raw) < size:
+                break
+            frame = np.frombuffer(raw, np.uint8).reshape(height, width, 3)
+            t = n / fps
+            while first < len(segs) and segs[first]['e'] + margin <= t:
+                first += 1
+            active, upcoming = [], None
+            for s in segs[first:]:
+                if s['s'] - margin > t:
+                    upcoming = s['s']
+                    break
+                active.append(s)
+            gray = None
+            ref = None
+            if active:
+                if ref_crop is not None:
+                    ref = frame.copy()
+                    ref[ry0:ry1] = ref_crop
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            done = False
+            for s in active:
+                x0, y0, x1, y1 = (max(0, int(s['x0'] - grow)), max(0, int(s['y0'] - grow)),
+                                  min(width, int(s['x1'] + grow)), min(height, int(s['y1'] + grow)))
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                part = glyph_mask(gray[y0:y1, x0:x1], k)
+                grown = cv2.dilate(part.astype(np.uint8), spread) > 0
+                # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
+                if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
+                    continue
+                mask = np.zeros((height, width), bool)
+                mask[y0:y1, x0:x1] = grown
+                frame = fill_frame(frame, mask, (x0, y0, x1, y1), ref)
+                done = True
+            if done:
+                touched += 1
+            else:
+                near = upcoming is not None and upcoming - t <= 2
+                band_clean = near and glyph_mask(cv2.cvtColor(frame[ry0:ry1], cv2.COLOR_BGR2GRAY), k).sum() < min_px
+                # a clean reference must not contain subtitle glyphs (the detector starts late)
+                ref_crop = frame[ry0:ry1].copy() if band_clean else (ref_crop if near else None)
+            writer.stdin.write(np.ascontiguousarray(frame).tobytes())
+            n += 1
+        writer.stdin.close()
+        if writer.wait() or n == 0:
+            raise RuntimeError('erase encoder failed')
+    except BaseException:
+        reader.kill(); writer.kill(); writer.wait()
+        out.unlink(missing_ok=True)
+        raise
+    finally:
+        reader.stdout.close(); reader.wait()
+    os.replace(out, directory/'clean.mp4')
+    write(directory/'erase.json', dict(version=1, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3)))
+
+
 def translate(directory, request):
     from translation import translate_files
     translate_files(directory, request)
@@ -471,7 +561,7 @@ def main():
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,translate=translate)
+    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,translate=translate)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers

@@ -157,6 +157,92 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(build['has_hardsubs'])
             self.assertEqual(build['asr_cues'],1)
 
+    def _erase_prepare(self, directory, segments, stamp=None):
+        (directory/'source.mp4').write_bytes(b'src')
+        p.write(directory/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+        p.write(directory/'regions.json',[])
+        p.write(directory/'ocr-complete.json',{})
+        p.write(directory/'cues.json',[dict(id='u',start=0,end=1,speaker='s',original='x',text='y')])
+        p.write(directory/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=segments))
+        if stamp:
+            if stamp=='match':
+                stamp=dict(version=1,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),frames_touched=1,seconds=1)
+            (directory/'clean.mp4').write_bytes(b'clean')
+            p.write(directory/'erase.json',stamp)
+        calls=[]
+        def stage(name,directory,settings,payload,**kwargs):
+            calls.append(name)
+        with patch.object(p,'probe',return_value=dict(duration=5,width=320,height=240)),patch.object(p,'engine',side_effect=stage):
+            try:
+                p.prepare(directory,SimpleNamespace(ocr_python=sys.executable),lambda *a:None)
+            except p.NeedsReview:
+                pass
+        return calls
+
+    def test_prepare_runs_erase_only_when_subtrack_has_segments(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            self.assertIn('erase',self._erase_prepare(Path(d),seg))
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            self.assertNotIn('erase',self._erase_prepare(Path(d),[]))
+
+    def test_prepare_skips_erase_when_hashes_match(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            self.assertNotIn('erase',self._erase_prepare(Path(d),seg,'match'))
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            stale=dict(version=1,source_hash='x',subtrack_hash='y')
+            self.assertIn('erase',self._erase_prepare(Path(d),seg,stale))
+
+    def _render_cmd(self, directory, clean, blur=True, mode='tm'):
+        (directory/'source.mp4').write_bytes(b'src')
+        (directory/'dry.wav').write_bytes(b'x')
+        cues=[dict(id='1',start=0,end=1,speaker='s',original='o',text='Xin chào')]
+        p.write(directory/'job.json',dict(source_path='source.mp4',mode=mode))
+        p.write(directory/'cues.json',cues)
+        p.write(directory/'subtrack.json',dict(version=1,segments=[dict(s=0,e=1,x0=1,y0=1,x1=5,y1=5,text='a')]))
+        p.write(directory/'regions.json',[
+            dict(id='s',kind='subtitle',enabled=True,x=10,y=200,width=100,height=20,start=0,end=3),
+            dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3),
+            dict(id='t',kind='transient',enabled=True,x=0,y=100,width=60,height=20,start=1,end=2,text='x',translation='y')])
+        if mode=='tm':
+            p.write(directory/'manifest.json',dict(mode='tm',input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))
+        if clean:
+            (directory/'clean.mp4').write_bytes(b'c')
+        with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run') as run:
+            try:
+                p.render(directory,SimpleNamespace(blur_original=blur),lambda *a:None)
+            except Exception:
+                pass
+            return run.call_args_list[0].args[0] if run.call_args_list else None
+
+    def test_render_uses_clean_video_and_skips_subtitle_masks(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            cmd=self._render_cmd(directory,True)
+            self.assertIsNotNone(cmd)
+            inputs=[cmd[i+1] for i,a in enumerate(cmd) if a=='-i']
+            self.assertEqual([Path(x).name for x in inputs],['source.mp4','dry.wav','clean.mp4'])
+            graph=(directory/'render-filter.txt').read_text()
+            self.assertIn('[2:v]null[cleanv]',graph)
+            self.assertIn('[0:a]volume',graph)
+            self.assertEqual(graph.count('overlay='),2)  # static + transient only
+            old=Path(d)/'old'; old.mkdir()
+            self._render_cmd(old,False)
+            plain=(old/'render-filter.txt').read_text()
+            self.assertNotIn('cleanv',plain)
+            self.assertEqual(plain.count('overlay='),3)  # subtitle mask still used without clean.mp4
+
+    def test_render_without_clean_or_blur_is_unchanged(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            a=Path(d)/'a'; a.mkdir()
+            cmd=self._render_cmd(a,False)
+            self.assertEqual([Path(cmd[i+1]).name for i,x in enumerate(cmd) if x=='-i'],['source.mp4','dry.wav'])
+            b=Path(d)/'b'; b.mkdir()
+            cmd=self._render_cmd(b,True,blur=False)
+            self.assertEqual([Path(cmd[i+1]).name for i,x in enumerate(cmd) if x=='-i'],['source.mp4','dry.wav'])
+            self.assertNotIn('cleanv',(b/'render-filter.txt').read_text())
+
     def test_prepare_keeps_existing_cues(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory=Path(d)

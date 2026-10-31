@@ -143,7 +143,14 @@ def run(cmd, cwd=None):
 def probe(source, settings):
     data = json.loads(run([getattr(settings, 'ffprobe', 'ffprobe'), '-v','error','-show_format','-show_streams','-of','json', source]))
     video = next(s for s in data['streams'] if s['codec_type'] == 'video')
-    return dict(duration=float(data['format']['duration']), width=int(video['width']), height=int(video['height']))
+    info = dict(duration=float(data['format']['duration']), width=int(video['width']), height=int(video['height']))
+    try:
+        num, den = str(video.get('avg_frame_rate') or video.get('r_frame_rate')).split('/')
+        if float(den) and float(num) / float(den) > 0:
+            info['fps'] = float(num) / float(den)
+    except (ValueError, AttributeError):
+        pass
+    return info
 
 def context(job_dir, settings):
     directory = Path(job_dir).resolve()
@@ -163,7 +170,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
     # Secret API key travels via process environment, never persistent stage input.
     api_key = payload.pop('translation_api_key', '')
     request = directory/'engine-request.json'
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'translation_python' if stage == 'translate' else 'ocr_python' if stage in ('ocr','subtrack') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'translation_python' if stage == 'translate' else 'ocr_python' if stage in ('ocr','subtrack','erase') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', DUBFLOW_TRANSLATION_KEY=api_key, PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
@@ -175,7 +182,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             last = [time.monotonic()]
             def poll():
                 if emit and time.monotonic()-last[0]>=2:
-                    progress = {'separate':5,'transcribe':20,'subtrack':30,'ocr':35,'translate':45,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
+                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'translate':45,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
                     emit(stage, f'{stage} running', progress)
                     last[0] = time.monotonic()
             code = wait_owned(process,directory,poll)
@@ -272,6 +279,26 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
+def erase_subtitles(directory, source, meta, settings, emit, warnings):
+    """Build clean.mp4 (hard subtitles removed) once per (source, subtrack) pair."""
+    track = read(directory/'subtrack.json', {}) or {}
+    clean, stamp = directory/'clean.mp4', directory/'erase.json'
+    if not track.get('segments') or not getattr(settings, 'ocr_python', None):
+        return
+    hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'))
+    done = read(stamp, {})
+    if clean.exists() and done.get('version') == 1 and all(done.get(k) == v for k, v in hashes.items()):
+        return
+    emit('erase', 'Đang xóa sub gốc trên hình', 38)
+    clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
+    try:
+        engine('erase', directory, settings, {'source':str(source), **meta, **hashes}, emit=emit)
+    except Cancelled:
+        raise
+    except NeedsReview as exc:
+        clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
+        warnings.append('Chưa xóa được sub gốc trên hình: '+str(exc))
+
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     emit('separating', 'Separating background and original voices', 5)
@@ -284,6 +311,7 @@ def prepare(job_dir, settings, emit):
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
         build_source(directory, source, audio, meta, settings, emit, warnings)
+    erase_subtitles(directory, source, meta, settings, emit, warnings)
     if not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
         try:
@@ -590,6 +618,11 @@ def render(job_dir, settings, emit):
         from subtitle_mask import refined_regions, mask_filters
     graph, last = [], '0:v'
     mask_regions = refined_regions(regions,meta['width'],meta['height'],meta['duration'])
+    use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
+                 and bool((read(directory/'subtrack.json', {}) or {}).get('segments')))
+    if use_clean:  # subtitle glyphs are already erased in clean.mp4; logo/transient masks still apply
+        mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle']
+        last = 'cleanv'
     mask_inputs = 0
     if getattr(settings,'blur_original',True):
         paths = {}
@@ -631,6 +664,10 @@ def render(job_dir, settings, emit):
         bg_gain = getattr(settings,'original_gain',bg_gain)
         graph.append(f'[{bed}]volume={bg_gain}[bg];[{voice}]volume={vo_gain}[vo];[bg][vo]amix=inputs=2:normalize=0:duration=longest,loudnorm=I=-17:TP=-2.5:LRA=11[a]')
         amap = '[a]'
+    if use_clean:  # video from clean.mp4 as the last input; audio inputs above are unchanged
+        cmd += ['-i',str(directory/'clean.mp4')]
+        clean_index = 1 + mask_inputs + (2 if mode == 'dub' else 0 if mode == 'vietsub' else 1)
+        graph.insert(0, f'[{clean_index}:v]null[cleanv]')
     # Keep the graph off the Windows command line (WinError 206 on OCR-heavy clips).
     (directory/'render-filter.txt').write_text(';'.join(graph),encoding='utf-8')
     cmd += ['-filter_complex_script','render-filter.txt','-map','[vout]','-map',amap,'-t',str(meta['duration']),'-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-movflags','+faststart','output.mp4']
