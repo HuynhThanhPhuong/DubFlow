@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines, build_source_cues, snap_to_speech
+from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines, build_source_cues, snap_to_speech, glyph_sig, merge_same_text
 
 
 def sig(seed):  # nét chữ khác nhau theo seed
@@ -29,6 +29,47 @@ class SegmentTests(unittest.TestCase):
         s=segment_frames(fr,10)[0]
         self.assertEqual((s['x0'],s['y0'],s['x1'],s['y1']),(5,20,1400,1050))
         self.assertEqual(len(s['frames']),4)
+    def test_horizontally_jittered_sig_stays_one_segment(self):
+        base=np.zeros((16,128),bool); base[:,30:90]=sig(3)[:,30:90]
+        shifted=np.zeros_like(base); shifted[:,36:96]=base[:,30:90]   # x-jitter ~ 5% of width
+        fr=[dict(t=i/10,box=(1,2,3,4),sig=base if i%2 else shifted) for i in range(10)]
+        self.assertEqual(len(segment_frames(fr,10)),1)
+    def test_large_shift_or_other_glyphs_still_split(self):
+        base=np.zeros((16,128),bool); base[:,10:60]=sig(3)[:,10:60]
+        far=np.zeros_like(base); far[:,70:120]=base[:,10:60]  # moved far away: a different line
+        fr=[dict(t=i/10,box=(1,2,3,4),sig=base) for i in range(5)]+[dict(t=.5+i/10,box=(1,2,3,4),sig=far) for i in range(5)]
+        self.assertEqual(len(segment_frames(fr,10)),2)
+
+
+class GlyphSigTests(unittest.TestCase):
+    def test_sig_is_absolute_so_stray_pixels_do_not_change_text_cells(self):
+        t=np.zeros((32,120),bool); t[4:28,60:100]=True
+        a=glyph_sig(t,60,99,cell=4,rows=16)
+        t2=t.copy(); t2[30,10:12]=True
+        b=glyph_sig(t2,10,99,cell=4,rows=16)    # box widened to the left by a speck
+        self.assertEqual(a.shape,b.shape)
+        self.assertTrue(np.array_equal(a[:,15:25],b[:,15:25]))
+        self.assertEqual(int(a.sum()),int(a[:,15:25].sum()))
+        self.assertEqual(a[:,:15].sum(),0)
+
+
+class MergeSameTextTests(unittest.TestCase):
+    def S(self,s,e,text,x0=10,x1=20,readings=None):
+        return dict(s=s,e=e,x0=x0,y0=0,x1=x1,y1=5,text=text,confidence=1.0,readings=readings if readings is not None else [text])
+    def test_adjacent_identical_text_merges(self):
+        out=merge_same_text([self.S(50.3,50.7,'你做梦',443,634),self.S(50.8,51.6,'你做，梦',389,634)])
+        self.assertEqual(len(out),1)
+        self.assertEqual((out[0]['s'],out[0]['e'],out[0]['x0'],out[0]['x1']),(50.3,51.6,389,634))
+        self.assertEqual(len(out[0]['readings']),2)
+    def test_different_text_stays_split(self):
+        out=merge_same_text([self.S(0,1,'你做梦'),self.S(1,2,'有它在')])
+        self.assertEqual(len(out),2)
+    def test_gap_over_limit_stays_split(self):
+        self.assertEqual(len(merge_same_text([self.S(0,1,'你好'),self.S(1.2,2,'你好')])),2)
+    def test_empty_text_never_merges(self):
+        self.assertEqual(len(merge_same_text([self.S(0,1,''),self.S(1,2,'')])),2)
+    def test_chain_of_three_merges(self):
+        self.assertEqual(len(merge_same_text([self.S(0,1,'a好'),self.S(1.1,2,'a好'),self.S(2.1,3,'a好')])),1)
 
 
 class VoteTests(unittest.TestCase):
@@ -98,7 +139,7 @@ class BuildSourceCuesTests(unittest.TestCase):
         out=build_source_cues([seg(0,2,'你好')],[asr(1,0,4,'你好谢谢再见')],10)
         extra=[c for c in out if c['source']=='asr']
         self.assertEqual(len(extra),1); self.assertTrue(extra[0]['source_partial'])
-        self.assertEqual((extra[0]['start'],extra[0]['end'],extra[0]['original']),(2,4,'你好谢谢再见'))
+        self.assertEqual((extra[0]['start'],extra[0]['end'],extra[0]['original']),(2,4,'谢谢再见'))
     def test_partial_asr_gap_skipped_when_short(self):
         out=build_source_cues([seg(0,3.5,'你好')],[asr(1,0,4,'你好谢谢')],10)
         self.assertEqual([c['source'] for c in out],['ocr+asr'])
@@ -118,6 +159,45 @@ class BuildSourceCuesTests(unittest.TestCase):
     def test_speaker_from_largest_overlap(self):
         out=build_source_cues([seg(0,3,'你好谢谢')],[asr(1,0,1,'你好','A'),asr(2,1,3,'谢谢','B')],10)
         self.assertEqual(out[0]['speaker'],'B')
+
+
+class OcrEmptyTests(unittest.TestCase):
+    def test_empty_ocr_filled_from_asr_slice_and_flagged(self):
+        out=build_source_cues([seg(0,1,'')],[asr(1,0,1,'删')],10)
+        self.assertEqual(out[0]['original'],'删'); self.assertTrue(out[0]['ocr_empty'])
+        self.assertFalse(out[0]['source_mismatch'])
+    def test_empty_ocr_uses_only_overlapping_slice(self):
+        out=build_source_cues([seg(0,1,''),seg(1,2,'谢谢')],[asr(1,0,2,'你好谢谢')],10)
+        self.assertEqual(out[0]['original'],'你好'); self.assertTrue(out[0]['ocr_empty'])
+        self.assertNotIn('ocr_empty',out[1])
+    def test_empty_ocr_without_asr_stays_empty_but_flagged(self):
+        out=build_source_cues([seg(0,1,'')],[],10)
+        self.assertEqual(out[0]['original'],''); self.assertTrue(out[0]['ocr_empty'])
+
+
+class DuplicatePartialTests(unittest.TestCase):
+    def test_partial_cue_keeps_only_unmatched_han(self):
+        out=build_source_cues([seg(0,2,'你好')],[asr(1,0,4,'你好谢谢再见')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual(len(extra),1); self.assertEqual(extra[0]['original'],'谢谢再见')
+        self.assertEqual((extra[0]['start'],extra[0]['end']),(2,4)); self.assertTrue(extra[0]['source_partial'])
+    def test_partial_cue_dropped_when_ocr_already_has_the_text(self):
+        out=build_source_cues([seg(1.2,2.0,'校长')],[asr(1,0,2,'校长')],10)
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_partial_cue_dropped_when_less_than_two_han_left(self):
+        out=build_source_cues([seg(1,2.5,'你好谢谢')],[asr(1,0,2.5,'你好谢谢啊')],10)
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_mostly_uncovered_asr_cue_repeating_ocr_text_is_dropped(self):
+        out=build_source_cues([seg(0,2.1,'你才永远是我的人')],[asr(1,2,6,'你才永远是我的人')],10)   # OCR covers <30% of the ASR cue
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_mostly_uncovered_asr_cue_keeps_unseen_text_and_full_time(self):
+        out=build_source_cues([seg(0,2.1,'你好')],[asr(1,2,6,'你好谢谢再见')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([(c['start'],c['end'],c['original']) for c in extra],[(2,6,'谢谢再见')])
+    def test_partial_cue_matches_against_all_covering_ocr_cues(self):
+        out=build_source_cues([seg(0,1,'你好'),seg(1,2,'谢谢')],[asr(1,0,4,'你好谢谢再见吧')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([c['original'] for c in extra],['再见吧'])
 
 
 class SnapTests(unittest.TestCase):

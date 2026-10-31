@@ -265,7 +265,8 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
     write(directory/'cues.json', cues)
     write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
-        mismatches=sum(bool(c.get('source_mismatch')) for c in cues)))
+        mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
+        ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues)))
 
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)

@@ -133,11 +133,11 @@ class ApiTests(unittest.TestCase):
     def test_put_cues_keeps_source_fields(self):
         import json
         j, folder = self._job_with_cues()
-        cue = {'id': '0', 'start': 0, 'end': 2, 'speaker': 'm', 'original': '你好', 'text': 'Xin chào', 'source': 'ocr', 'asr_text': '你们好', 'source_agreement': 0.4, 'source_mismatch': True, 'box': [1, 2, 3, 4]}
+        cue = {'id': '0', 'start': 0, 'end': 2, 'speaker': 'm', 'original': '你好', 'text': 'Xin chào', 'source': 'ocr', 'asr_text': '你们好', 'source_agreement': 0.4, 'source_mismatch': True, 'ocr_empty': True, 'box': [1, 2, 3, 4]}
         r = self.client.put(f"/api/jobs/{j['id']}/cues", json=[cue])
         self.assertEqual(r.status_code, 200, r.text)
         saved = json.loads((folder / 'cues.json').read_text(encoding='utf-8'))[0]
-        for k in ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'box'):
+        for k in ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'ocr_empty', 'box'):
             self.assertEqual(saved[k], cue[k])
         self.assertNotIn('source_partial', saved)
 

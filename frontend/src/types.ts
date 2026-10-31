@@ -49,6 +49,7 @@ export interface Cue {
   asr_text?: string;
   source_mismatch?: boolean;
   source_partial?: boolean;
+  ocr_empty?: boolean;
 }
 export interface Region {
   id: string;

@@ -46,6 +46,13 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([f['cue_ids'] for f in flags],[['m']]); self.assertEqual(flags[0]['severity'],'review')
         self.assertEqual(flags[0]['message'],'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
 
+    def test_ocr_empty_flag(self):
+        write(self.folder/'cues.json',[dict(self.cues[0],id='e',ocr_empty=True),dict(self.cues[0],id='ok',start=3,end=4)])
+        report=review.quality_report(self.folder,self.job)
+        flags=[f for f in report['flags'] if f['code']=='OCR_EMPTY']
+        self.assertEqual([f['cue_ids'] for f in flags],[['e']]); self.assertEqual(flags[0]['severity'],'review')
+        self.assertEqual(flags[0]['message'],'Không đọc được chữ trên hình; lời gốc tạm lấy từ lời nghe được.')
+
     def test_snapshot_is_immutable_and_ocr_does_not_replace_asr(self):
         state = review.load_state(self.folder)
         self.assertEqual(state['source_cues'][0]['original'], '有她在')

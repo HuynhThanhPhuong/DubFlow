@@ -142,7 +142,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 raise HTTPException(409, 'Có câu chưa có bản dịch tiếng Việt. Hãy sửa lời hoặc nhập SRT.')
             prev = cue.start
             ids.add(cue.id)
-        optional = ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'box')
+        optional = ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'ocr_empty', 'box')
         return [{k: v for k, v in c.model_dump().items() if k not in optional or v is not None} for c in cues]
 
     def dispatch(job_id, action):

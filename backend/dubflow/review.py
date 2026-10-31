@@ -158,6 +158,8 @@ def quality_report(folder, job, state=None):
             flag('LANGUAGE_SUSPECT',[c['id']], 'Câu có dấu hiệu là tiếng Anh; cần kiểm tra ngôn ngữ. Đây chỉ là sàng lọc.')
         if c.get('source_mismatch'):
             flag('SOURCE_MISMATCH',[c['id']], 'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
+        if c.get('ocr_empty'):
+            flag('OCR_EMPTY',[c['id']], 'Không đọc được chữ trên hình; lời gốc tạm lấy từ lời nghe được.')
         if c.get('source_partial'):
             flag('ASR_PARTIAL',[c['id']], 'Có lời nghe được nằm ngoài sub trên hình; kiểm tra có thiếu câu không.')
         source_numbers=re.findall(r'\d+(?:[.,]\d+)?',c.get('original',''))

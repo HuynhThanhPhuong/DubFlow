@@ -21,6 +21,7 @@ class Cue(BaseModel):
     source_agreement: FiniteFloat | None = None
     source_mismatch: bool | None = None
     source_partial: bool | None = None
+    ocr_empty: bool | None = None
     box: list[FiniteFloat] | None = Field(default=None, max_length=4)
 
 

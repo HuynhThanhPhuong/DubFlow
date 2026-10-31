@@ -352,7 +352,7 @@ def subtrack(directory, request):
     import cv2
     import numpy as np
     import subprocess
-    from subtitle_track import auto_band, order_lines, segment_frames, static_rows, vote_text
+    from subtitle_track import auto_band, glyph_sig, merge_same_text, order_lines, segment_frames, static_rows, vote_text
     directory = Path(directory)
     ff, source = request['ffmpeg'], request['source']
     width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
@@ -392,10 +392,10 @@ def subtrack(directory, request):
     out['band'] = [y0, y1]
     h = y1 - y0
     frames = []
-    for k, g in enumerate(frames_of(fps, y0, h)):
+    for n, g in enumerate(frames_of(fps, y0, h)):
         t = trace(g)
         cols = np.where(t.sum(0) >= 2)[0]
-        item = dict(t=k / fps, box=None, sig=None)
+        item = dict(t=n / fps, box=None, sig=None)
         frames.append(item)
         if t.sum() < min_px or not len(cols):
             continue
@@ -411,37 +411,52 @@ def subtrack(directory, request):
             if x0 - x > gap: break
             x0 = x
         item['box'] = (int(x0), y0, int(x1), y1)
-        item['sig'] = cv2.resize(t[:, x0:x1 + 1].astype(np.float32), (128, 16), interpolation=cv2.INTER_AREA) > .15
+        item['sig'] = glyph_sig(t, int(x0), int(x1), cell=max(2, round(3 * k)))
     segments = segment_frames(frames, fps)
     skip = {id(s) for s in static_rows(segments, duration)}
     segments = [s for s in segments if id(s) not in skip]
 
     reader = None
-    for seg in segments:
-        if reader is None:
-            from rapidocr_onnxruntime import RapidOCR
-            reader = RapidOCR(det_limit_side_len=736, det_limit_type='max', intra_op_num_threads=2, inter_op_num_threads=1,
-                              det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
-        readings = []
-        span = seg['e'] - seg['s']
-        for q in (.25, .5, .75):
-            at = max(0., min(seg['s'] + span * q, duration - .05))
-            raw = subprocess.run([ff, '-v', 'error', '-ss', f'{at:.3f}', '-i', source, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-            if len(raw) != width * height * 3:
-                continue
-            image = np.frombuffer(raw, np.uint8).reshape(height, width, 3)
-            cx0, cx1 = max(0, seg['x0'] - 8), min(width, seg['x1'] + 8)
-            cy0, cy1 = max(0, seg['y0'] - 8), min(height, seg['y1'] + 8)
-            result, _ = reader(np.ascontiguousarray(image[cy0:cy1, cx0:cx1]))
+
+    def read_frame(at):
+        raw = subprocess.run([ff, '-v', 'error', '-ss', f'{at:.3f}', '-i', source, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        if len(raw) != width * height * 3:
+            return None
+        return np.frombuffer(raw, np.uint8).reshape(height, width, 3)
+
+    def read_crops(seg, frames_, pad):
+        """OCR of the box crop (upscaled 2x, cubic) on each sampled frame -> readings."""
+        out_ = []
+        for image in frames_:
+            cx0, cx1 = max(0, seg['x0'] - pad), min(width, seg['x1'] + pad)
+            cy0, cy1 = max(0, seg['y0'] - pad), min(height, seg['y1'] + pad)
+            crop = np.ascontiguousarray(image[cy0:cy1, cx0:cx1])
+            crop = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            result, _ = reader(crop)
             lines = [(min(xs), min(ys), max(xs), max(ys), text.strip())
                      for box, text, score in (result or []) if score >= .6 and text.strip()
                      for xs, ys in [zip(*box)]]
             if lines:
-                readings.append(order_lines(lines))
+                out_.append(order_lines(lines))
+        return out_
+
+    for seg in segments:
+        if reader is None:
+            from rapidocr_onnxruntime import RapidOCR
+            reader = RapidOCR(det_limit_side_len=1472, det_limit_type='max', intra_op_num_threads=2, inter_op_num_threads=1,
+                              det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
+        span = seg['e'] - seg['s']
+        images = [im for im in (read_frame(max(0., min(seg['s'] + span * q, duration - .05))) for q in (.1, .3, .5, .7, .9))
+                  if im is not None]
+        readings = read_crops(seg, images, 8)
         text, ratio = vote_text(readings)
+        if not text:  # single glyph / tight crop: retry once with more context around the box
+            readings = read_crops(seg, images, 40)
+            text, ratio = vote_text(readings)
         out['segments'].append(dict(s=round(seg['s'], 3), e=round(seg['e'], 3), x0=seg['x0'], y0=seg['y0'], x1=seg['x1'], y1=seg['y1'],
                                     text=text, confidence=round(ratio, 3), readings=readings))
+    out['segments'] = merge_same_text(out['segments'])
     write(directory/'subtrack.json', out)
 
 

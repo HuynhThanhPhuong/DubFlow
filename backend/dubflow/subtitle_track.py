@@ -10,6 +10,39 @@ def _iou(a, b):
     return 1.0 if union == 0 else float(np.logical_and(a, b).sum() / union)
 
 
+def _span(a):
+    cols = np.where(a.any(0))[0]
+    return int(cols[-1] - cols[0] + 1) if cols.size else 0
+
+
+def _iou_shift(a, b, tol=.12):
+    """Max IoU of two sigs over horizontal shifts of up to `tol` of the glyph width (no wrap-around)."""
+    best = _iou(a, b)
+    if best >= 1.0 or a.shape != b.shape:
+        return best
+    m = int(np.ceil(tol * max(_span(a), _span(b))))
+    w = a.shape[1]
+    total = int(a.sum()) + int(b.sum())
+    for d in range(1, min(m, w - 1) + 1):
+        for x, y in ((a[:, d:], b[:, :w - d]), (a[:, :w - d], b[:, d:])):
+            inter = int(np.logical_and(x, y).sum())
+            best = max(best, inter / (total - inter) if total > inter else 1.0)
+    return best
+
+
+def glyph_sig(trace, x0, x1, cell=3, rows=32):
+    """Bool signature of the text pixels in columns x0..x1 on a grid anchored to the band (not to the box),
+    so a box widened by a stray speck does not rescale or move the glyphs. trace: bool (h, width)."""
+    t = np.zeros(trace.shape, dtype=float)
+    t[:, x0:x1 + 1] = trace[:, x0:x1 + 1]
+    h, w = t.shape
+    ri = np.unique(np.linspace(0, h, min(rows, h) + 1).astype(int)[:-1])
+    ci = np.arange(0, w, cell)
+    hit = np.add.reduceat(np.add.reduceat(t, ri, axis=0), ci, axis=1)
+    area = np.add.reduceat(np.add.reduceat(np.ones_like(t), ri, axis=0), ci, axis=1)
+    return hit / area > .15
+
+
 def segment_frames(frames, fps, min_len=.3, max_gap=2, change_iou=.5):
     """frames: [{t, box|None, sig|None}] -> [{s, e, x0, y0, x1, y1, frames}] (sig = bool 16x128)."""
     step = 1 / fps
@@ -23,7 +56,7 @@ def segment_frames(frames, fps, min_len=.3, max_gap=2, change_iou=.5):
             continue
         sig = f.get('sig')
         if cur is not None and (gap > max_gap or (sig is not None and cur['sig'] is not None
-                                                  and _iou(sig, cur['sig']) < change_iou)):
+                                                  and _iou_shift(sig, cur['sig']) < change_iou)):
             cur = None
         gap = 0
         t = float(f['t'])
@@ -43,6 +76,28 @@ def segment_frames(frames, fps, min_len=.3, max_gap=2, change_iou=.5):
 def _key(text):
     text = unicodedata.normalize('NFKC', text)
     return ''.join(c for c in text if unicodedata.category(c)[0] not in 'PZC')
+
+
+def merge_same_text(segments, max_gap=.15):
+    """Merge neighbouring segments whose voted text is identical (same key as vote_text) and that are at most
+    `max_gap` s apart: one sentence cut by a mask/box glitch. Empty text never merges."""
+    out = []
+    for sg in sorted(segments, key=lambda x: (x['s'], x['e'])):
+        prev = out[-1] if out else None
+        k = _key(sg.get('text', ''))
+        if prev is not None and k and k == _key(prev['text']) and sg['s'] - prev['e'] <= max_gap + 1e-9:
+            n0, n1 = len(prev['readings']), len(sg['readings'])
+            prev.update(e=max(prev['e'], sg['e']), x0=min(prev['x0'], sg['x0']), y0=min(prev['y0'], sg['y0']),
+                        x1=max(prev['x1'], sg['x1']), y1=max(prev['y1'], sg['y1']),
+                        readings=prev['readings'] + sg['readings'],
+                        confidence=round((prev['confidence'] * n0 + sg['confidence'] * n1) / max(1, n0 + n1), 3))
+            if len(sg['text']) > len(prev['text']):
+                prev['text'] = sg['text']
+            if 'frames' in prev and 'frames' in sg:
+                prev['frames'] = prev['frames'] + sg['frames']
+        else:
+            out.append(dict(sg))
+    return out
 
 
 def vote_text(readings):
@@ -116,7 +171,9 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
 
     OCR cues get source_mismatch = source_agreement < mismatch. An ASR cue partly covered by OCR is
     kept (full original, verbatim) over its largest uncovered interval when that is >= .8 s
-    (source_partial=True); otherwise it is skipped."""
+    (source_partial=True) with only the Han characters the covering OCR cues do not already contain
+    (fewer than 2 left: skipped). An OCR segment whose text came out empty takes the overlapping ASR slice
+    as `original` and gets ocr_empty=True so it is reviewed (an empty original blocks SRT export)."""
     segs = sorted(segments, key=lambda s: (s['s'], s['e']))
     asrs = sorted(asr_cues, key=lambda c: (c['start'], c['end']))
     out = []
@@ -135,11 +192,17 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
             parts.append(han[int(round((a - c['start']) / d * len(han))):int(round((b - c['start']) / d * len(han)))])
         asr_text = ''.join(parts)
         best = max(hits, key=lambda h: h[1])[0] if hits else None
-        cue = dict(id=f'ocr-{i:06}', start=s, end=e, original=sg['text'], text='',
+        text = sg['text']
+        empty = not _key(text)
+        if empty:
+            text = asr_text
+        cue = dict(id=f'ocr-{i:06}', start=s, end=e, original=text, text='',
                    speaker=best['speaker'] if best else 'unconfirmed', status='needs_review',
                    source='ocr+asr' if hits else 'ocr', source_ids=[c['id'] for c, _ in hits] or [f'ocr-{i:06}'],
-                   box=[sg['x0'], sg['y0'], sg['x1'], sg['y1']], source_agreement=_agreement(sg['text'], asr_text))
+                   box=[sg['x0'], sg['y0'], sg['x1'], sg['y1']], source_agreement=_agreement(text, asr_text))
         cue['source_mismatch'] = cue['source_agreement'] < mismatch
+        if empty:
+            cue['ocr_empty'] = True
         if hits:
             cue['asr_text'] = asr_text
         out.append(cue)
@@ -158,11 +221,29 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
             gaps.append((pos, c['end']))
         cov = d - sum(b - a for a, b in gaps)
         if cov / d < uncovered:
-            out.append(dict(c, source='asr', source_agreement=1.0))
-            continue
-        a, b = max(gaps, key=lambda g: g[1] - g[0], default=(0, 0))
-        if b - a >= .8 - 1e-9:
-            out.append(dict(c, start=a, end=b, source='asr', source_agreement=1.0, source_partial=True))
+            start, end, partial = c['start'], c['end'], False
+        else:
+            start, end = max(gaps, key=lambda g: g[1] - g[0], default=(0, 0))
+            partial = True
+            if end - start < .8 - 1e-9:
+                continue
+        han = chinese(c['original'])
+        seen = chinese(''.join(o['original'] for o in out
+                               if o['source'] != 'asr' and _overlap(o['start'], o['end'], c['start'], c['end']) > 1e-9))
+        if seen:  # keep only what the OCR cues covering this ASR cue do not already say
+            matched = set()
+            for blk in SequenceMatcher(None, han, seen, autojunk=False).get_matching_blocks():
+                matched.update(range(blk.a, blk.a + blk.size))
+            rest = ''.join(ch for j, ch in enumerate(han) if j not in matched)
+            if len(rest) < 2:
+                continue
+            original = rest
+        else:
+            original = c['original']
+        new = dict(c, start=start, end=end, original=original, source='asr', source_agreement=1.0)
+        if partial:
+            new['source_partial'] = True
+        out.append(new)
     return sorted(out, key=lambda c: (c['start'], c['end']))
 
 
