@@ -1,0 +1,91 @@
+.review-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.review-summary {
+  margin: 0;
+  padding: 10px 12px;
+  background: #f1f0ff;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.review-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.review-tabs button {
+  border: 1px solid #d9dff0;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: white;
+  color: #33415d;
+  cursor: pointer;
+}
+.review-tabs button[aria-selected="true"] {
+  background: #efedff;
+  color: #4338ca;
+  border-color: #a9a2ff;
+}
+.review-body {
+  max-height: 44vh;
+  overflow: auto;
+  min-height: 140px;
+}
+.review-item {
+  padding: 10px 12px;
+  border: 1px solid #dce2ee;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.review-item p {
+  font-size: 13px;
+  margin: 5px 0;
+}
+.review-panel label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #46516b;
+}
+.review-panel input,
+.review-panel select,
+.review-panel textarea {
+  width: 100%;
+  min-width: 0;
+}
+.review-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.review-panel .dialog-foot {
+  margin-top: 0;
+}
+.review-panel summary {
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.review-item small {
+  color: #68738a;
+}
+.review-panel .review-reconfirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.review-panel .review-reconfirm input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.export-review-note {
+  font-size: 13px;
+  margin: 12px 0;
+  padding: 10px;
+  background: #f3f2ff;
+  border-radius: 8px;
+}

@@ -1,0 +1,48 @@
+.subtitle-preview-stage {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+  user-select: none;
+}
+.vietnamese-preview,
+.preview-translated-note {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: 92%;
+  text-align: center;
+  white-space: pre-line;
+  font-family: Arial, sans-serif;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #fff;
+  text-shadow: none;
+  z-index: 2;
+}
+.vietnamese-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.vietnamese-preview > span,
+.preview-translated-note {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  overflow-wrap: anywhere;
+  box-decoration-break: clone;
+}
+.preview-source-mask {
+  position: absolute;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background: transparent;
+  border-radius: 0;
+  z-index: 1;
+}
+.studio-app .movie-frame > .video-play-overlay {
+  z-index: 3;
+}

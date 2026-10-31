@@ -1,0 +1,18 @@
+﻿DUBFLOW - MỞ WEB BẰNG CÁCH BẤM ĐÚP
+
+1. Lần đầu hoặc sau khi cập nhật: BUILD-VA-START-DUBFLOW.cmd
+   Tự build, khởi động web và mở trình duyệt.
+
+2. Dùng hằng ngày: START-DUBFLOW.cmd
+   Mở web. Nếu web đã chạy thì mở lại trang, không khởi động lại.
+
+3. Chỉ build: BUILD-DUBFLOW.cmd
+
+4. Dừng web: STOP-DUBFLOW.cmd
+   Tác vụ chưa xong sẽ được đưa lại vào hàng đợi khi mở web lần sau.
+
+Địa chỉ: http://127.0.0.1:8765
+Log: data\logs\api.err.log
+Nếu gặp lỗi, cửa sổ sẽ giữ lại thông báo. Không cần mở source code hay gõ lệnh.
+BUILD-VA-START sẽ chặn khởi động lại nếu còn video đang xử lý. Hãy chờ video xong rồi bấm lại.
+Máy hiện tại đã có môi trường cần thiết; đây là bộ chạy local, không phải bản portable cho máy mới.

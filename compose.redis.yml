@@ -1,0 +1,10 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - dubflow-redis:/data
+    command: redis-server --appendonly yes
+volumes:
+  dubflow-redis:

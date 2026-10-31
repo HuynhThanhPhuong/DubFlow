@@ -1,0 +1,16 @@
+node_modules/
+frontend/dist/
+backend/.venv/
+backend/**/__pycache__/
+backend/tests/.tmp/
+data/
+.env
+*.log
+repo-tests/
+outputs/
+tmp/
+.cache/
+.superpowers/
+bench/runs/
+ui-preview/
+frontend/tsconfig.tsbuildinfo

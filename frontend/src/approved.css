@@ -1,0 +1,83 @@
+/* Approved studio layout: media workspace first, bounded lists with pagination. */
+.studio-app{background:#f6f7fb;color:#273449;min-height:100dvh}
+.studio-app .simple-header{height:66px;min-height:66px;padding:0 3vw;gap:22px}
+.studio-app .simple-header nav{gap:23px}.studio-app .simple-header .brand{font-size:25px}
+.studio-app .button:not(.media-button)>svg,.studio-app .mode-line button>svg{display:none}
+.studio-app .button:not(.media-button){gap:0}.studio-app .button{min-height:38px}
+.studio-app .title-edit-button{display:block;border:0;background:none;padding:0;text-align:left;max-width:100%;color:var(--ink)}
+.studio-app .title-edit-button:hover h1{color:var(--accent)}
+.editable-title{font-size:22px;font-weight:650;letter-spacing:-.6px;width:min(650px,100%);min-height:37px;padding:4px 8px;border-color:#aab5ef}
+.editor-membership{display:flex;align-items:center;gap:8px;color:#8793a8;font-size:10px;margin:0 0 7px;min-width:0}
+.editor-membership>a{color:#6676b6}.editor-membership select{min-height:27px;max-width:235px;font-size:10px;padding:3px 7px;background:#fff;border-color:#e5e9f3}
+.editor-membership label{display:flex;flex-direction:row;align-items:center;gap:5px}.editor-membership input{width:54px;min-height:27px;padding:3px 7px;font-size:10px}
+.spacer{margin-left:auto}.studio-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:9px;background:white;margin-bottom:10px;flex-shrink:0;overflow:hidden}
+.studio-workflow>div{padding:8px 13px;min-width:0}.studio-workflow>div+div{border-left:1px solid var(--line)}.studio-workflow b{display:block;font-size:11px;font-weight:600}.studio-workflow small{display:block;font-size:10px;color:var(--muted);margin-top:2px}.studio-workflow .current{background:#fafaff}
+.studio-pagination{display:flex;align-items:center;gap:9px;padding:8px 12px;flex-shrink:0;font-size:10px;color:#8996af;min-height:42px}
+.studio-pagination>span{margin-right:auto}.studio-pagination>button{border:1px solid #dfe5f2;background:white;color:#7483ad;border-radius:5px;font-size:10px;min-height:28px;padding:4px 9px;transition:background .15s}
+.studio-pagination>button:hover:not(:disabled){background:#eef2ff;color:var(--accent)}.studio-pagination b{font-weight:500}
+.simple-script>.studio-pagination{border-top:1px solid var(--line)}
+.studio-app .sentence{min-height:0;flex:1;padding:10px 12px;align-items:stretch}
+.studio-app .line-copy{display:flex;flex-direction:column;min-height:0}.studio-app .line-copy>textarea{flex:1;resize:none;min-height:32px;padding:3px 0;font-size:12px;line-height:1.65}
+.cue-original{font-size:11px;color:#9da8b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:5px 0 2px}
+.studio-app .cue-details{font-size:10px}.studio-app .cue-details[open]{max-height:190px;overflow:auto;flex-shrink:0}.studio-app .cue-details summary{padding:3px 0}.studio-app .cue-details input{min-height:29px;font-size:10px;padding:4px 6px}
+.studio-app .script-head{padding:12px 15px;min-height:50px;flex-shrink:0}.studio-app .script-head h2{font-size:14px}.studio-app .script-head>span{font-size:10px}
+.studio-app .script-footer{justify-content:flex-start;gap:8px;padding:8px 11px;flex-shrink:0;min-height:51px;border-top:1px solid var(--line)}
+.studio-app .script-footer .button{min-height:33px;font-size:11px;padding:7px 11px}
+.editor-bottom{display:flex;gap:12px;align-items:center;flex-shrink:0;margin-top:9px;min-width:0}
+.editor-bottom .project-notes{margin:0;flex:1;font-size:10px}.editor-bottom .project-notes summary{padding:7px 10px}.editor-bottom .editor-actions{margin:0;padding:0;font-size:10px;min-width:0}.editor-actions small{font-size:10px;overflow-wrap:anywhere}
+.export-label{display:block;color:#8c98ae;font-size:11px;margin:15px 0 6px}.export-destination{background:#f5f7ff;border:1px solid #e1e6f7;padding:12px;border-radius:7px;overflow-wrap:anywhere;color:#556ab2;font-size:12px;margin-bottom:14px}
+.file-picker{display:flex;align-items:center;gap:10px;border:1px solid #dfe5f2;background:#fbfcff;border-radius:8px;padding:5px;width:100%;min-width:0;min-height:42px;text-align:left}
+.file-picker>.button{margin:0!important;flex-shrink:0;min-height:30px;padding:6px 11px;font-size:11px;background:#eef2ff;border-color:#dce4fb;color:#5667b9}
+.file-picker>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:#8c98af}
+.studio-app .media-button{display:inline-flex;gap:0}.studio-app .media-button>svg{display:block}
+.studio-app .toast-copy small{display:none}.studio-app .toast-close{min-width:36px;width:auto;font-size:10px;padding:5px 8px}
+@media(min-width:901px){
+ .studio-app{height:100dvh;overflow:hidden}.studio-app .simple-main{height:calc(100dvh - 66px);max-width:1580px;margin:auto;padding:16px 24px 13px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+ .studio-app .simple-title{margin-bottom:7px;min-height:43px;flex-shrink:0}.studio-app .simple-title h1{font-size:23px}.studio-app .simple-title p{font-size:10px;margin-top:3px}
+ .studio-app .modebar{margin-bottom:9px;min-height:38px;flex-shrink:0}.studio-app .mode-line button{min-height:32px;padding:6px 15px;font-size:11px}
+ .studio-app .simple-work{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) minmax(295px,.43fr);gap:15px;align-items:stretch}
+ .studio-app .video-column{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;gap:9px}
+ .studio-app .simple-player{display:flex;flex-direction:column;min-height:0;padding:9px}.studio-app .player-head{min-height:29px;margin:0 0 4px;flex-shrink:0}.studio-app .player-head .button{min-height:28px;font-size:10px;padding:4px 7px}
+ .studio-app .movie-frame{flex:1;min-height:0;height:auto;aspect-ratio:auto}.studio-app .movie-frame video{height:100%;min-height:0}
+ .studio-app .system-controls{flex-shrink:0;min-height:35px;padding-top:5px}.studio-app .system-controls .button{min-height:30px;min-width:31px}
+ .studio-app .simple-timeline{flex-shrink:0}.studio-app .timeline-tools{padding:2px 10px;min-height:31px}.studio-app .timeline-tools>span{font-size:10px}.studio-app .timeline-tools .button{min-height:27px;font-size:10px}
+ .studio-app .timeline-body{padding:2px 9px 6px}.studio-app .film-lane{height:36px}.studio-app .ruler{padding:2px 0 4px;font-size:9px}.studio-app .track{margin:4px 0;font-size:10px}.studio-app .unavailable{padding:4px 7px;font-size:9px}.studio-app .cue-lane{height:27px}.studio-app .cue-lane button{height:23px}
+ .studio-app .simple-script{display:flex;height:100%;max-height:none;min-height:0;overflow:hidden}.studio-app .sentences{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;max-height:none}
+ .studio-app .job-progress{padding:6px 10px;margin:0 0 8px;font-size:11px;flex-shrink:0}.studio-app .job-progress .button{min-height:28px;padding:4px 8px;font-size:10px}
+ .studio-app .project-list{flex:1;min-height:0;overflow:hidden}.studio-app .project-row{padding:11px 13px;min-height:79px}.studio-app .project-row img{width:65px;height:45px}.studio-app .project-row h2{font-size:13px}.studio-app .project-row p{font-size:10px}.studio-app .project-row .button{font-size:10px;min-height:31px;padding:6px 10px}
+ .studio-app .welcome{flex:1;min-height:0;padding:30px}
+}
+@media(max-width:900px){.studio-app .simple-header{height:auto;min-height:65px;gap:12px}.studio-app .simple-main{padding:17px}.editor-membership{flex-wrap:wrap}.editor-membership .spacer{display:none}.studio-workflow>div{padding:7px}.studio-workflow b{font-size:9px}.studio-workflow small{font-size:9px}.editor-bottom{flex-wrap:wrap}.editor-bottom .project-notes{min-width:100%}.studio-app .sentences{display:flex;flex-direction:column;min-height:320px}.studio-app .simple-script{min-height:440px}.studio-app .line-copy>textarea{min-height:50px}}
+
+@media(min-width:901px){
+ .studio-app .studio-page{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:0}
+ .studio-app .studio-heading{margin-bottom:12px;flex-shrink:0}.studio-app .studio-heading h1{font-size:23px}.studio-app .studio-heading p{font-size:12px}
+ .studio-app .studio-toolbar{margin:8px 0 12px;flex-shrink:0}.studio-app .studio-toolbar input,.studio-app .studio-toolbar select{min-height:35px;padding:6px 10px;font-size:12px}
+ .studio-app .studio-collection-grid{flex:1;min-height:0;grid-auto-rows:1fr;align-content:stretch}.studio-app .studio-collection-card{display:flex;flex-direction:column}.studio-app .studio-cover{flex:1;min-height:110px;height:auto}.studio-app .studio-card-body{padding:10px 14px}.studio-app .studio-card-body>p{min-height:0;margin-bottom:8px}
+ .studio-app .studio-voice-layout{flex:1;min-height:0;align-items:stretch;gap:16px}.studio-app .studio-voice-layout>section{display:flex;flex-direction:column;min-height:0}.studio-app .studio-voice-layout>section>div:nth-child(2){flex:1;min-height:0;display:flex;flex-direction:column}.studio-app .studio-voice-row{flex:1;min-height:0;padding:10px 14px}.studio-app .studio-voice-detail{gap:12px;padding:17px;align-content:start;overflow:auto}.studio-app .studio-voice-detail blockquote{max-height:110px;overflow:auto}
+ .studio-app .studio-audio-dock{margin-top:10px;padding:8px 14px;flex-shrink:0}.studio-app .studio-job-list{flex:1;min-height:0}.studio-app .studio-summary{padding:12px;margin-bottom:10px}
+ .studio-app .studio-settings-layout{flex:1;min-height:0;grid-template-columns:165px minmax(0,1fr) 195px;gap:18px;align-items:start}.studio-app .studio-settings-panel{padding:17px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-content:start;max-height:100%;overflow:auto}.studio-app .studio-settings-panel>h2,.studio-app .studio-settings-panel>.studio-notice,.studio-app .studio-settings-panel>.studio-actions,.studio-app .studio-settings-panel>small,.studio-app .studio-settings-panel>p{grid-column:1/-1}.studio-app .studio-settings-panel .studio-field{font-size:12px;gap:5px}.studio-app .studio-settings-panel input:not([type=checkbox]),.studio-app .studio-settings-panel select{min-height:36px;padding:7px 9px;font-size:12px}.studio-app .studio-option{padding:10px;font-size:12px}.studio-app .studio-notice{padding:10px;font-size:12px}
+}
+@media(prefers-reduced-motion:reduce){.studio-app *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+@media(min-width:901px){.studio-app .studio-voice-detail{gap:9px;padding:14px}.studio-app .studio-voice-detail blockquote{padding:10px;max-height:90px}.studio-app .studio-voice-detail .studio-form{gap:8px}}
+
+/* Settings: independent footer and horizontal, equal-height checkbox cards. */
+.studio-app .studio-settings-panel > label { margin-top: 0; }
+.studio-app .studio-settings-panel > .studio-settings-wide,
+.studio-app .studio-settings-panel > .studio-option,
+.studio-app .studio-settings-checks,
+.studio-app .studio-settings-footer { grid-column: 1 / -1; }
+.studio-app .studio-settings-checks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.studio-app .studio-settings-panel .studio-option { display: flex; flex-direction: row; align-items: center; gap: 10px; min-height: 48px; margin: 0; box-sizing: border-box; cursor: pointer; }
+.studio-app .studio-settings-panel .studio-option > input[type="checkbox"] { margin: 0; width: 17px; height: 17px; min-height: 0; padding: 0; flex: 0 0 17px; }
+.studio-app .studio-settings-panel .studio-option > span { min-width: 0; line-height: 1.5; }
+.studio-app .studio-settings-panel .studio-option small { margin-top: 3px; }
+.studio-app .studio-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px; }
+.studio-app .studio-settings-footer > small { margin-right: auto; }
+.studio-app .studio-settings-footer > .button { flex: 0 0 auto; align-self: center; height: 38px; min-height: 38px; padding: 8px 16px; }
+@media(max-width:720px) { .studio-app .studio-settings-checks { grid-template-columns: 1fr; } }
+
+.studio-app .studio-settings-panel { gap: 10px; }
+.studio-app .studio-settings-panel .studio-option:has(small) { align-items: flex-start; }
+.studio-app .studio-settings-panel .studio-option:has(small) > input[type="checkbox"] { margin-top: 1px; }
