@@ -10,8 +10,10 @@ _SAVE_LOCK=threading.RLock()
 
 if __package__:
     from .pipeline import read, write, cache_key, file_hash
+    from .subtitle_style import overflows
 else:
     from pipeline import read, write, cache_key, file_hash
+    from subtitle_style import overflows
 
 STATE_FIELDS = ('characters', 'assignments', 'address_rules', 'scene_context', 'omissions')
 VOLATILE = {'status','asr_edits','take_url','take_path','path','delay','overrun'}
@@ -170,6 +172,8 @@ def quality_report(folder, job, state=None):
             flag('OUTPUT_METADATA',[c['id']], 'Bản dịch có thể chứa nhãn do model thêm.')
         if e-s<.5 or len(text)/(e-s)>20 or any(len(line)>48 for line in text.splitlines()):
             flag('READABILITY',[c['id']], 'Câu ngắn hoặc khó đọc trong thời lượng hiện tại; ngưỡng chỉ để sàng lọc.')
+        if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height'])):
+            flag('LINES_OVERFLOW',[c['id']], 'Câu quá dài, vượt 2 dòng sub; nên rút gọn lời Việt.')
         assignment=current_assignment(c,state)
         if job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):
             flag('SPEAKER_UNCONFIRMED',[c['id']], 'Nhân vật nói chưa chắc chắn; hệ thống cần phân nhóm giọng hoặc sửa nhãn ngay ở Lời dịch.')

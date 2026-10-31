@@ -46,6 +46,16 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([f['cue_ids'] for f in flags],[['m']]); self.assertEqual(flags[0]['severity'],'review')
         self.assertEqual(flags[0]['message'],'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
 
+    def test_lines_overflow_flag(self):
+        long=' '.join(['Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn']*2)
+        write(self.folder/'cues.json',[dict(self.cues[0],id='long',text=long),dict(self.cues[0],id='ok',start=3,end=4)])
+        report=review.quality_report(self.folder,dict(self.job,width=1920,height=1080))
+        flags=[f for f in report['flags'] if f['code']=='LINES_OVERFLOW']
+        self.assertEqual([f['cue_ids'] for f in flags],[['long']])
+        self.assertEqual(flags[0]['severity'],'review')
+        self.assertEqual(flags[0]['message'],'Câu quá dài, vượt 2 dòng sub; nên rút gọn lời Việt.')
+        self.assertNotIn('LINES_OVERFLOW',[f['code'] for f in review.quality_report(self.folder,self.job)['flags']])
+
     def test_ocr_empty_flag(self):
         write(self.folder/'cues.json',[dict(self.cues[0],id='e',ocr_empty=True),dict(self.cues[0],id='ok',start=3,end=4)])
         report=review.quality_report(self.folder,self.job)

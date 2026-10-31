@@ -90,7 +90,7 @@ class SubtitleMaskTests(unittest.TestCase):
     def test_ocr_height_does_not_change_vietnamese_size(self):
         ass=p.make_ass([dict(start=0,end=2,text='Đây là lời Việt')],
                        [region(x=480,y=800,width=100,height=60)],1080,1920)
-        self.assertIn(r'\fs106',ass)
+        self.assertIn(r'\fs113',ass)
 
     def test_all_dialogue_cues_use_one_size_even_without_matching_ocr(self):
         import re

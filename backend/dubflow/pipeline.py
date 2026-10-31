@@ -531,11 +531,11 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height):
     if __package__:
-        from .subtitle_style import style_for, fit_lines
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width
     else:
-        from subtitle_style import style_for, fit_lines
+        from subtitle_style import style_for, fit_lines, ass_size, available_width
     st = style_for(width, height)
-    font_size = st['size']
+    font_size = ass_size(st['size'])  # libass cell height of the visible size
     out = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -577,9 +577,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         else:lanes[lane]=cue['end']
         # Real overlapping dialogue stays legible instead of occupying one position.
         y=max(font_size*1.5,y-lane*font_size*3)
-        available=max(20,2*min(x,width-x)-20)
-        lines,size=fit_lines(cue['text'],font_size,available,st['max_lines'])
-        out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,size,align)
+        available=available_width(box,width)
+        lines,size=fit_lines(cue['text'],st['size'],available,st['max_lines'])
+        out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,ass_size(size),align)
     # Timed OCR boxes for the same on-screen note also share one typography.
     note_groups=[]
     for r in regions:

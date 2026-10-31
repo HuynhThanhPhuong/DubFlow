@@ -17,7 +17,7 @@ class SubtitleStyleTests(unittest.TestCase):
         self.assertEqual((a['size'], a['outline'], a['font'], a['bold'], a['max_lines']), (59, 3.0, 'Roboto', True, 2))
         self.assertEqual(a['margin_v'], 43)
         b = style_for(1080, 1920)
-        self.assertEqual((b['size'], b['outline']), (106, 5.3))
+        self.assertEqual((b['size'], b['outline']), (86, 5.3))
         c = style_for(640, 360)
         self.assertEqual((c['size'], c['outline']), (20, 1.0))
 
@@ -33,7 +33,7 @@ class SubtitleStyleTests(unittest.TestCase):
 
     def test_shrink_up_to_fifteen_percent(self):
         from dubflow.subtitle_style import fit_lines
-        text = ' '.join(['abcdefg'] * 14)
+        text = ' '.join(['abcdefg'] * 16)
         lines, size = fit_lines(text, 59, 1700, 2)
         self.assertLessEqual(len(lines), 2)
         self.assertGreaterEqual(size, 59 * .85)
@@ -46,9 +46,19 @@ class SubtitleStyleTests(unittest.TestCase):
         self.assertEqual(style[7], '-1')
         self.assertEqual(style[15], '1')
         self.assertEqual(float(style[16]), style_for(1920, 1080)['outline'])
-        self.assertEqual(re.findall(r'\\fs(\d+)', ass), ['59', '59'])
+        self.assertEqual(re.findall(r'\\fs(\d+)', ass), ['78', '78'])  # round(59 * 2701/2048)
         self.assertIn(r'\an5\pos(300,950)', ass)
         self.assertIn(r'\an2\pos(960,1037)', ass)
+
+    def test_eighty_char_sentence_wraps_by_real_widths(self):
+        s = 'Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn'
+        self.assertGreaterEqual(len(s), 80)
+        self.assertEqual(len(wrap_lines(s, 59, 1900)), 2)
+        from dubflow.subtitle_style import overflows
+        self.assertFalse(overflows(s, None, 1920, 1080))
+        # portrait: <= 2 lines after the <=15% shrink, otherwise the overflow check reports it
+        lines = wrap_lines(s, style_for(1080, 1920)['size'], 1060)
+        self.assertTrue(len(lines) <= 2 or overflows(s, None, 1080, 1920))
 
     def test_filter_path_escaping(self):
         self.assertEqual(ffmpeg_filter_path(Path('C:/a b/fonts')).startswith('C\\:/'), True)

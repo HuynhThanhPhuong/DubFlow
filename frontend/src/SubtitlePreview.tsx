@@ -19,10 +19,17 @@ export function fitVideoRect(
   };
 }
 
-// libass sizes \fs as the font cell height (Roboto winAscent+winDescent = 2701/2048 em),
-// so the CSS em that reproduces an ASS \fs is fs / LIBASS_CELL.
+// libass cell height of Roboto (winAscent+winDescent = 2701/2048 em); ASS \fs = size * LIBASS_CELL,
+// so CSS font-size = size and line-height = LIBASS_CELL reproduce the export.
 export const LIBASS_CELL = 2701 / 2048;
-const units = (s: string) => [...s].reduce((n, c) => n + (/\s/.test(c) ? 0.33 : 0.62), 0);
+// Mean Roboto Bold advance widths in em (measured with PIL); mirrors backend subtitle_style._units.
+const units = (s: string) =>
+  [...s].reduce((n, c) => {
+    if (/\s/.test(c)) return n + 0.26;
+    if (/\p{Nd}/u.test(c)) return n + 0.58;
+    if (!/[\p{L}\p{N}]/u.test(c)) return n + 0.33;
+    return n + (c !== c.toLowerCase() ? 0.68 : 0.54);
+  }, 0);
 function wrapText(text: string, size: number, maxWidth: number): string[] {
   const maxUnits = Math.max(1, maxWidth / size);
   const lines: string[] = [];
@@ -143,7 +150,7 @@ export function SubtitlePreview({
               left: `${(x / width) * 100}%`,
               top: `${(laneY / height) * 100}%`,
               maxWidth: `${(available / width) * 100}%`,
-              fontSize: ratio ? (fit.size * ratio) / LIBASS_CELL : 16,
+              fontSize: ratio ? fit.size * ratio : 16,
               WebkitTextStrokeWidth: outline * 2,
             }}
           >

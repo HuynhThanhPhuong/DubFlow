@@ -1,6 +1,6 @@
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { SubtitlePreview, fitVideoRect, fitLines, LIBASS_CELL } from "./SubtitlePreview";
+import { SubtitlePreview, fitVideoRect, fitLines } from "./SubtitlePreview";
 afterEach(cleanup);
 it("fits source coordinates inside letterboxed video without using black bars", () => {
   const box = fitVideoRect(1000, 400, 1920, 1080);
@@ -94,7 +94,7 @@ it("uses the shared Roboto style scaled to the displayed height and the cue box 
     />,
   );
   const [boxed, bottom] = Array.from(container.querySelectorAll<HTMLElement>(".vietnamese-preview"));
-  expect(parseFloat(boxed.style.fontSize)).toBeCloseTo(29.5 / LIBASS_CELL, 1);
+  expect(parseFloat(boxed.style.fontSize)).toBeCloseTo(29.5, 1);
   expect(boxed.style.getPropertyValue("-webkit-text-stroke-width") || (boxed.style as unknown as Record<string, string>).webkitTextStrokeWidth).toBeTruthy();
   expect(parseFloat(boxed.style.left)).toBeCloseTo((700 / 1920) * 100, 3);
   expect(parseFloat(boxed.style.top)).toBeCloseTo((950 / 1080) * 100, 3);
@@ -103,10 +103,13 @@ it("uses the shared Roboto style scaled to the displayed height and the cue box 
 });
 it("fitLines mirrors the backend wrap and shrinks at most 15%", () => {
   expect(fitLines("Xin chào các bạn", 59, 1700).lines).toHaveLength(1);
-  const long = Array(14).fill("abcdefg").join(" ");
+  const long = Array(16).fill("abcdefg").join(" ");
   const fit = fitLines(long, 59, 1700, 2);
   expect(fit.lines.length).toBeLessThanOrEqual(2);
   expect(fit.size).toBeLessThan(59);
   expect(fit.size).toBeGreaterThanOrEqual(59 * 0.85);
-  expect(fitLines("Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn", 106, 1060).size).toBeCloseTo(106 * 0.85, 5);
+  const sentence = "Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn";
+  expect(fitLines(sentence, 59, 1900).lines).toHaveLength(2);
+  expect(fitLines(sentence, 59, 1900).size).toBe(59);
+  expect(fitLines(sentence, 86, 1060).size).toBeCloseTo(86 * 0.85, 5); // portrait overflow: shrunk, still > 2 lines
 });
