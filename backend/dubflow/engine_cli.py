@@ -352,11 +352,14 @@ def subtrack(directory, request):
     import cv2
     import numpy as np
     import subprocess
-    from subtitle_track import auto_band, segment_frames, static_rows, vote_text
+    from subtitle_track import auto_band, order_lines, segment_frames, static_rows, vote_text
     directory = Path(directory)
     ff, source = request['ffmpeg'], request['source']
     width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
     fps = 10
+    # thresholds were tuned on a 1920 px long side; scale with resolution
+    k = max(width, height) / 1920
+    min_px, centre_tol, gap = max(10, 250 * k * k), 250 * k, max(8, 70 * k)
 
     def trace(gray):
         white, dark = gray > 205, (gray < 110).astype(np.uint8)
@@ -394,18 +397,18 @@ def subtrack(directory, request):
         cols = np.where(t.sum(0) >= 2)[0]
         item = dict(t=k / fps, box=None, sig=None)
         frames.append(item)
-        if t.sum() < 250 or not len(cols):
+        if t.sum() < min_px or not len(cols):
             continue
         c = width // 2
         near = cols[np.argmin(abs(cols - c))]
-        if abs(near - c) > 250:
+        if abs(near - c) > centre_tol:
             continue
         x0 = x1 = near
         for x in cols[cols > near]:
-            if x - x1 > 70: break
+            if x - x1 > gap: break
             x1 = x
         for x in cols[cols < near][::-1]:
-            if x0 - x > 70: break
+            if x0 - x > gap: break
             x0 = x
         item['box'] = (int(x0), y0, int(x1), y1)
         item['sig'] = cv2.resize(t[:, x0:x1 + 1].astype(np.float32), (128, 16), interpolation=cv2.INTER_AREA) > .15
@@ -422,7 +425,7 @@ def subtrack(directory, request):
         readings = []
         span = seg['e'] - seg['s']
         for q in (.25, .5, .75):
-            at = min(seg['s'] + span * q, duration - .05)
+            at = max(0., min(seg['s'] + span * q, duration - .05))
             raw = subprocess.run([ff, '-v', 'error', '-ss', f'{at:.3f}', '-i', source, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
             if len(raw) != width * height * 3:
@@ -431,15 +434,11 @@ def subtrack(directory, request):
             cx0, cx1 = max(0, seg['x0'] - 8), min(width, seg['x1'] + 8)
             cy0, cy1 = max(0, seg['y0'] - 8), min(height, seg['y1'] + 8)
             result, _ = reader(np.ascontiguousarray(image[cy0:cy1, cx0:cx1]))
-            lines = []
-            for box, text, score in result or []:
-                if score >= .6 and text.strip():
-                    xs, ys = zip(*box)
-                    lines.append((min(ys), min(xs), text.strip(), float(score)))
-            # same row (within half a line) ordered by x, rows ordered by y
-            lines.sort()
+            lines = [(min(xs), min(ys), max(xs), max(ys), text.strip())
+                     for box, text, score in (result or []) if score >= .6 and text.strip()
+                     for xs, ys in [zip(*box)]]
             if lines:
-                readings.append(''.join(l[2] for l in lines))
+                readings.append(order_lines(lines))
         text, ratio = vote_text(readings)
         out['segments'].append(dict(s=round(seg['s'], 3), e=round(seg['e'], 3), x0=seg['x0'], y0=seg['y0'], x1=seg['x1'], y1=seg['y1'],
                                     text=text, confidence=round(ratio, 3), readings=readings))

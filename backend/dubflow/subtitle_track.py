@@ -72,3 +72,19 @@ def auto_band(row_density, height, top, frac=.25, pad=6):
     runs = np.split(rows, np.where(np.diff(rows) > 1)[0] + 1)
     best = max(runs, key=len)
     return max(0, int(top + best[0]) - pad), min(int(height), int(top + best[-1] + 1) + pad)
+
+
+def order_lines(boxes):
+    """[(x0, y0, x1, y1, text)] -> text joined row by row (rows by y-centre within half the median height, then x)."""
+    if not boxes:
+        return ''
+    hs = sorted(b[3] - b[1] for b in boxes)
+    tol = max(1.0, hs[len(hs) // 2] / 2)
+    rows = []
+    for b in sorted(boxes, key=lambda b: (b[1] + b[3]) / 2):
+        c = (b[1] + b[3]) / 2
+        if rows and c - rows[-1]['c'] <= tol:
+            r = rows[-1]; r['b'].append(b); r['c'] = sum((x[1] + x[3]) / 2 for x in r['b']) / len(r['b'])
+        else:
+            rows.append(dict(c=c, b=[b]))
+    return ''.join(b[4] for r in rows for b in sorted(r['b'], key=lambda b: b[0]))

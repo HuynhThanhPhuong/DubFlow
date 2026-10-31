@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band
+from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines
 
 
 def sig(seed):  # nét chữ khác nhau theo seed
@@ -63,6 +63,16 @@ class AutoBandTests(unittest.TestCase):
     def test_empty_is_none(self):
         self.assertIsNone(auto_band(np.zeros(378),1080,702))
 
+
+class OrderLinesTests(unittest.TestCase):
+    def test_jittered_pieces_of_one_row_stay_left_to_right(self):
+        b=[(300,102,400,140,'C'),(100,100,200,138,'A'),(200,97,300,135,'B')]
+        self.assertEqual(order_lines(b),'ABC')
+    def test_two_rows(self):
+        b=[(100,170,200,208,'D'),(100,100,200,138,'A'),(210,101,300,139,'B'),(210,171,300,209,'E')]
+        self.assertEqual(order_lines(b),'ABDE')
+    def test_empty(self):
+        self.assertEqual(order_lines([]),'')
 
 if __name__=='__main__':
     unittest.main()
