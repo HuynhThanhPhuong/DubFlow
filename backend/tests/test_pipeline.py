@@ -265,6 +265,44 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(build['ocr_failed'])
             self.assertFalse(build['has_hardsubs'])
 
+    def test_subtrack_failure_warning_is_vietnamese(self):
+        asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text='')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d); warnings=[]
+            p.write(directory/'source-asr-cues.json',asr)
+            err=p.NeedsReview('subtrack unavailable or failed (exit 1); see subtrack.log (no model downloads attempted)')
+            with patch.object(p,'engine',side_effect=err),patch.object(p,'audio_rms',return_value=([0.0]*400,.02)):
+                p.build_source(directory,directory/'s.mp4',directory/'s.mp4',dict(duration=8),SimpleNamespace(),lambda *a:None,warnings)
+            self.assertTrue(any('Bước subtrack' in w for w in warnings))
+            self.assertFalse(any('unavailable' in w for w in warnings))
+
+    def test_unreadable_segment_is_skipped_counted_and_warned(self):
+        seg=dict(s=1.0,e=2.0,x0=1,y0=2,x1=3,y1=4,text='',confidence=0,readings=[])
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d); warnings=[]
+            p.write(directory/'source-asr-cues.json',[])
+            p.write(directory/'subtrack.json',dict(version=1,segments=[seg]))
+            with patch.object(p,'engine'):
+                p.build_source(directory,directory/'s.mp4',directory/'s.mp4',dict(duration=8),SimpleNamespace(),lambda *a:None,warnings)
+            self.assertEqual(p.read(directory/'cues.json'),[])
+            self.assertEqual(p.read(directory/'source-build.json')['ocr_unreadable'],1)
+            self.assertIn('Có 1 vùng sub không đọc được chữ và không nghe được lời; đã bỏ qua, kiểm tra và thêm câu nếu thiếu.',warnings)
+
+    def test_asr_cue_never_overlaps_ocr_cue_after_build(self):
+        seg=dict(s=1.0,e=3.0,x0=1,y0=2,x1=3,y1=4,text='天气很好',confidence=1,readings=[])
+        asr=[dict(id='a1',start=2.0,end=7.0,speaker='s',original='我们走吧再见',text='')]   # mostly uncovered, overlaps the OCR cue
+        rms=[0.0]*400
+        for i in range(100,350): rms[i]=1.0
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._run_source(directory,asr,segments=[seg],rms=rms)
+            cues=p.read(directory/'cues.json')
+            ocr=[c for c in cues if c['source']!='asr'][0]
+            for c in cues:
+                if c['source']=='asr':
+                    self.assertTrue(c['start']>=ocr['end']-1e-9 or c['end']<=ocr['start']+1e-9,(c,ocr))
+            self.assertEqual((ocr['start'],ocr['end']),(1.0,3.0))
+
     def test_mixed_job_keeps_ocr_times_and_snaps_asr(self):
         seg=dict(s=1.0,e=2.0,x0=1,y0=2,x1=3,y1=4,text='你好吗',confidence=.9,readings=[])
         asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text=''),

@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines, build_source_cues, snap_to_speech, glyph_sig, merge_same_text
+from dubflow.subtitle_track import segment_frames, vote_text, static_rows, auto_band, order_lines, build_source_cues, snap_to_speech, glyph_sig, merge_same_text, clamp_asr_to_ocr
 
 
 def sig(seed):  # nét chữ khác nhau theo seed
@@ -34,6 +34,10 @@ class SegmentTests(unittest.TestCase):
         shifted=np.zeros_like(base); shifted[:,36:96]=base[:,30:90]   # x-jitter ~ 5% of width
         fr=[dict(t=i/10,box=(1,2,3,4),sig=base if i%2 else shifted) for i in range(10)]
         self.assertEqual(len(segment_frames(fr,10)),1)
+    def test_different_sig_shapes_are_a_change_not_an_error(self):
+        a=np.zeros((16,128),bool); a[:,10:50]=True; b=np.zeros((16,100),bool); b[:,10:50]=True
+        fr=[dict(t=i/10,box=(1,2,3,4),sig=a if i<5 else b) for i in range(10)]
+        self.assertEqual(len(segment_frames(fr,10)),2)
     def test_large_shift_or_other_glyphs_still_split(self):
         base=np.zeros((16,128),bool); base[:,10:60]=sig(3)[:,10:60]
         far=np.zeros_like(base); far[:,70:120]=base[:,10:60]  # moved far away: a different line
@@ -170,9 +174,19 @@ class OcrEmptyTests(unittest.TestCase):
         out=build_source_cues([seg(0,1,''),seg(1,2,'谢谢')],[asr(1,0,2,'你好谢谢')],10)
         self.assertEqual(out[0]['original'],'你好'); self.assertTrue(out[0]['ocr_empty'])
         self.assertNotIn('ocr_empty',out[1])
-    def test_empty_ocr_without_asr_stays_empty_but_flagged(self):
-        out=build_source_cues([seg(0,1,'')],[],10)
-        self.assertEqual(out[0]['original'],''); self.assertTrue(out[0]['ocr_empty'])
+    def test_empty_ocr_without_han_asr_is_skipped_and_counted(self):
+        stats={}
+        out=build_source_cues([seg(0,1,''),seg(2,3,'你好')],[],10,stats=stats)
+        self.assertEqual([c['original'] for c in out],['你好']); self.assertEqual(stats['ocr_unreadable'],1)
+        stats={}
+        out=build_source_cues([seg(0,1,'')],[asr(1,0,1,'123')],10,stats=stats)   # ASR overlaps but has no Han text
+        self.assertEqual([c['source'] for c in out],['asr']); self.assertEqual(stats['ocr_unreadable'],1)
+    def test_never_emits_empty_original(self):
+        out=build_source_cues([seg(0,1,''),seg(1,2,'，'),seg(2,3,'你好')],[asr(1,0,3,'abc')],10)
+        self.assertTrue(all(c['original'].strip() for c in out))
+    def test_skipped_unreadable_segment_does_not_cover_asr(self):
+        out=build_source_cues([seg(0,2,'')],[asr(1,0,2.5,'123')],10)
+        self.assertEqual([c['source'] for c in out],['asr'])
 
 
 class DuplicatePartialTests(unittest.TestCase):
@@ -194,10 +208,45 @@ class DuplicatePartialTests(unittest.TestCase):
         out=build_source_cues([seg(0,2.1,'你好')],[asr(1,2,6,'你好谢谢再见')],10)
         extra=[c for c in out if c['source']=='asr']
         self.assertEqual([(c['start'],c['end'],c['original']) for c in extra],[(2,6,'谢谢再见')])
+    def test_dedupe_keeps_digits_latin_and_punctuation(self):
+        out=build_source_cues([seg(0,2,'天气很好')],[asr(1,0,4,'我有3个苹果，你呢')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([c['original'] for c in extra],['我有3个苹果，你呢'])
+        out=build_source_cues([seg(0,2,'你好')],[asr(1,0,4,'你好，3个苹果ok')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([c['original'] for c in extra],['3个苹果ok']); self.assertTrue(extra[0]['source_partial'])
+    def test_scattered_single_char_matches_do_not_change_text(self):
+        out=build_source_cues([seg(0,2,'他在哪')],[asr(1,0,4,'我在家她在那')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([c['original'] for c in extra],['我在家她在那'])
+    def test_only_prefix_or_suffix_blocks_are_removed(self):
+        out=build_source_cues([seg(1,2,'谢谢')],[asr(1,0,3,'你好谢谢再见')],10)   # OCR text sits in the middle of the ASR text
+        extra=[c for c in out if c['source']=='asr']
+        self.assertEqual([c['original'] for c in extra],['你好谢谢再见'])
+    def test_changed_text_in_mostly_uncovered_branch_is_marked_partial(self):
+        out=build_source_cues([seg(0,2.1,'你好')],[asr(1,2,6,'你好谢谢再见')],10)
+        extra=[c for c in out if c['source']=='asr']
+        self.assertTrue(extra[0]['source_partial']); self.assertEqual(extra[0]['original'],'谢谢再见')
+    def test_unchanged_text_in_mostly_uncovered_branch_is_not_partial(self):
+        out=build_source_cues([],[asr(1,2,6,'我们走吧')],10)
+        self.assertNotIn('source_partial',out[0])
     def test_partial_cue_matches_against_all_covering_ocr_cues(self):
         out=build_source_cues([seg(0,1,'你好'),seg(1,2,'谢谢')],[asr(1,0,4,'你好谢谢再见吧')],10)
         extra=[c for c in out if c['source']=='asr']
         self.assertEqual([c['original'] for c in extra],['再见吧'])
+
+
+class ClampTests(unittest.TestCase):
+    def c(self,s,e,src): return dict(id=f'{src}{s}',start=s,end=e,source=src)
+    def test_asr_overlapping_ocr_is_trimmed_to_free_part(self):
+        out=clamp_asr_to_ocr([self.c(1,3,'ocr'),self.c(2,6,'asr')])
+        self.assertEqual([(c['source'],c['start'],c['end']) for c in out],[('ocr',1,3),('asr',3,6)])
+    def test_asr_inside_ocr_is_dropped_and_ocr_untouched(self):
+        out=clamp_asr_to_ocr([self.c(1,5,'ocr+asr'),self.c(2,3,'asr')])
+        self.assertEqual([c['source'] for c in out],['ocr+asr'])
+    def test_asr_around_ocr_keeps_longest_side(self):
+        out=clamp_asr_to_ocr([self.c(4,5,'ocr'),self.c(0,10,'asr')])
+        self.assertEqual([(c['start'],c['end']) for c in out if c['source']=='asr'],[(5,10)])
 
 
 class SnapTests(unittest.TestCase):
@@ -209,6 +258,16 @@ class SnapTests(unittest.TestCase):
     def test_does_not_overlap_next_cue(self):
         out=snap_to_speech([dict(start=1.0,end=3.0),dict(start=2.82,end=4.0)],self.rms(),.01)
         self.assertLessEqual(out[0]['end'],2.82+1e-9)
+    def test_ocr_cues_are_fixed_and_bound_neighbours_at_their_original_edge(self):
+        rms=np.zeros(500)+.001; rms[120:380]=.3   # speech 1.2-3.8
+        cues=[dict(start=1.0,end=3.0,source='ocr'),dict(start=3.0,end=4.5,source='asr')]
+        out=snap_to_speech(cues,rms,.01)
+        self.assertEqual((out[0]['start'],out[0]['end']),(1.0,3.0))
+        self.assertGreaterEqual(out[1]['start'],3.0-1e-9)
+    def test_asr_cue_does_not_use_a_snapped_ocr_edge(self):
+        rms=np.zeros(500)+.001; rms[200:260]=.3   # speech 2.0-2.6, ocr cue is 1.0-3.0
+        out=snap_to_speech([dict(start=1.0,end=3.0,source='ocr+asr'),dict(start=3.0,end=4.0,source='asr')],rms,.01)
+        self.assertEqual(out[0]['end'],3.0)   # not shrunk to 2.65
     def test_no_speech_keeps_cue(self):
         out=snap_to_speech([dict(start=3.5,end=4.0)],self.rms(),.01)
         self.assertEqual((out[0]['start'],out[0]['end']),(3.5,4.0))

@@ -141,6 +141,22 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(saved[k], cue[k])
         self.assertNotIn('source_partial', saved)
 
+    def test_put_cues_clears_stale_source_flags_when_original_changes(self):
+        import json
+        j, folder = self._job_with_cues()
+        cue = {'id': '0', 'start': 0, 'end': 2, 'speaker': 'm', 'original': '你好', 'text': 'Xin chào', 'source': 'ocr+asr', 'source_mismatch': True, 'ocr_empty': True, 'source_partial': True, 'asr_text': '你好'}
+        load = lambda: json.loads((folder / 'cues.json').read_text(encoding='utf-8'))[0]
+        stored = load()
+        self.assertEqual(self.client.put(f"/api/jobs/{j['id']}/cues", json=[dict(cue, original=stored['original'])]).status_code, 200)
+        saved = load()
+        self.assertTrue(saved['ocr_empty'] and saved['source_mismatch'] and saved['source_partial'])   # original unchanged -> flags kept
+        r = self.client.put(f"/api/jobs/{j['id']}/cues", json=[dict(cue, original='你们好')])
+        self.assertEqual(r.status_code, 200, r.text)
+        saved = load()
+        for k in ('ocr_empty', 'source_mismatch', 'source_partial'):
+            self.assertNotIn(k, saved)
+        self.assertEqual(saved['source'], 'ocr+asr')
+
     def test_origin_cross_site_post_is_blocked(self):
         r = self.client.post('/api/samples/dialogue', headers={'origin': 'https://untrusted.example'})
         self.assertEqual(r.status_code, 403)

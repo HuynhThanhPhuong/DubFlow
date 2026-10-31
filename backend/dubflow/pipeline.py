@@ -222,9 +222,9 @@ def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
 def build_source(directory, source, audio, meta, settings, emit, warnings):
     """ASR cues + burned-in subtitle OCR -> cues.json and source-build.json."""
     if __package__:
-        from .subtitle_track import build_source_cues, snap_to_speech
+        from .subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
     else:
-        from subtitle_track import build_source_cues, snap_to_speech
+        from subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
     asr_cues = read(directory/'source-asr-cues.json', [])
     emit('subtrack', 'Đang đọc sub trên hình', 30)
     ocr_failed = False
@@ -234,11 +234,14 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         raise
     except NeedsReview as exc:
         ocr_failed = True
-        warnings.append('Chưa đọc được sub trên hình: '+str(exc))
+        warnings.append('Chưa đọc được sub trên hình: '+str(translate_message(str(exc))))
         write(directory/'subtrack.json', dict(version=1, segments=[]))
     segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
     emit('subtrack', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
-    cues = build_source_cues(segments, asr_cues, meta['duration'])
+    stats = {}
+    cues = build_source_cues(segments, asr_cues, meta['duration'], stats=stats)
+    if stats.get('ocr_unreadable'):
+        warnings.append(f"Có {stats['ocr_unreadable']} vùng sub không đọc được chữ và không nghe được lời; đã bỏ qua, kiểm tra và thêm câu nếu thiếu.")
     if any(c['source'] == 'asr' for c in cues):
         check_cancel(directory)
         try:
@@ -260,13 +263,14 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
             raise
         except Exception:
             warnings.append('Không căn được biên lời nói; giữ mốc Whisper gốc.')
+    cues = clamp_asr_to_ocr(cues)
     if not cues:
         warnings.append('Không tìm thấy sub trên hình lẫn lời nói; hãy thêm hoặc nhập cue thủ công.')
     write(directory/'cues.json', cues)
     write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
-        ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues)))
+        ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)

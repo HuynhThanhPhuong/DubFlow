@@ -312,6 +312,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
             if old.get(c['id'],{}).get('translation_dependency'):
                 c['translation_dependency']=old[c['id']]['translation_dependency']
             c.update(status='pending', asr_edits=None, take_url=None, delay=None, overrun=None)
+            if c['id'] in old and old[c['id']].get('original') != c.get('original'):
+                for flag in ('ocr_empty', 'source_mismatch', 'source_partial'):  # stale after a manual edit of the source text
+                    c.pop(flag, None)
         atomic_json(job_dir(job_id) / 'cues.json', values)
         store.update_job(job_id, cue_count=len(values))
         invalidate(job_id)

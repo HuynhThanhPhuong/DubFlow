@@ -1,4 +1,5 @@
 """Pure helpers: group per-frame burned-in subtitle detections into segments and vote OCR text."""
+import re
 import unicodedata
 from collections import Counter
 
@@ -17,8 +18,10 @@ def _span(a):
 
 def _iou_shift(a, b, tol=.12):
     """Max IoU of two sigs over horizontal shifts of up to `tol` of the glyph width (no wrap-around)."""
+    if a.shape != b.shape:  # sigs of different grids are not comparable: treat as a change
+        return 0.0
     best = _iou(a, b)
-    if best >= 1.0 or a.shape != b.shape:
+    if best >= 1.0:
         return best
     m = int(np.ceil(tol * max(_span(a), _span(b))))
     w = a.shape[1]
@@ -44,7 +47,10 @@ def glyph_sig(trace, x0, x1, cell=3, rows=32):
 
 
 def segment_frames(frames, fps, min_len=.3, max_gap=2, change_iou=.5):
-    """frames: [{t, box|None, sig|None}] -> [{s, e, x0, y0, x1, y1, frames}] (sig = bool 16x128)."""
+    """frames: [{t, box|None, sig|None}] -> [{s, e, x0, y0, x1, y1, frames}].
+
+    sig = bool grid from glyph_sig (rows x band-anchored columns); all sigs in one call share a shape.
+    A new segment starts when the max-over-small-shifts IoU with the segment's first sig drops below change_iou."""
     step = 1 / fps
     segs, cur, gap = [], None, 0
     for f in frames:
@@ -166,18 +172,77 @@ def _agreement(ocr, asr):
     return m / max(len(a), len(b))
 
 
-def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
+_HAN = re.compile(r'[㐀-鿿]')
+
+
+def _drop_seen(original, seen):
+    """Remove from `original` the Han runs (>= 2 chars) at its prefix/suffix that the overlapping OCR text `seen`
+    already contains. Only those characters are deleted, so digits, Latin and punctuation survive.
+    -> (text, changed)."""
+    idx = [i for i, ch in enumerate(original) if _HAN.match(ch)]
+    han = ''.join(original[i] for i in idx)
+    if not han or not seen:
+        return original, False
+    drop = set()
+    for blk in SequenceMatcher(None, han, seen, autojunk=False).get_matching_blocks():
+        if blk.size >= 2 and (blk.a == 0 or blk.a + blk.size == len(han)):
+            drop.update(idx[blk.a:blk.a + blk.size])
+    if not drop:
+        return original, False
+    text = ''.join(ch for i, ch in enumerate(original) if i not in drop)
+    edge = lambda ch: unicodedata.category(ch)[0] in 'PZC'
+    while text and edge(text[0]):
+        text = text[1:]
+    while text and edge(text[-1]):
+        text = text[:-1]
+    return text, True
+
+
+def clamp_asr_to_ocr(cues, min_len=1e-6):
+    """ASR cues never overlap an OCR cue: keep the longest part of each ASR cue outside all OCR intervals
+    (dropped when nothing is left). OCR cues are returned unchanged."""
+    fixed = [c for c in cues if c.get('source') != 'asr']
+    out = []
+    for c in cues:
+        if c.get('source') != 'asr':
+            out.append(c)
+            continue
+        pieces = [(c['start'], c['end'])]
+        for f in fixed:
+            nxt = []
+            for a, b in pieces:
+                if f['end'] <= a or f['start'] >= b:
+                    nxt.append((a, b))
+                    continue
+                if f['start'] > a:
+                    nxt.append((a, f['start']))
+                if f['end'] < b:
+                    nxt.append((f['end'], b))
+            pieces = nxt
+        pieces = [p for p in pieces if p[1] - p[0] > min_len]
+        if not pieces:
+            continue
+        a, b = max(pieces, key=lambda p: p[1] - p[0])
+        out.append(c if (a, b) == (c['start'], c['end']) else dict(c, start=a, end=b))
+    return sorted(out, key=lambda c: (c['start'], c['end']))
+
+
+def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3, stats=None):
     """OCR segments are the primary source; ASR fills uncaptioned speech. OCR text is never rewritten.
 
     OCR cues get source_mismatch = source_agreement < mismatch. An ASR cue partly covered by OCR is
     kept (full original, verbatim) over its largest uncovered interval when that is >= .8 s
     (source_partial=True) with only the Han characters the covering OCR cues do not already contain
-    (fewer than 2 left: skipped). An OCR segment whose text came out empty takes the overlapping ASR slice
-    as `original` and gets ocr_empty=True so it is reviewed (an empty original blocks SRT export)."""
+    (fewer than 2 left: skipped). Only Han runs of >= 2 chars at the start/end of the ASR text are removed
+    (digits, Latin and punctuation are kept) and a changed text always gets source_partial=True.
+    An OCR segment whose text came out empty takes the overlapping ASR slice as `original` and gets
+    ocr_empty=True so it is reviewed. If there is no Han ASR text either, the segment is skipped (an empty
+    original blocks SRT export) and counted in stats['ocr_unreadable'] when `stats` is a dict."""
     segs = sorted(segments, key=lambda s: (s['s'], s['e']))
     asrs = sorted(asr_cues, key=lambda c: (c['start'], c['end']))
     out = []
     segs = [sg for sg in segs if min(float(sg['e']), float(duration)) > float(sg['s'])]
+    unreadable = set()
     for i, sg in enumerate(segs, 1):
         s, e = float(sg['s']), min(float(sg['e']), float(duration))
         if e <= s:
@@ -195,6 +260,9 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
         text = sg['text']
         empty = not _key(text)
         if empty:
+            if not asr_text:
+                unreadable.add(id(sg))
+                continue
             text = asr_text
         cue = dict(id=f'ocr-{i:06}', start=s, end=e, original=text, text='',
                    speaker=best['speaker'] if best else 'unconfirmed', status='needs_review',
@@ -206,6 +274,9 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
         if hits:
             cue['asr_text'] = asr_text
         out.append(cue)
+    segs = [sg for sg in segs if id(sg) not in unreadable]
+    if stats is not None:
+        stats['ocr_unreadable'] = len(unreadable)
     for c in asrs:
         d = c['end'] - c['start']
         if d <= 0:
@@ -227,21 +298,14 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
             partial = True
             if end - start < .8 - 1e-9:
                 continue
-        han = chinese(c['original'])
         seen = chinese(''.join(o['original'] for o in out
                                if o['source'] != 'asr' and _overlap(o['start'], o['end'], c['start'], c['end']) > 1e-9))
-        if seen:  # keep only what the OCR cues covering this ASR cue do not already say
-            matched = set()
-            for blk in SequenceMatcher(None, han, seen, autojunk=False).get_matching_blocks():
-                matched.update(range(blk.a, blk.a + blk.size))
-            rest = ''.join(ch for j, ch in enumerate(han) if j not in matched)
-            if len(rest) < 2:
-                continue
-            original = rest
-        else:
-            original = c['original']
+        # keep only what the OCR cues covering this ASR cue do not already say
+        original, changed = _drop_seen(c['original'], seen)
+        if changed and len(chinese(original)) < 2:
+            continue
         new = dict(c, start=start, end=end, original=original, source='asr', source_agreement=1.0)
-        if partial:
+        if partial or changed:
             new['source_partial'] = True
         out.append(new)
     return sorted(out, key=lambda c: (c['start'], c['end']))
@@ -249,13 +313,15 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3):
 
 def snap_to_speech(cues, rms, hop, threshold=None, pad=.05):
     """Move cue edges onto real speech (rms above threshold), at most .5 s beyond the original
-    timing and never into the previous/next cue. Only for ASR-timed cues: OCR cue times follow the
-    on-screen subtitle and must not be snapped."""
+    timing and never into the previous/next cue. Only for ASR-timed cues: cues with source 'ocr' or
+    'ocr+asr' follow the on-screen subtitle, are returned untouched and act as fixed bounds."""
     rms = np.asarray(rms, dtype=float)
     if threshold is None:
         threshold = max(0.01, float(np.median(rms)) * 2) if rms.size else 0.01
     out = [dict(c) for c in cues]
     for i, c in enumerate(out):
+        if c.get('source') in ('ocr', 'ocr+asr'):
+            continue
         lo = max(0.0, c['start'] - .5)
         hi = min(rms.size * hop, c['end'] + .5)
         if i > 0:
