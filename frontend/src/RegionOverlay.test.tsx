@@ -36,8 +36,7 @@ class TestPointerEvent extends MouseEvent {
 describe("regionGeometry", () => {
   const letter = { left: 0, top: 60, width: 960, height: 540 };
   it("maps letterboxed display points to source pixels", () => {
-    expect(toSource({ x: 100, y: 160 }, { left: 0, top: 60, width: 960, height: 540 }, 1920, 1080)).toEqual({ x: 200, y: 200 });
-    // scale 0.5 case from the brief
+    expect(toSource({ x: 100, y: 160 }, letter, 1920, 1080)).toEqual({ x: 200, y: 200 });
     expect(toSource({ x: 100, y: 160 }, { left: 0, top: 60, width: 960, height: 540 }, 1920, 1080)).toEqual({ x: 200, y: 200 });
     expect(toSource({ x: 50, y: 100 }, letter, 1920, 1080)).toEqual({ x: 100, y: 80 });
   });
@@ -99,6 +98,59 @@ describe("RegionOverlay", () => {
       start: 0, end: 10, kind: "static", auto: false, confirmed: true, enabled: true, label: "Vùng vẽ tay",
     });
     expect(onDrawEnd).toHaveBeenCalled();
+  });
+});
+
+describe("RegionOverlay review fixes", () => {
+  const confirmed: Region = { ...auto, id: "c1", auto: false, confirmed: true, label: "Tay" };
+  it("filters boxes by current time, keeping pending candidates when paused", () => {
+    const { rerender } = render(<RegionOverlay {...props} currentTime={9} regions={[confirmed, auto]} onChange={vi.fn()} />);
+    expect(screen.queryByText("Tay")).toBeNull();
+    expect(screen.getByText("Logo")).toBeTruthy();
+    rerender(<RegionOverlay {...props} currentTime={9} playing regions={[confirmed, auto]} onChange={vi.fn()} />);
+    expect(screen.queryByText("Logo")).toBeNull();
+    rerender(<RegionOverlay {...props} currentTime={2} playing regions={[confirmed]} onChange={vi.fn()} />);
+    expect(screen.getByText("Tay")).toBeTruthy();
+  });
+  it("clears the selection when the selected box is rejected", () => {
+    render(<RegionOverlay {...props} regions={[auto]} onChange={vi.fn()} />);
+    fireEvent.pointerDown(screen.getByText("Logo"));
+    expect(screen.getByText("Từ (s)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Bỏ vùng/ }));
+    expect(screen.queryByText("Từ (s)")).toBeNull();
+  });
+  it("creates nothing when duration is 0", () => {
+    const onChange = vi.fn();
+    render(<RegionOverlay {...props} duration={0} drawing regions={[]} onChange={onChange} />);
+    const layer = screen.getByTestId("region-draw-layer");
+    fireEvent.pointerDown(layer, { clientX: 100, clientY: 160 });
+    fireEvent.pointerUp(layer, { clientX: 200, clientY: 260 });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+  it("resizes by a corner handle and clamps to the frame", () => {
+    const onChange = vi.fn();
+    render(<RegionOverlay {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
+    fireEvent.pointerDown(screen.getByText("Tay"));
+    const se = screen.getByTestId("handle-se");
+    fireEvent.pointerDown(se, { clientX: 0, clientY: 0, pointerId: 1 });
+    fireEvent.pointerMove(se, { clientX: 5000, clientY: 5000, pointerId: 1 });
+    fireEvent.pointerUp(se, { pointerId: 1 });
+    expect(onChange.mock.calls[0][0][0]).toMatchObject({ x: 100, y: 100, width: 1820, height: 980 });
+  });
+  it("commits time on blur and shows an error for invalid ranges", () => {
+    const onChange = vi.fn();
+    render(<RegionOverlay {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
+    fireEvent.pointerDown(screen.getByText("Tay"));
+    const to = screen.getByLabelText("Đến (s)");
+    fireEvent.change(to, { target: { value: "3" } });
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.blur(to);
+    expect(onChange).toHaveBeenCalledWith([{ ...confirmed, start: 1, end: 3 }]);
+    onChange.mockClear();
+    fireEvent.change(to, { target: { value: "0.5" } });
+    fireEvent.blur(to);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toBeTruthy();
   });
 });
 

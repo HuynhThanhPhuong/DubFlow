@@ -1,14 +1,16 @@
 .region-overlay { position:absolute; inset:0; pointer-events:none; z-index:6; }
-.region-box { position:absolute; box-sizing:border-box; border:2px dashed #f0a020; background:#f0a02018; pointer-events:auto; touch-action:none; }
+.region-box { position:absolute; box-sizing:border-box; border:2px dashed #f0a020; background:#f0a02018; pointer-events:none; touch-action:none; }
+.region-box.selected { pointer-events:auto; }
 .region-box.confirmed { border-style:solid; border-color:#22a05a; background:#22a05a18; }
 .region-box.drawing { pointer-events:none; }
 .region-box.selected { box-shadow:0 0 0 1px #fff; }
-.region-label { position:absolute; left:0; top:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; line-height:1.3; padding:0 4px; color:#fff; background:#000a; pointer-events:none; }
-.region-actions { position:absolute; right:2px; top:2px; display:flex; gap:4px; }
+.region-label { position:absolute; left:0; top:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; line-height:1.3; padding:0 4px; color:#fff; background:#000a; pointer-events:auto; cursor:pointer; }
+.region-error { flex-basis:100%; color:#ffb4a8; }
+.region-actions { pointer-events:auto; position:absolute; right:2px; top:2px; display:flex; gap:4px; }
 .region-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:50%; color:#fff; cursor:pointer; touch-action:manipulation; }
 .region-btn.ok { background:#22a05a; }
 .region-btn.no { background:#c0392b; }
-.region-handle { position:absolute; width:22px; height:22px; background:#fff; border:2px solid #4658db; border-radius:4px; box-sizing:border-box; touch-action:none; }
+.region-handle { pointer-events:auto; position:absolute; width:22px; height:22px; background:#fff; border:2px solid #4658db; border-radius:4px; box-sizing:border-box; touch-action:none; }
 .region-handle.nw { left:-11px; top:-11px; cursor:nwse-resize; }
 .region-handle.ne { right:-11px; top:-11px; cursor:nesw-resize; }
 .region-handle.sw { left:-11px; bottom:-11px; cursor:nesw-resize; }

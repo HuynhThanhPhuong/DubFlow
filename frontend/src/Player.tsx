@@ -85,11 +85,16 @@ export function Player({
   }, [job.id, job.updated_at]);
   const videoW = job.width || video.current?.videoWidth || 0;
   const videoH = job.height || video.current?.videoHeight || 0;
+  const regionDuration = job.duration || video.current?.duration || 0;
+  const saveSeq = useRef(0);
   const saveRegions = (rows: Region[]) => {
     setRegions(rows);
+    const seq = ++saveSeq.current;
     api
       .saveRegions(job.id, rows)
-      .then(setRegions)
+      .then((saved) => {
+        if (seq === saveSeq.current) setRegions(saved);
+      })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "Không lưu được vùng che."),
       );
@@ -226,7 +231,9 @@ export function Player({
             rect={rect}
             videoWidth={videoW}
             videoHeight={videoH}
-            duration={job.duration || video.current?.duration || 0}
+            duration={regionDuration}
+            currentTime={now}
+            playing={playing}
             drawing={drawing}
             onChange={saveRegions}
             onDrawEnd={() => setDrawing(false)}
@@ -257,6 +264,7 @@ export function Player({
         </Button>
         <Button
           variant="ghost"
+          disabled={!drawing && !(regionDuration > 0)}
           onClick={() => (drawing ? setDrawing(false) : startDrawing())}
         >
           {drawing ? "Xong vẽ" : "Vẽ vùng che"}

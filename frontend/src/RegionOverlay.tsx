@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as RPointerEvent } from "react";
 import { Check, Trash2, X } from "lucide-react";
 import type { Region } from "./types";
@@ -20,6 +20,8 @@ export function RegionOverlay({
   videoWidth,
   videoHeight,
   duration,
+  currentTime = 0,
+  playing = false,
   drawing,
   onChange,
   onDrawEnd,
@@ -29,6 +31,8 @@ export function RegionOverlay({
   videoWidth: number;
   videoHeight: number;
   duration: number;
+  currentTime?: number;
+  playing?: boolean;
   drawing: boolean;
   onChange: (regions: Region[]) => void;
   onDrawEnd: () => void;
@@ -57,6 +61,11 @@ export function RegionOverlay({
     x: Math.min(box.x, Math.max(0, videoWidth - box.width)),
     y: Math.min(box.y, Math.max(0, videoHeight - box.height)),
   });
+  const clampBox = (box: Box): Box => ({
+    ...box,
+    width: Math.min(box.width, Math.max(0, videoWidth - box.x)),
+    height: Math.min(box.height, Math.max(0, videoHeight - box.y)),
+  });
   const patch = (id: string, change: Partial<Region>) =>
     onChange(regions.map((r) => (r.id === id ? { ...r, ...change } : r)));
 
@@ -84,7 +93,7 @@ export function RegionOverlay({
       ? Math.hypot(e.clientX - start.current.x, e.clientY - start.current.y)
       : 0;
     setDraft(null);
-    if (moved < 4) return;
+    if (moved < 4 || !(duration > 0)) return;
     const box = fit(normalizeBox(a, point(e)));
     const region: Region = {
       id: crypto.randomUUID(),
@@ -122,7 +131,7 @@ export function RegionOverlay({
     if (!anchor.current || !draft?.id) return;
     setDraft({
       id: draft.id,
-      box: fit(normalizeBox(anchor.current, point(e))),
+      box: clampBox(normalizeBox(anchor.current, point(e))),
     });
   };
   const cornerUp = () => {
@@ -131,20 +140,17 @@ export function RegionOverlay({
     setDraft(null);
   };
 
-  const setTime = (field: "start" | "end", value: number) => {
-    if (!current || !Number.isFinite(value)) return;
-    const v = Math.max(0, Math.min(duration, value));
-    const next = field === "start" ? { start: v } : { end: v };
-    const s = field === "start" ? v : current.start;
-    const en = field === "end" ? v : current.end;
-    if (en <= s) return;
-    patch(current.id, next);
-  };
+  const shown = (r: Region) =>
+    drawing ||
+    r.id === selected ||
+    draft?.id === r.id ||
+    (currentTime >= r.start && currentTime <= r.end) ||
+    (!playing && !!r.auto && !r.confirmed);
 
   return (
     <div className="region-overlay" ref={root} data-testid="region-overlay">
       {ready &&
-        statics.map((r) => {
+        statics.filter(shown).map((r) => {
           const box = draft?.id === r.id ? draft.box : r;
           const d = toDisplay(box, rect, videoWidth, videoHeight);
           const pending = !!r.auto && !r.confirmed;
@@ -166,7 +172,16 @@ export function RegionOverlay({
                 setSelected(r.id);
               }}
             >
-              <span className="region-label">{r.label || "Vùng che"}</span>
+              <span
+                className="region-label"
+                onPointerDown={(e) => {
+                  if (drawing) return;
+                  e.stopPropagation();
+                  setSelected(r.id);
+                }}
+              >
+                {r.label || "Vùng che"}
+              </span>
               {pending && !drawing && (
                 <span className="region-actions">
                   <button
@@ -185,9 +200,10 @@ export function RegionOverlay({
                     className="region-btn no"
                     aria-label={`Bỏ vùng ${r.label || "che"}`}
                     onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() =>
-                      patch(r.id, { enabled: false, confirmed: true })
-                    }
+                    onClick={() => {
+                      patch(r.id, { enabled: false, confirmed: true });
+                      if (selected === r.id) setSelected(null);
+                    }}
                   >
                     <X size={14} />
                   </button>
@@ -231,26 +247,12 @@ export function RegionOverlay({
       )}
       {current && !drawing && (
         <div className="region-editor" onPointerDown={(e) => e.stopPropagation()}>
-          <label>
-            Từ (s)
-            <input
-              type="number"
-              step=".1"
-              min={0}
-              value={Number(current.start.toFixed(2))}
-              onChange={(e) => setTime("start", e.target.valueAsNumber)}
-            />
-          </label>
-          <label>
-            Đến (s)
-            <input
-              type="number"
-              step=".1"
-              min={0}
-              value={Number(current.end.toFixed(2))}
-              onChange={(e) => setTime("end", e.target.valueAsNumber)}
-            />
-          </label>
+          <TimeEditor
+            key={current.id}
+            region={current}
+            duration={duration}
+            onCommit={(change) => patch(current.id, change)}
+          />
           <button
             type="button"
             className="region-btn no"
@@ -265,5 +267,74 @@ export function RegionOverlay({
         </div>
       )}
     </div>
+  );
+}
+
+function TimeEditor({
+  region,
+  duration,
+  onCommit,
+}: {
+  region: Region;
+  duration: number;
+  onCommit: (change: { start: number; end: number }) => void;
+}) {
+  const fmt = (v: number) => String(Number(v.toFixed(2)));
+  const [from, setFrom] = useState(fmt(region.start));
+  const [to, setTo] = useState(fmt(region.end));
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setFrom(fmt(region.start));
+    setTo(fmt(region.end));
+  }, [region.start, region.end]);
+  const commit = () => {
+    const s = Number(from);
+    const e = Number(to);
+    if (from.trim() === "" || to.trim() === "" || !Number.isFinite(s) || !Number.isFinite(e)) {
+      setError("Thời gian không hợp lệ.");
+      return;
+    }
+    if (s < 0 || e > duration || e <= s) {
+      setError("Thời gian phải nằm trong video và \"Đến\" lớn hơn \"Từ\".");
+      return;
+    }
+    setError("");
+    if (s !== region.start || e !== region.end) onCommit({ start: s, end: e });
+  };
+  const keys = (ev: { key: string }) => {
+    if (ev.key === "Enter") commit();
+  };
+  return (
+    <>
+      <label>
+        Từ (s)
+        <input
+          type="number"
+          step=".1"
+          min={0}
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          onBlur={commit}
+          onKeyDown={keys}
+        />
+      </label>
+      <label>
+        Đến (s)
+        <input
+          type="number"
+          step=".1"
+          min={0}
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          onBlur={commit}
+          onKeyDown={keys}
+        />
+      </label>
+      {error && (
+        <span role="alert" className="region-error">
+          {error}
+        </span>
+      )}
+    </>
   );
 }
