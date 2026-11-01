@@ -354,20 +354,18 @@ class PipelineTests(unittest.TestCase):
             p.write(d/'regions.json',[self._static_region(label='Logo',confirmed=True)])  # ticking does not change what is erased
             self.assertTrue(current())
 
-    def _render_with_erase(self, directory, stage_effect):
-        """Render with a stale clean.mp4 (the logo box moved after the erase) and a patched engine."""
-        self._render_cmd(directory,True)  # builds the fixtures with a current clean.mp4
-        p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))  # regions are not legacy: no OCR refinement run
-        p.write(directory/'regions.json',[dict(r,x=r['x']+1) if r['kind']=='static' else r for r in p.read(directory/'regions.json')])
+    def _render_with_erase(self, directory, stage_effect, fixtures=True):
+        """Render with a stale clean.mp4 (the logo box moved after the erase) and a patched engine; errors propagate."""
+        if fixtures:
+            self._render_cmd(directory,True)  # builds the fixtures with a current clean.mp4
+            p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))  # regions are not legacy: no OCR refinement run
+            p.write(directory/'regions.json',[dict(r,x=r['x']+1) if r['kind']=='static' else r for r in p.read(directory/'regions.json')])
         calls,emitted=[],[]
         def stage(name,d,settings,payload,**kwargs):
             calls.append((name,payload))
             stage_effect(name,d,settings,payload)
         with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'run'):
-            try:
-                result=p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:emitted.append(a))
-            except Exception:
-                result=None
+            result=p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:emitted.append(a))
         return calls,emitted,result
 
     def test_render_rebuilds_a_stale_erase_before_composing(self):
@@ -397,6 +395,68 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn('cleanv',graph)
             self.assertEqual(graph.count('overlay='),3)  # subtitle + static + transient through ffmpeg, as before
             self.assertTrue(any('Không xóa được sub gốc' in w for w in result['warnings']))
+
+    def test_second_render_after_a_failed_erase_does_not_retry_until_an_input_changes(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            def failing(name,d,settings,payload):
+                raise p.NeedsReview('erase unavailable or failed (exit 1)')
+            calls,_,result=self._render_with_erase(directory,failing)
+            self.assertEqual(len(calls),1)
+            marker=p.read(directory/'erase-failed.json')
+            self.assertEqual(marker,p.erase_signature(directory,directory/'source.mp4'))
+            self.assertEqual(marker['version'],p.ERASE_VERSION)
+            calls,_,result=self._render_with_erase(directory,failing,fixtures=False)
+            self.assertEqual(calls,[])  # same inputs: no new erase attempt
+            self.assertNotIn('cleanv',(directory/'render-filter.txt').read_text())
+            self.assertTrue(any('Không xóa được sub gốc' in w for w in result['warnings']))
+            # moving the logo box again changes the signature: one more attempt, and a success removes the marker
+            p.write(directory/'regions.json',[dict(r,x=r['x']+1) if r['kind']=='static' else r for r in p.read(directory/'regions.json')])
+            def fresh(name,d,settings,payload):
+                (d/'clean.mp4').write_bytes(b'new')
+                p.write(d/'erase.json',dict(self._stamp(d),static_ids=[r['id'] for r in payload['static_regions']],static_hash=payload['static_hash']))
+            calls,_,result=self._render_with_erase(directory,fresh,fixtures=False)
+            self.assertEqual(len(calls),1)
+            self.assertFalse((directory/'erase-failed.json').exists())
+            self.assertIn('cleanv',(directory/'render-filter.txt').read_text())
+
+    def test_cancelled_render_time_erase_leaves_no_clean_video_and_propagates(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            def cancelled(name,d,settings,payload):
+                (d/'clean.tmp.mp4').write_bytes(b'half')
+                (d/'erase-refs').mkdir()
+                raise p.Cancelled('stop')
+            with self.assertRaises(p.Cancelled):
+                self._render_with_erase(directory,cancelled)
+            self.assertFalse((directory/'clean.mp4').exists())
+            self.assertFalse((directory/'erase.json').exists())
+            self.assertFalse((directory/'clean.tmp.mp4').exists())
+            self.assertFalse((directory/'erase-refs').exists())
+            self.assertFalse((directory/'erase-failed.json').exists())  # a cancel is not a failure: the next render tries again
+
+    def test_render_accepts_a_fallback_erase_instead_of_redoing_it(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,True,stamp=dict(fill='smooth',provider=None))
+            p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))
+            model=directory/'lama.onnx'; model.write_bytes(b'm')
+            settings=SimpleNamespace(blur_original=True,ocr_python=sys.executable,lama_model=str(model),cuda_dll_dir=None)
+            self.assertFalse(p.erase_current(directory,directory/'source.mp4',dict(fps=25),settings=settings))  # prepare would redo it
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine') as engine,patch.object(p,'run'):
+                p.render(directory,settings,lambda *a:None)
+            engine.assert_not_called()
+            self.assertIn('cleanv',(directory/'render-filter.txt').read_text())
+
+    def test_version_5_erase_stamp_is_stale(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src'); (d/'clean.mp4').write_bytes(b'clean')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]))
+            p.write(d/'erase.json',self._stamp(d,version=5))
+            self.assertFalse(p.erase_current(d,d/'source.mp4',dict(fps=25)))
+            p.write(d/'erase.json',self._stamp(d))
+            self.assertTrue(p.erase_current(d,d/'source.mp4',dict(fps=25)))
 
     def test_render_with_current_clean_drops_erased_static_but_keeps_transient(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
@@ -450,7 +510,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(plain.count('overlay='),3)  # subtitle mask still used without clean.mp4
 
     def test_render_ignores_stale_clean_mp4(self):
-        for over,expect in (({},True),(dict(version=1),False),(dict(source_size=1),False),(dict(subtrack_hash='x'),False)):
+        for over,expect in (({},True),(dict(version=1),False),(dict(version=5),False),(dict(source_size=1),False),(dict(subtrack_hash='x'),False)):
             with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
                 directory=Path(d)
                 self._render_cmd(directory,True,stamp=over)

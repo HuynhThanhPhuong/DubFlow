@@ -388,12 +388,19 @@ def erase_current(directory, source, meta=None, full=True, settings=None):
     except OSError:
         return False
 
-def erase_subtitles(directory, source, meta, settings, emit, warnings):
-    """Build clean.mp4 (hard subtitles and enabled static regions removed) once per (source, subtrack, static regions)."""
+def erase_signature(directory, source):
+    """The inputs a clean.mp4 depends on (what erase_current compares), for the erase-failed marker."""
+    stat = Path(source).stat()
+    return dict(version=ERASE_VERSION, source_size=stat.st_size, source_mtime_ns=stat.st_mtime_ns,
+                subtrack_hash=subtrack_hash(directory), static_hash=static_hash(directory))
+
+def erase_subtitles(directory, source, meta, settings, emit, warnings, accept_fallback=False):
+    """Build clean.mp4 (hard subtitles and enabled static regions removed) once per (source, subtrack, static regions).
+    accept_fallback: a finished run that used a weaker fill (see erase_fell_back) counts as current (used at render)."""
     clean, stamp = directory/'clean.mp4', directory/'erase.json'
     if not erase_wanted(directory) or not getattr(settings, 'ocr_python', None):
         return
-    if erase_current(directory, source, meta, full=False, settings=settings):  # size+mtime is enough; the hash is stored for full checks
+    if erase_current(directory, source, meta, full=False, settings=None if accept_fallback else settings):  # size+mtime is enough; the hash is stored for full checks
         return
     stat = Path(source).stat()
     statics = erase_static_regions(directory)
@@ -705,8 +712,17 @@ def render(job_dir, settings, emit):
     render_warnings = []
     if getattr(settings,'blur_original',True) and erase_wanted(directory) and getattr(settings,'ocr_python',None):
         # a stale clean.mp4 (subtitles or logo boxes changed since) is rebuilt now rather than quietly replaced by ffmpeg blur
-        erase_subtitles(directory, source, meta, settings, lambda stage, message, progress: emit(stage, message, 85), render_warnings)
-        if not erase_current(directory, source, None, full=False):
+        # erase-failed.json remembers a failed attempt for these exact inputs, so every later render does not pay for it again
+        failed, signature = directory/'erase-failed.json', erase_signature(directory, source)
+        if read(failed, None) != signature:
+            failed.unlink(missing_ok=True)  # an input changed: try again
+            erase_subtitles(directory, source, meta, settings, lambda stage, message, progress: emit(stage, message, 85),
+                            render_warnings, accept_fallback=True)
+            if not erase_current(directory, source, None, full=False):
+                write(failed, signature)
+        if erase_current(directory, source, None, full=False):
+            failed.unlink(missing_ok=True)
+        else:
             render_warnings.append('Không xóa được sub gốc và logo bằng bộ xóa; video xuất dùng làm mờ thường ở các vùng đó.')
     (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height']),encoding='utf-8-sig')
     ff = getattr(settings,'ffmpeg','ffmpeg')
