@@ -41,6 +41,19 @@ def load_encoder():
     return EncoderClassifier.from_hparams(source=str(model),savedir=str(model),overrides={'pretrained_path':str(model)},run_opts={'device':'cpu'},local_strategy=LocalStrategy.COPY)
 
 
+def embedder():
+    """wave (16 kHz mono float32) -> unit ECAPA vector, or None when the clip is under 0.1 s or degenerate."""
+    import numpy as np
+    import torch
+    encoder=load_encoder()
+    def embed(wave):
+        if len(wave)<1600:return None
+        with torch.inference_mode():vector=encoder.encode_batch(torch.from_numpy(wave).unsqueeze(0)).reshape(-1).cpu().numpy()
+        norm=float(np.linalg.norm(vector))
+        return vector/norm if np.isfinite(norm) and norm>1e-8 else None
+    return embed
+
+
 def speakers(directory, request):
     import numpy as np
     import torch

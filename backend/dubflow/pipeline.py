@@ -570,16 +570,23 @@ def take_rounds(budget):
     """Cumulative take counts, in rounds of 4 (4, 8, ... budget)."""
     return list(range(4,budget,4))+[budget] if budget > 0 else []
 
-def choose_take(takes, slot, margin=.02):
-    """Best passing take: highest ECAPA similarity (within `margin` of the best is a tie), then the best duration fit.
-    Without a similarity score on every passing take the choice is by duration fit only."""
+def choose_take(takes, slot, margin=.02, floor=.35):
+    """Best passing take. Exact-match takes are the pool whenever any exist; short-rule takes (one substituted word)
+    only count when no exact take passed, and then only with similarity >= `floor` (or none measured).
+    Within the pool: highest ECAPA similarity (unscored lowest; within `margin` of the best is a tie),
+    then the best duration fit."""
     passing = [t for t in takes if t.get('exact')]
-    if not passing:
+    pool = [t for t in passing if not t.get('short_rule')]
+    if not pool:
+        pool = [t for t in passing if t.get('similarity') is None or t['similarity'] >= floor]
+    if not pool:
         return None
-    scored = [t for t in passing if isinstance(t.get('similarity'), (int, float))]
-    if len(scored) == len(passing):
-        best = max(t['similarity'] for t in scored)
-        passing = [t for t in scored if t['similarity'] >= best-margin]
+    scores = [t['similarity'] for t in pool if isinstance(t.get('similarity'), (int, float))]
+    if scores:
+        best = max(scores)
+        passing = [t for t in pool if isinstance(t.get('similarity'), (int, float)) and t['similarity'] >= best-margin]
+    else:
+        passing = pool
     fits = [t for t in passing if t['duration'] <= slot+.3]
     if fits:
         return min(fits, key=lambda t:abs(slot-t['duration']))
@@ -709,14 +716,14 @@ def synthesize(job_dir, settings, emit):
                 return name, task, take
         return None
 
-    sim_warnings = []
+    sim_warnings, sim_failed = [], []  # sim_failed: non-empty once the similarity stage crashed (not retried this run)
 
     def settle(pending, emit):
         """Score the passing takes by voice similarity, then pick each line's accepted take."""
         nonlocal state
         state = read(directory/'state.json', {})
         todo = [t for t in pending if any(v.get('exact') and 'similarity' not in v for v in state.get(t['key'],{}).get('takes',{}).values())]
-        if todo and not sim_warnings:
+        if todo and not sim_failed:
             try:
                 engine('similarity', directory, settings, {'tasks':todo}, emit=emit)
             except Cancelled:
@@ -725,6 +732,7 @@ def synthesize(job_dir, settings, emit):
                 warning = 'Không đo được độ giống giọng, chọn bản theo độ khớp thời lượng: '+str(exc)
                 logging.getLogger(__name__).warning(warning)
                 sim_warnings.append(warning)
+                sim_failed.append(True)
                 emit('synthesizing', warning, 70)
             state = read(directory/'state.json', {})
         for task in pending:
@@ -733,6 +741,10 @@ def synthesize(job_dir, settings, emit):
             best = choose_take(takes, task['cue']['end']-task['cue']['start'])
             if best:
                 st['accepted'] = best
+                if best.get('similarity') is None and not sim_failed:  # no take of the line has a score
+                    warning = f"Dòng {task['i']+1}: không đo được độ giống giọng, chọn theo độ khớp thời lượng."
+                    logging.getLogger(__name__).warning(warning)
+                    sim_warnings.append(warning)
         write(directory/'state.json', state)
 
     limit = getattr(settings, 'max_takes', 24)

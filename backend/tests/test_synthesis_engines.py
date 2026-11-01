@@ -467,8 +467,20 @@ class ChooseTakeTests(unittest.TestCase):
         self.assertEqual(p.choose_take([take(1, 1., .99, exact=False), take(2, 1., .1)], slot=1.)['seed'], 2)
         self.assertIsNone(p.choose_take([take(1, 1., .99, exact=False)], slot=1.))
 
-    def test_missing_scores_fall_back_to_duration_only(self):
-        self.assertEqual(p.choose_take([take(1, .6, .9), take(2, 1.0)], slot=1.0)['seed'], 2)
+    def test_unscored_takes_rank_lowest_instead_of_dropping_similarity(self):
+        self.assertEqual(p.choose_take([take(1, .6, .9), take(2, 1.0)], slot=1.0)['seed'], 1)
+        self.assertEqual(p.choose_take([take(1, .6), take(2, 1.0)], slot=1.0)['seed'], 2)  # nothing scored: duration fit
+
+    def test_exact_takes_beat_short_rule_takes(self):
+        sr = dict(take(1, 1.0, .95), short_rule=True)
+        self.assertEqual(p.choose_take([sr, take(2, 1.0, .5)], slot=1.0)['seed'], 2)
+        self.assertEqual(p.choose_take([sr], slot=1.0)['seed'], 1)
+
+    def test_short_rule_takes_need_similarity_035_or_no_score(self):
+        low = dict(take(1, 1.0, .34), short_rule=True)
+        self.assertIsNone(p.choose_take([low], slot=1.0))
+        self.assertEqual(p.choose_take([dict(low, similarity=.35)], slot=1.0)['seed'], 1)
+        self.assertEqual(p.choose_take([dict(low, similarity=None)], slot=1.0)['seed'], 1)
 
 
 class SimilarityPipelineTests(unittest.TestCase):
@@ -522,6 +534,38 @@ class SimilarityPipelineTests(unittest.TestCase):
             self.assertEqual(seen[0][2], 'similarity')
 
 
+class SimilarityStageTests(unittest.TestCase):
+    def test_scores_only_passing_unscored_takes_against_the_reference(self):
+        import numpy as np
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        import speakers
+        vectors = {'ref.wav': np.array([1., 0.]), 'a.wav': np.array([0., 1.]), 'b.wav': np.array([.6, .8]), 'c.wav': None}
+        decoded = []
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory = Path(d)
+            (directory / 'lines').mkdir()
+            for name in ('a', 'b', 'c', 'skip', 'done'):
+                (directory / 'lines' / f'{name}.wav').write_bytes(b'x')
+            state = {'k': {'takes': {
+                '1': dict(path='lines/a.wav', exact=True),
+                '2': dict(path='lines/b.wav', exact=True),
+                '3': dict(path='lines/c.wav', exact=True),
+                '4': dict(path='lines/skip.wav', exact=False),
+                '5': dict(path='lines/done.wav', exact=True, similarity=.99)}}}
+            p.write(directory / 'state.json', state)
+            fake_decode = lambda path, ffmpeg: decoded.append(Path(path).name) or Path(path).name
+            task = dict(i=0, key='k', ref=dict(path=str(directory / 'ref.wav')))
+            with patch.object(engine_cli, 'decode', side_effect=fake_decode), patch.object(speakers, 'embedder', return_value=lambda wave: vectors[wave]):
+                engine_cli.similarity(directory, dict(tasks=[task], ffmpeg='ffmpeg'))
+            takes = p.read(directory / 'state.json')['k']['takes']
+        self.assertEqual((takes['1']['similarity'], takes['2']['similarity']), (0., .6))
+        self.assertIsNone(takes['3']['similarity'])  # unusable embedding
+        self.assertNotIn('similarity', takes['4'])  # failed text: not scored
+        self.assertEqual(takes['5']['similarity'], .99)  # already scored: untouched
+        self.assertEqual(sorted(decoded), ['a.wav', 'b.wav', 'c.wav', 'ref.wav'])
+
+
 class PickTests(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
@@ -540,16 +584,30 @@ class PickTests(unittest.TestCase):
     def test_short_line_rule(self):
         import engine_cli
         short = dict(cue=dict(text='Xóa đi ư?'), params={})
-        self.assertEqual(engine_cli.text_match(short, 'Xóa đi?'), (True, True))
         self.assertEqual(engine_cli.text_match(short, 'Xóa đi ư'), (True, False))
+        self.assertEqual(engine_cli.text_match(short, 'Svá đi ư'), (True, True))  # one substituted word
+        self.assertFalse(engine_cli.text_match(short, 'Xóa đi?')[0])  # a dropped word is never tolerated
         self.assertFalse(engine_cli.text_match(short, 'Svá đưa')[0])
-        six = dict(cue=dict(text='Hôm nay trời đẹp quá bạn ơi'), params={})
-        self.assertEqual(len(p.tokens(six['cue']['text'])), 7)
-        self.assertFalse(engine_cli.text_match(six, 'Hôm nay trời đẹp quá bạn ới')[0])
+        self.assertFalse(engine_cli.text_match(short, 'Xóa đi ư ơi')[0])
+        self.assertFalse(engine_cli.text_match(short, '...')[0])  # empty after normalisation
+        self.assertFalse(engine_cli.text_match(short, '')[0])
+        one = dict(cue=dict(text='Vâng!'), params={})
+        self.assertEqual(engine_cli.text_match(one, 'vâng'), (True, False))
+        self.assertFalse(engine_cli.text_match(one, 'Vãng')[0])  # one-word lines: exact only
         six = dict(cue=dict(text='Hôm nay trời đẹp quá nhé'), params={})
         self.assertEqual(engine_cli.text_match(six, 'Hôm nay trời đẹp quá nhá'), (False, False))
         self.assertEqual(engine_cli.token_distance(['a', 'b'], ['a', 'c', 'b']), 1)
         self.assertEqual(engine_cli.token_distance([], ['a', 'b']), 2)
+
+    def test_short_rule_works_on_pronounced_words(self):
+        import engine_cli
+        task = dict(cue=dict(text='KOC giỏi nhé'), params=dict(pronounce={'KOC': 'cây ô ci'}))
+        # 'KOC' becomes three spoken words on both sides, so the line is 5 words long and one substitution is not allowed.
+        self.assertEqual(engine_cli.text_match(task, 'cây ô ci giỏi nhé'), (True, False))
+        self.assertFalse(engine_cli.text_match(task, 'cây ô ci giỏi nha')[0])
+        task = dict(cue=dict(text='Anh KOC'), params=dict(pronounce={'KOC': 'cờ'}))
+        self.assertEqual(engine_cli.text_match(task, 'Anh KOC'), (True, False))
+        self.assertEqual(engine_cli.text_match(task, 'Ân cờ'), (True, True))  # 2 words after mapping, one substituted
 
     def test_pick_records_the_engine_of_each_take(self):
         import engine_cli

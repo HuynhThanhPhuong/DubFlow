@@ -200,10 +200,13 @@ def text_match(task, heard):
     the engine was given as spoken words is judged against the same spoken words."""
     mapping = task['params'].get('pronounce')
     got, want = tokens(apply_pronounce(heard, mapping)), tokens(apply_pronounce(task['cue']['text'], mapping))
-    if got == want:
+    if not got:
+        return False, False
+    if got == want:  # punctuation and case never count
         return True, False
-    # Short lines (up to 3 words) are judged by ASR noise too often: one token edit is tolerated.
-    if 0 < len(want) <= 3 and token_distance(got, want) <= 1:
+    # Lines of 2-3 words: one substituted word is tolerated (same token count, so never a dropped word).
+    # One-word lines accept nothing but the exact match above.
+    if 2 <= len(want) <= 3 and len(got) == len(want) and token_distance(got, want) <= 1:
         return True, True
     return False, False
 
@@ -221,22 +224,14 @@ def token_distance(a, b):
 def similarity(directory, request):
     """ECAPA cosine of each passing take against its line's reference (both 16 kHz mono). CPU only."""
     import numpy as np
-    import torch
-    from speakers import load_encoder
-    encoder = load_encoder()
+    from speakers import embedder
+    embed_wave = embedder()
     state = read(directory/'state.json', {})
     vectors = {}
 
     def embed(path):
         if path not in vectors:
-            wave = decode(path, request['ffmpeg'])
-            if len(wave) < 1600:  # under 0.1 s there is nothing to compare
-                vectors[path] = None
-            else:
-                with torch.inference_mode():
-                    vector = encoder.encode_batch(torch.from_numpy(wave).unsqueeze(0)).reshape(-1).cpu().numpy()
-                norm = float(np.linalg.norm(vector))
-                vectors[path] = vector/norm if np.isfinite(norm) and norm > 1e-8 else None
+            vectors[path] = embed_wave(decode(path, request['ffmpeg']))
         return vectors[path]
 
     for task in request['tasks']:
