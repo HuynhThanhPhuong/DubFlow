@@ -317,6 +317,48 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return Response(srt_text(dialogue).encode('utf-8-sig'),media_type='application/x-subrip',
                         headers={'Content-Disposition':f"attachment; filename*=UTF-8''{filename}"})
 
+    @app.get('/api/jobs/{job_id}/translate-prompt')
+    def translate_prompt(job_id: str, mode: Literal['vietsub', 'tm', 'dub'] | None = None):
+        from .manual_translation import prompt_text
+        job = job_or_404(job_id)
+        chosen = mode or (job.get('mode') if job.get('mode') in ('vietsub', 'tm', 'dub') else 'vietsub')
+        text = prompt_text(chosen, preferences(store, settings)['vietsub_cps'], terminology_for(job))
+        return Response(text.encode('utf-8'), media_type='text/plain; charset=utf-8')
+
+    @app.post('/api/jobs/{job_id}/translation-srt')
+    async def import_translation_srt(job_id: str, file: UploadFile = File(...)):
+        from .manual_translation import parse_indexed_srt, match_by_index
+        from .dialogue_export import dialogue_source_cues
+        job = writable(job_id)
+        folder = job_dir(job_id)
+        data = await file.read(2 * 1024 * 1024 + 1)
+        await file.close()
+        if len(data) > 2 * 1024 * 1024:
+            raise HTTPException(413, 'SRT vượt quá 2 MB.')
+        stored = read_json(folder / 'cues.json', [])
+        if not stored:
+            raise HTTPException(409, 'Chưa có lời gốc. Phân tích video trước khi nhập bản dịch.')
+        review.load_state(folder)
+        try:
+            blocks = parse_indexed_srt(data.decode('utf-8-sig'))
+            dialogue = dialogue_source_cues(sorted(stored, key=lambda c: (c['start'], c['end'])))
+            texts = match_by_index(blocks, [c['id'] for c in dialogue])
+        except (ValueError, UnicodeError) as e:
+            raise HTTPException(422, str(e))
+        state = review.load_state(folder)
+        collection_terms = terminology_for(job)
+        touched = []
+        for c in stored:
+            if c['id'] in texts:
+                c.update(text=texts[c['id']], status='needs_review', asr_edits=None, take_url=None, delay=None, overrun=None)
+                touched.append(c)
+        for c in touched:
+            c['translation_dependency'] = review.translation_dependency(c, state, stored, collection_terms)
+        atomic_json(folder / 'cues.json', stored)
+        store.update_job(job_id, cue_count=len(stored))
+        invalidate(job_id)
+        return stored
+
     @app.put('/api/jobs/{job_id}/cues')
     def put_cues(job_id: str, cs: list[Cue]):
         job = writable(job_id)
