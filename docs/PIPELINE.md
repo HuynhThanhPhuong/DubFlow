@@ -35,8 +35,8 @@ old output; cue, reference, voice and placement consistency is also checked here
 ## Installed environments and offline policy
 
 Settings consumed: `ffmpeg`, `ffprobe`, `asr_python`, `tts_python`, `ocr_python`,
-`model_cache`, `asr_cache`, `translation_mode`, `translation_model`,
-`translation_api_url`, `translation_api_key`, `translation_api_model`.
+`model_cache`, `asr_cache`, `translation_provider` (`gemini`, `openai` or `anthropic`),
+`{provider}_api_key`, `{provider}_model`.
 Optional `tts_model` defaults to `openbmb/VoxCPM2`. No model weights are imported
 into the web process. Missing configured Python environments cause review gates.
 
@@ -47,8 +47,8 @@ installed `955717e8-8726e21a.th` directly from torch.hub's checkpoints directory
 using a local repository and signature, without a remote fallback. No installation,
 model download, or changes to D:/OmniVoice are performed.
 
-Each of separation, ASR, OCR, reference extraction, generation, scoring, and local
-translation runs in a separate process. All stage waits are sequential. Generation
+Each of separation, ASR, OCR, reference extraction, generation, and scoring runs in a
+separate process. All stage waits are sequential. Generation
 uses tts_python; scoring and prep use asr_python; OCR uses ocr_python. The caller
 must keep one worker active across jobs, including manual smoke tests.
 
@@ -70,13 +70,11 @@ boxes and classifies static/transient/subtitle regions. Failed/unavailable OCR
 adds warnings and leaves no blanket blur region. `ocr-complete.json` records an
 attempt; remove it to retry empty-region OCR.
 
-Default translation is manual and offline. Source text is saved as `original`,
-Vietnamese `text` is blank, and `NeedsReview` requests manual input/import.
-`translation_mode=local` uses an explicitly configured cached causal chat model;
-unsupported models fail visibly. `translation_mode=api` requires an explicit
-OpenAI-compatible chat-completions URL and model. Only source strings are sent;
-video and audio stay local. API keys travel via environment, never a request JSON
-file. Translation returns a validated array of text and keeps review status.
+Translation goes through an API set in Cài đặt → Dịch (Gemini, ChatGPT or Claude),
+or by hand: export the Chinese SRT plus a sample prompt, then import the Vietnamese SRT.
+Source text is saved as `original`, Vietnamese `text` is blank, and `NeedsReview`
+requests manual input/import. Only source strings are sent to the API; video and audio
+stay local. Translation returns a validated array of text and keeps review status.
 Automatic OCR text translation is not implemented; edit region.translation.
 
 ## Synthesis and quality gates

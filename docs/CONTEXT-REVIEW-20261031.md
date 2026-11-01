@@ -18,8 +18,8 @@ Thiết kế áp dụng: [bản đánh giá](../outputs/DubFlow-da-danh-gia-2026
 
 ## Sử dụng
 
-1. Chạy `START-LOCAL-MODELS.cmd` (model/cache/log trên D), rồi `START-DUBFLOW.cmd`.
-2. Trong Thiết lập → Dịch tự động, chọn Ollama local, tên `qwen3:4b-instruct-2507-q4_K_M`, context 4096. Đây là đường dịch thử đã chạy được, chưa phải model đạt chất lượng phim.
+1. Chạy `START-DUBFLOW.cmd`.
+2. Trong Cài đặt → Dịch, chọn Gemini, ChatGPT hoặc Claude, nhập khóa và model. Bản máy dịch vẫn cần duyệt.
 3. Phân tích video. Mở Kiểm tra & duyệt: đối chiếu nguồn, thêm nhân vật, gán vai/người nghe khi có căn cứ, chốt xưng hô từng chiều rồi lưu.
 4. Dịch, sửa câu và timing. Xem bản nháp; không coi đúng cấu trúc là đúng nghĩa.
 5. Giải quyết cảnh báo với lý do cụ thể, ghi người duyệt và chốt bản hoàn thiện. Nếu sửa tiếp phải duyệt lại.

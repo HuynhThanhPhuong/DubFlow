@@ -28,7 +28,7 @@ flowchart LR
 | Dữ liệu công việc | SQLite |
 | Thực thi tác vụ | Worker cục bộ xử lý tuần tự |
 | Xử lý media | FFmpeg / FFprobe |
-| Dịch hiện tại | Ollama local tại cổng 11439 |
+| Dịch | API Gemini / ChatGPT / Claude (Cài đặt → Dịch), hoặc thủ công |
 
 Video nhập vào được lưu trong dữ liệu dự án trên ổ D. Mỗi công việc có thư mục chứa nguồn, câu thoại, vùng chữ, kết quả các bước, cache và log.
 
@@ -123,10 +123,8 @@ Hệ thống hiện chưa tự xác định chắc chắn toàn bộ chuỗi nà
 
 | Thiết lập | Giá trị |
 |---|---|
-| Provider | Ollama local |
-| Model | `qwen3:4b-instruct-2507-q4_K_M` |
-| Context | 4096 token |
-| Tự dịch khi nhập | Bật |
+| Provider | API: Gemini, ChatGPT hoặc Claude |
+| Model | Chọn trong Cài đặt → Dịch |
 
 Luồng đang dùng model local, không gọi API trả phí. Mã nguồn có nhánh provider khác nhưng chúng không đồng nghĩa đang được sử dụng trong cấu hình này.
 
@@ -291,7 +289,7 @@ Các đường dẫn dưới đây tương đối với root dự án `D:\DuAnKh
 | `backend/dubflow/worker.py` | Hàng đợi, trạng thái và thứ tự thực thi tác vụ |
 | `backend/dubflow/pipeline.py` | Điều phối phân tích, dịch, sinh giọng và kết xuất |
 | `backend/dubflow/engine_cli.py` | Các bước model nặng chạy trong tiến trình riêng |
-| `backend/dubflow/translation.py` | Provider dịch, ngữ cảnh, cửa sổ câu và cache |
+| `backend/dubflow/translate_api.py` | Provider dịch API: Gemini, OpenAI, Anthropic |
 | `backend/dubflow/speakers.py` | Ứng viên nhóm giọng ECAPA |
 | `backend/dubflow/review.py` | Dữ liệu nguồn, kiểm tra, cảnh báo và điều kiện xuất |
 | `backend/dubflow/subtitle_mask.py` | Hợp đồng vùng chữ và đồ thị xử lý mặt nạ |

@@ -30,11 +30,10 @@ Nguồn phát gốc giữ nguyên. Nút **Xem bản Việt** chỉ xuất hiện
 Tên biến môi trường nằm trong `.env.example`. Đây là danh sách tham khảo, ứng dụng không tự đọc file `.env`; đặt biến bằng PowerShell trước khi mở, ví dụ:
 
 ```powershell
-$env:DUBFLOW_TRANSLATION_MODE = 'manual'
 .\scripts\start.ps1
 ```
 
-- Dịch mặc định **manual**: nếu chưa có tiếng Việt, hệ thống dừng để nhập/duyệt SRT. Chưa cài model dịch local mới. Có thể cấu hình model local đã cache hoặc API text-only một cách chủ động; video/audio không được gửi đến API dịch.
+- Dịch qua API Gemini/ChatGPT/Claude đặt ở **Cài đặt → Dịch**, hoặc thủ công: xuất SRT Trung kèm prompt mẫu, rồi nhập SRT Việt. Nếu chưa có tiếng Việt, hệ thống dừng để nhập/duyệt SRT; video/audio không được gửi đến API dịch.
 - Ô Douyin hiện lưu link nguồn, **không tải tự động**.
 - Lồng tiếng giữ giọng nguồn bằng VoxCPM2 mix, cần đoạn tham chiếu sạch đủ dài cho từng speaker. Phân vai theo F0 chỉ là gợi ý; không có diarization đáng tin cậy cho mọi video. Hãy duyệt vai trước khi sinh giọng.
 - Thuyết minh dùng một reference giọng Việt; Vietsub giữ audio gốc.
@@ -71,12 +70,11 @@ npm.cmd run build
 Kiểm thử backend gồm render CPU thật, hủy cây subprocess, khôi phục SQLite, gate dịch thủ công, timing, cache, reference người nói và ZIP không chứa clip cũ. Kiểm thử frontend gồm sửa/lưu cue qua đúng hợp đồng API, player, validation và lỗi HTTP. Các kiểm thử này không thay thế kiểm tra chất lượng tiếng nói bằng người nghe.
 
 
-## Dịch Trung → Việt tự động (29/10/2026)
+## Dịch Trung → Việt (29/10/2026)
 
-- Runtime riêng: `repo-tests/translation/Scripts/python.exe`; pin trong `repo-tests/translation-requirements.txt`. Chỉ dùng lại Torch qua `.pth`, không cài vào OmniVoice.
-- Model local: `repo-tests/models/opus-mt-zh-vi`, revision `67ea2dbfbaf13a16772a40346d3d72b59e591443`; nguồn [Helsinki-NLP](https://huggingface.co/Helsinki-NLP/opus-mt-zh-vi), Apache-2.0. Script cài một lần: `scripts/install-translation-model.py`. Ứng dụng không tự tải model khi xử lý.
-- Cài đặt → Dịch tự động: chọn Local, đường dẫn model trên, bật “Tự nhận dạng và dịch khi tải video lên”. Video mới vào hàng đợi phân tích; video đã có lời gốc có nút “Dịch tiếng Việt”. Chỉ điền lời còn trống, giữ lời đã sửa. Chữ thoáng qua cũng được dịch; logo/chữ cố định chỉ được che.
-- Chỉ xác minh Trung → Việt. Model nhỏ chạy CPU có thể dịch sai nghĩa/xưng hô; mọi câu máy dịch ở trạng thái cần duyệt. API tùy chọn vẫn yêu cầu người dùng tự cấu hình.
+- Không còn runtime hay model dịch local (đã bỏ ở P3); dịch qua API hoặc thủ công.
+- Cài đặt → Dịch: chọn Gemini, ChatGPT hoặc Claude, nhập khóa và model. Video đã có lời gốc có nút “Dịch tiếng Việt”. Chỉ điền lời còn trống, giữ lời đã sửa. Chữ thoáng qua cũng được dịch; logo/chữ cố định chỉ được che.
+- Mọi câu máy dịch ở trạng thái cần duyệt.
 - Nhận dạng dùng mốc theo đoạn để tránh cấp phát ma trận alignment quá lớn trên RAM 16 GB. OCR chỉ thay mốc câu mới khi nội dung khớp ASR, không ghi đè câu đã dịch.
 - Che chữ v2: OCR 4 mẫu/giây, mask nét chữ và mép mềm, thay nền cục bộ rồi đè chữ Việt ở tọa độ gốc. Sai số lấy mẫu có thể tới 0,25 giây; nền phức tạp vẫn có dấu xử lý. Không phải xóa chữ hoàn hảo bằng model phục dựng.
 - Bản xuất cũ giữ nguyên. Khi xuất lại bản cũ, hệ thống kết xuất lại để dùng vùng che mới, không chỉ sao chép MP4 cũ.
