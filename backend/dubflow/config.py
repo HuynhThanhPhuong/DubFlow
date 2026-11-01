@@ -18,6 +18,8 @@ class Settings:
     speaker_python: str = field(default_factory=lambda: os.getenv('DUBFLOW_SPEAKER_PYTHON', str(ROOT / 'repo-tests/speaker-runtime/Scripts/python.exe')))
     model_cache: str = field(default_factory=lambda: os.getenv('DUBFLOW_MODEL_CACHE', str(ROOT / 'repo-tests/runtime/hf-cache')))
     lama_model: str = field(default_factory=lambda: os.getenv('DUBFLOW_LAMA_MODEL', str(ROOT / 'models/lama/lama_fp32.onnx')))
+    # folder holding the CUDA 12 + cuDNN 9 DLLs (read-only; e.g. torch/lib of an existing environment) for LaMa on the GPU
+    cuda_dll_dir: str = field(default_factory=lambda: os.getenv('DUBFLOW_CUDA_DLL_DIR', 'D:/OmniVoice/venv/Lib/site-packages/torch/lib'))
     asr_cache: str = field(default_factory=lambda: os.getenv('DUBFLOW_ASR_CACHE', 'D:/OmniVoice/cache/hf'))
     system_voices: Path = field(default_factory=lambda: Path(os.getenv('DUBFLOW_SYSTEM_VOICES', 'D:/OmniVoice/voices')))
     translation_mode: str = field(default_factory=lambda: os.getenv('DUBFLOW_TRANSLATION_MODE', 'manual'))

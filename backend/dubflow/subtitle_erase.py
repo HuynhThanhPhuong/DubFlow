@@ -38,20 +38,29 @@ def _ring_of(m: np.ndarray, size: int = 17) -> np.ndarray:
     return (cv2.dilate(m8, cv2.getStructuringElement(cv2.MORPH_RECT, (size, size))) > 0) & ~m
 
 
-def align_ref(frame: np.ndarray, ref: np.ndarray, m: np.ndarray, ring: np.ndarray, max_shift: float = 40.0):
+def align_ref(frame: np.ndarray, ref: np.ndarray, m: np.ndarray, ring: np.ndarray, max_shift: float = 40.0, good: float = 0.0):
     """Warp ref (same shape as frame) by the global shift that best matches frame outside the mask.
 
-    Returns (warped_ref, ring_mean_abs_diff). Candidates: no shift and the phase-correlation shift (both signs)."""
+    Returns (warped_ref, ring_mean_abs_diff). Candidates: no shift and the phase-correlation shift (both signs).
+    When the unshifted ref already matches within good (about the video noise), the phase correlation is skipped."""
     gf = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
     gr = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY).astype(np.float32)
     keep = ~m
     if keep.any():
         gf[m], gr[m] = gf[keep].mean(), gr[keep].mean()
     h, w = gf.shape
+    if good > 0 and ring.any():
+        d0 = float(np.abs(frame[ring].astype(np.float32) - ref[ring].astype(np.float32)).mean())
+        if d0 <= good:
+            return ref, d0
     cands = [(0.0, 0.0)]
     try:
-        win = cv2.createHanningWindow((w, h), cv2.CV_32F)
-        (dx, dy), _ = cv2.phaseCorrelate(gf, gr, win)
+        # half size is enough: the candidates are scored on the ring afterwards
+        hh, hw = max(2, h // 2), max(2, w // 2)
+        win = cv2.createHanningWindow((hw, hh), cv2.CV_32F)
+        (dx, dy), _ = cv2.phaseCorrelate(cv2.resize(gf, (hw, hh), interpolation=cv2.INTER_AREA),
+                                         cv2.resize(gr, (hw, hh), interpolation=cv2.INTER_AREA), win)
+        dx, dy = dx * w / hw, dy * h / hh
         if abs(dx) <= max_shift and abs(dy) <= max_shift and (abs(dx) > .05 or abs(dy) > .05):
             cands += [(dx, dy), (-dx, -dy)]
     except cv2.error:
@@ -152,8 +161,38 @@ def estimate_shadow(gray: np.ndarray, T: np.ndarray, excl: np.ndarray, scale: fl
 
 
 LAMA_SIZE, LAMA_CTX, LAMA_OVERLAP = 512, 48, 64  # model input side; context rows/cols around the mask; tile overlap
-LAMA_REUSE_TOL = 4.5  # ring diff (gray levels) under which an earlier LaMa result is reused as a reference
-LAMA_KEEP = 6  # number of recent LaMa-filled band crops kept as references
+LAMA_REUSE_TOL = 2.5  # ring diff (gray levels) under which an earlier LaMa result is reused (video noise ~1-1.7); 0 = one model call per frame
+LAMA_KEEP = 4  # number of recent LaMa-filled band crops kept as references (only when reuse is on)
+ALIGN_GOOD = 1.6  # ring diff (gray levels) that counts as a perfect match (video noise floor 1-1.7): stop searching
+STATIC_TOL = 6.0  # ring diff under which a motion-aligned clean reference replaces the glyph zone
+
+
+def open_lama(model, dll_dir=None):
+    """Open the LaMa ONNX model on CUDA when possible. Returns (session, provider, warning).
+
+    provider is 'cuda' or 'cpu'; warning is None or a short text when the slow CPU path is used. The CUDA 12 / cuDNN 9
+    DLLs are looked up in dll_dir (a setting, e.g. the torch/lib folder of another environment); nothing is copied."""
+    import os
+    import onnxruntime as ort
+    warning = None
+    cuda_listed = 'CUDAExecutionProvider' in ort.get_available_providers()
+    if not cuda_listed:
+        warning = 'LaMa runs on CPU (slow): this onnxruntime has no CUDA provider (install onnxruntime-gpu)'
+    elif not dll_dir or not os.path.isdir(dll_dir):
+        warning = f'LaMa runs on CPU (slow): CUDA/cuDNN DLL folder missing ({dll_dir or "not configured"})'
+    else:
+        os.add_dll_directory(str(dll_dir))
+        os.environ['PATH'] = str(dll_dir) + os.pathsep + os.environ.get('PATH', '')
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        try:
+            session = ort.InferenceSession(str(model), so, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            if session.get_providers()[0] == 'CUDAExecutionProvider':
+                return session, 'cuda', None
+            warning = 'LaMa runs on CPU (slow): CUDA provider could not start (see DLL folder and driver)'
+        except Exception as exc:  # noqa: BLE001 - any CUDA init failure falls back to CPU
+            warning = f'LaMa runs on CPU (slow): CUDA provider failed ({str(exc)[:120]})'
+    return ort.InferenceSession(str(model), providers=['CPUExecutionProvider']), 'cpu', warning
 
 
 def _tile_spans(lo: int, hi: int, limit: int):
@@ -182,16 +221,21 @@ def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0,
     spans = [s for s in _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W) if mask[y_lo:y_lo + th, s[0]:s[1]].any()]
     per = max(1, LAMA_SIZE // th)  # tiles stacked per canvas
     names = [i.name for i in session.get_inputs()]
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    acc = np.zeros((H, W, 3), np.float32)
-    wsum = np.zeros((H, W), np.float32)
+    # everything below works on the rows/columns the tiles cover, not on the whole frame (4x faster than full-frame math)
+    if not spans:
+        return img
+    cx0, cx1 = min(a for a, _ in spans), max(b for _, b in spans)
+    rgb = cv2.cvtColor(np.ascontiguousarray(img[y_lo:y_lo + th, cx0:cx1]), cv2.COLOR_BGR2RGB)
+    mc = mask[y_lo:y_lo + th, cx0:cx1]
+    acc = np.zeros(rgb.shape, np.float32)
+    wsum = np.zeros(rgb.shape[:2], np.float32)
     for c0 in range(0, len(spans), per):
         group = spans[c0:c0 + per]
         canvas = np.zeros((LAMA_SIZE, LAMA_SIZE, 3), np.float32)
         cmask = np.zeros((LAMA_SIZE, LAMA_SIZE), np.float32)
         for j, (a, b) in enumerate(group):
-            canvas[j * th:(j + 1) * th, :b - a] = rgb[y_lo:y_lo + th, a:b]
-            cmask[j * th:(j + 1) * th, :b - a] = mask[y_lo:y_lo + th, a:b]
+            canvas[j * th:(j + 1) * th, :b - a] = rgb[:, a - cx0:b - cx0]
+            cmask[j * th:(j + 1) * th, :b - a] = mc[:, a - cx0:b - cx0]
         # pad the unused canvas area with the nearest content so it does not look like a huge black hole edge
         used = len(group) * th
         if used < LAMA_SIZE:
@@ -203,24 +247,49 @@ def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0,
             ramp = min(LAMA_OVERLAP, b - a)
             w[:ramp] = np.minimum(w[:ramp], np.linspace(0.05, 1, ramp, dtype=np.float32)) if a > 0 else 1
             w[-ramp:] = np.minimum(w[-ramp:], np.linspace(1, 0.05, ramp, dtype=np.float32)) if b < W else w[-ramp:]
-            acc[y_lo:y_lo + th, a:b] += res[j * th:(j + 1) * th, :b - a] * w[None, :, None]
-            wsum[y_lo:y_lo + th, a:b] += w[None, :]
+            acc[:, a - cx0:b - cx0] += res[j * th:(j + 1) * th, :b - a] * w[None, :, None]
+            wsum[:, a - cx0:b - cx0] += w[None, :]
     got = wsum > 0
     filled = np.where(got[..., None], acc / np.maximum(wsum, 1e-6)[..., None], rgb.astype(np.float32))
-    alpha = np.maximum(mask.astype(np.float32), cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(0.8, feather * scale)))
+    mf = mc.astype(np.float32)
+    alpha = np.maximum(mf, cv2.GaussianBlur(mf, (0, 0), max(0.8, feather * scale)))
     alpha = np.minimum(alpha, 1.0) * got
-    out = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
-    return cv2.cvtColor(np.clip(out + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    patch = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
+    out = img.copy()
+    out[y_lo:y_lo + th, cx0:cx1] = cv2.cvtColor(np.clip(patch + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    return out
+
+
+def _paste_ref(fb: np.ndarray, ref: np.ndarray, zone: np.ndarray, scale: float) -> np.ndarray:
+    """Copy ref (aligned, same shape as fb) into the zone of fb with a ~2 px feathered edge.
+
+    The reference was shot at another moment: the smooth brightness/colour offset measured around the zone is carried
+    into it, so the pasted patch does not show up as a faint lighter/darker shape of the glyphs."""
+    alpha = np.maximum(zone.astype(np.float32), cv2.GaussianBlur(zone.astype(np.float32), (0, 0), max(1.0, 2 * scale)))
+    ref = ref.astype(np.float32)
+    # the offset is smooth, so it is interpolated at 1/4 size (16x cheaper) and scaled back up
+    h, w = zone.shape
+    sh, sw = max(1, h // 4), max(1, w // 4)
+    known = (~zone).astype(np.float32)
+    wt = cv2.resize(known, (sw, sh), interpolation=cv2.INTER_AREA)
+    num = cv2.resize((fb.astype(np.float32) - ref) * known[..., None], (sw, sh), interpolation=cv2.INTER_AREA).reshape(sh, sw, -1)
+    small = _pushpull(num / np.maximum(wt, 1e-4)[..., None], wt > 0.5)
+    offset = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR).reshape(h, w, -1)
+    ref = ref + cv2.GaussianBlur(offset, (0, 0), max(2.0, 2 * scale))
+    mixed = fb.astype(np.float32) * (1 - alpha[..., None]) + ref * alpha[..., None]
+    return np.clip(mixed + .5, 0, 255).astype(np.uint8)
 
 
 def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, band: tuple,
-                scale: float = 1.0, static_tol: float = 6.0, style: dict | None = None, lama=None):
+                scale: float = 1.0, static_tol: float = STATIC_TOL, style: dict | None = None, lama=None,
+                reuse_tol: float = LAMA_REUSE_TOL):
     """Erase glyphs (mask = glyph_mask output, full-frame, limited to box) and their drop shadow.
 
     refs: band-sized BGR crops (frame[y0b:y1b]). A motion-aligned reference is used when its ring diff <= static_tol
     (the glyph and shadow zone is copied from it); otherwise the shadow is divided out of the frame and only the
-    glyph strokes are rebuilt. With lama (an onnxruntime session) they are inpainted by LaMa, and a recent LaMa result
-    whose ring diff <= LAMA_REUSE_TOL is reused instead of a new model call; without it they use smooth_fill.
+    glyph strokes are rebuilt. With lama (an onnxruntime session) they are inpainted by LaMa on every such frame (an
+    earlier LaMa result is reused only when reuse_tol > 0 and its ring diff <= reuse_tol: faster, but can leave stale
+    patches); without it they use smooth_fill.
     style: dict shared across frames; keeps the shadow strength and the recent LaMa results.
     Returns (out, how, ring_diff) with how in {'none','ref','lamaref','lama','smooth'}."""
     x0, y0, x1, y1 = (int(v) for v in box)
@@ -256,28 +325,28 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
     for ref in refs or []:
         if ref is None or ref.shape != fb.shape:
             continue
-        warped, diff = align_ref(fb, ref, zone, ring)
+        warped, diff = align_ref(fb, ref, zone, ring, good=ALIGN_GOOD)
         if best_diff is None or diff < best_diff:
             best, best_diff = warped, diff
+        if best_diff <= ALIGN_GOOD:
+            break
     out = frame.copy()
     if best is not None and best_diff <= static_tol:
-        alpha = np.maximum(zone.astype(np.float32), cv2.GaussianBlur(zone.astype(np.float32), (0, 0), max(1.0, 2 * scale)))
-        mixed = fb.astype(np.float32) * (1 - alpha[..., None]) + best.astype(np.float32) * alpha[..., None]
-        out[b0:b1] = np.clip(mixed + .5, 0, 255).astype(np.uint8)
+        out[b0:b1] = _paste_ref(fb, best, zone, scale)
         return out, 'ref', best_diff
     if lama is not None:
         keys = style.setdefault('lama_keys', [])
         kbest, kdiff = None, None
-        for key in keys:
+        for key in (keys if reuse_tol > 0 else []):
             if key.shape != fb.shape:
                 continue
-            warped, diff = align_ref(fb, key, zone, ring)
+            warped, diff = align_ref(fb, key, zone, ring, good=ALIGN_GOOD)
             if kdiff is None or diff < kdiff:
                 kbest, kdiff = warped, diff
-        if kbest is not None and kdiff <= LAMA_REUSE_TOL:
-            alpha = np.maximum(zone.astype(np.float32), cv2.GaussianBlur(zone.astype(np.float32), (0, 0), max(1.0, 2 * scale)))
-            mixed = fb.astype(np.float32) * (1 - alpha[..., None]) + kbest.astype(np.float32) * alpha[..., None]
-            out[b0:b1] = np.clip(mixed + .5, 0, 255).astype(np.uint8)
+            if kdiff <= ALIGN_GOOD:
+                break
+        if kbest is not None and kdiff <= reuse_tol:
+            out[b0:b1] = _paste_ref(fb, kbest, zone, scale)
             return out, 'lamaref', kdiff
         # LaMa rebuilds glyphs and the shadow zone from the untouched frame (measured cleaner than dividing the shadow
         # out and inpainting only the strokes, which left grey smudges at object edges)
@@ -285,8 +354,9 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         hole[b0:b1] = zone
         src = frame
         out = lama_inpaint(lama, src, hole, scale)
-        keys.append(np.ascontiguousarray(out[b0:b1]))
-        del keys[:-LAMA_KEEP]
+        if reuse_tol > 0:
+            keys.append(np.ascontiguousarray(out[b0:b1]))
+            del keys[:-LAMA_KEEP]
         return out, 'lama', best_diff
     corr = np.clip(fb.astype(np.float32) / (1.0 - a)[..., None] + .5, 0, 255).astype(np.uint8)
     # a wide rebuilt area hides the shadow remnants on smooth backgrounds, but smears picture edges that run under the

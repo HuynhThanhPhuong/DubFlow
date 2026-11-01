@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 try:
     import cv2
@@ -7,7 +8,7 @@ except ImportError:  # backend venv has no cv2
     cv2 = None
 if cv2 is not None:
     from dubflow.subtitle_erase import (LAMA_SIZE, SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow,
-                                        glyph_mask, lama_inpaint, shadow_field)
+                                        glyph_mask, lama_inpaint, open_lama, shadow_field)
 
 
 def _bg(h=120, w=360):
@@ -231,23 +232,47 @@ class LamaFillTest(unittest.TestCase):
         h, w = frame.shape[:2]
         mask = glyph_mask(_gray(frame), 1.0)
         fake, style = _FakeLama(), {}
-        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5)
         self.assertEqual((how, len(fake.calls)), ('lama', 1))
         self.assertFalse(((out == 255).all(axis=2) & mask).any())  # no white glyph pixel left
-        out2, how2, diff = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        out2, how2, diff = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5)
         self.assertEqual((how2, len(fake.calls)), ('lamaref', 1))
         self.assertLessEqual(diff, 4.5)
+
+    def test_reuse_off_is_one_model_call_per_frame(self):
+        frame, _clean, _text = _shadowed(_bg())
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        fake, style = _FakeLama(), {}
+        for n in (1, 2, 3):
+            _, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=0)
+            self.assertEqual((how, len(fake.calls)), ('lama', n))
+        self.assertFalse(style.get('lama_keys'))
 
     def test_changed_content_triggers_a_new_model_call(self):
         frame, _clean, _text = _shadowed(_bg())
         h, w = frame.shape[:2]
         mask = glyph_mask(_gray(frame), 1.0)
         fake, style = _FakeLama(), {}
-        erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5)
         moved = np.clip(frame.astype(np.int16) + 40, 0, 255).astype(np.uint8)
         moved[np.repeat(mask[..., None], 3, axis=2)] = 255
-        _, how, _ = erase_frame(moved, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        _, how, _ = erase_frame(moved, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5)
         self.assertEqual((how, len(fake.calls)), ('lama', 2))
+
+    def test_open_lama_falls_back_to_cpu_with_a_warning(self):
+        from unittest.mock import patch
+        import onnxruntime as ort
+        model = Path(__file__).resolve().parents[2] / 'models/lama/lama_fp32.onnx'
+        if not model.is_file():
+            self.skipTest('LaMa model not installed')
+        _s, provider, warning = open_lama(model, '/no/such/dir')
+        self.assertEqual(provider, 'cpu')
+        self.assertIn('CPU', warning)
+        with patch.object(ort, 'get_available_providers', return_value=['CPUExecutionProvider']):
+            _s, provider, warning = open_lama(model, None)
+        self.assertEqual(provider, 'cpu')
+        self.assertIn('onnxruntime-gpu', warning)
 
 
 @unittest.skipUnless(cv2 is not None, "cv2 not available")
@@ -286,13 +311,14 @@ class EraseStageTest(unittest.TestCase):
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual(done['version'], 4)
+            self.assertEqual(done['version'], 5)
+            self.assertEqual((done['fill'], done['provider']), ('smooth', None))
             self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
             self.assertTrue(any('LaMa' in w for w in done['warnings']))
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (4, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (5, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile

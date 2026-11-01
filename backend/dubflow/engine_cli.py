@@ -466,22 +466,24 @@ def erase(directory, request):
     import subprocess
     import cv2
     import numpy as np
-    from subtitle_erase import erase_frame, glyph_mask
+    from subtitle_erase import LAMA_REUSE_TOL, STATIC_TOL, erase_frame, glyph_mask, open_lama
     directory = Path(directory)
-    lama, lama_warning = None, None
+    started = time.monotonic()  # includes opening the model (CUDA start-up can take seconds)
+    lama, lama_warning, provider = None, None, None
     model = request.get('lama_model')
     if model and Path(model).is_file():
-        import onnxruntime as ort
-        lama = ort.InferenceSession(str(model), providers=['CPUExecutionProvider'])
+        lama, provider, lama_warning = open_lama(model, request.get('cuda_dll_dir'))
     else:
         lama_warning = f'LaMa model missing ({model or "not configured"}): subtitles erased with the smooth fallback'
+    if lama_warning:
         print('WARNING: ' + lama_warning, file=sys.stderr, flush=True)
+    static_tol = float(request.get('erase_static_tol', STATIC_TOL))  # tuning knobs, normally unset
+    reuse_tol = float(request.get('lama_reuse_tol', LAMA_REUSE_TOL))
     ff, source = request['ffmpeg'], request['source']
     width, height = int(request['width']), int(request['height'])
     from fractions import Fraction
     fps_arg = str(request.get('fps_arg') or request.get('fps') or 25)  # rational such as 30000/1001
     fps = float(Fraction(fps_arg))
-    started = time.monotonic()
     track = read(directory/'subtrack.json', {})
     segs = sorted(track.get('segments', []), key=lambda s: s['s'])
     k = max(width, height) / 1920
@@ -577,7 +579,7 @@ def erase(directory, request):
                     continue
                 mask = np.zeros((height, width), bool)
                 mask[y0:y1, x0:x1] = part
-                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, style=style, lama=lama)
+                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol)
                 fills[how] = fills.get(how, 0) + 1
                 if how in ('ref', 'lamaref'):
                     ref_diffs.append(rd)
@@ -609,7 +611,8 @@ def erase(directory, request):
         reader.wait()
         shutil.rmtree(refs_dir, ignore_errors=True)
     os.replace(out, directory/'clean.mp4')
-    write(directory/'erase.json', dict(version=4, lama=lama is not None, warnings=[lama_warning] if lama_warning else [], source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill='lama' if lama is not None else 'smooth',
+                                       cuda_dll_dir=request.get('cuda_dll_dir'), warnings=[lama_warning] if lama_warning else [], source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

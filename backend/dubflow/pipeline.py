@@ -174,7 +174,7 @@ def context(job_dir, settings):
 
 def engine(stage, directory, settings, payload=None, emit=None):
     payload = dict(payload or {})
-    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','translation_model','translation_api_url','translation_api_key','translation_api_model','translation_context','translation_num_ctx','lama_model'):
+    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','translation_model','translation_api_url','translation_api_key','translation_api_model','translation_context','translation_num_ctx','lama_model','cuda_dll_dir'):
         value = getattr(settings, name, None)
         if value is not None:
             payload[name] = str(value)
@@ -290,15 +290,27 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
-ERASE_VERSION = 4
+ERASE_VERSION = 5
 
-def erase_current(directory, source, meta=None, full=True):
-    """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full)."""
+def erase_fell_back(done, settings):
+    """True when the recorded run used a weaker fill than the current settings allow: smooth fill although the LaMa
+    model exists now, or LaMa on CPU although a CUDA DLL folder is configured that the failed run did not use."""
+    model, dll = getattr(settings, 'lama_model', None), getattr(settings, 'cuda_dll_dir', None)
+    if not model or not Path(model).is_file():
+        return False
+    if done.get('fill') != 'lama':
+        return True
+    return done.get('provider') == 'cpu' and bool(dll) and Path(dll).is_dir() and done.get('cuda_dll_dir') != str(dll)
+
+def erase_current(directory, source, meta=None, full=True, settings=None):
+    """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full).
+    With settings, a run that fell back to a weaker fill (see erase_fell_back) is not current."""
     directory, source = Path(directory), Path(source)
     done = read(directory/'erase.json', {}) or {}
     try:
         stat = source.stat()
         ok = (done.get('version') == ERASE_VERSION and (directory/'clean.mp4').is_file()
+              and not (settings is not None and erase_fell_back(done, settings))
               and done.get('source_size') == stat.st_size and done.get('source_mtime_ns') == stat.st_mtime_ns
               and done.get('subtrack_hash') == file_hash(directory/'subtrack.json'))
         if ok and meta is not None:
@@ -315,7 +327,7 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings):
     clean, stamp = directory/'clean.mp4', directory/'erase.json'
     if not track.get('segments') or not getattr(settings, 'ocr_python', None):
         return
-    if erase_current(directory, source, meta):
+    if erase_current(directory, source, meta, settings=settings):
         return
     stat = Path(source).stat()
     hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'),

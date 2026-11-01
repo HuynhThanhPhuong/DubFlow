@@ -89,3 +89,33 @@ Thiết kế: `ref` tĩnh (như cũ) -> kết quả LaMa gần đây dùng lại
 Số đo (CPU, ORT 1.31.1, 12 luồng): 2,5-2,8 s mỗi lần gọi 512x512, batch không nhanh hơn (batch 4: 2,9-3,8 s/ảnh). Lần chạy cuối: 234 lần LaMa, 884 `lamaref`, 1086 `ref`, 61 `none`, tổng 777 s. Dùng lại với ngưỡng 3,0: 336 lần (ước ~1000 s); ngưỡng 6,0: 176 lần (~600 s, rủi ro vá cũ). GPU: venv OCR chỉ có CPU/Azure provider. `onnxruntime-directml` (thử ở thư mục riêng, không cài vào venv) lỗi ở node MatMul của FFC (80070057), nên cần CUDA (`onnxruntime-gpu` + CUDA/cuDNN) hoặc model xuất lại; chưa đo. Hai phiên chạy song song (6 luồng/phiên) đạt 1,8 s/lần (nhanh 1,5x), chưa tích hợp.
 
 Test: backend `unittest discover -s tests` (venv backend) 226 test OK (22 skipped); `tests.test_subtitle_erase` 22 test OK trong venv OCR (mới: LaMa giả, ghép lát, dùng lại, cảnh báo thiếu model).
+
+## Lần 4 (Task 8): LaMa trên GPU, sửa hai lỗi nhìn thấy
+
+Kết luận: ĐẠT về hình. Khung sạch 10/10; thời gian `erase` 237 s cho 106 s video (giới hạn 300 s), nhà cung cấp CUDAExecutionProvider (RTX 2060).
+
+Ảnh: `p2-evidence/v4/clean-band-NN.jpg` (dải y 1380-1640, phóng 2x), `clean-full-NN.jpg`, cùng 10 mốc 1,25 / 10,65 / 26,25 / 39,0 / 47,0 / 60,55 / 70,9 / 82,1 / 93,35 / 103,2 s. Đã xem từng ảnh, kể cả phóng 3x khung 07.
+
+| Khung | Kết quả |
+|---|---|
+| 00-06, 08, 09 | đạt |
+| 04 (47,0 s) | đạt: hết chỗ gãy ở cạnh cánh tay |
+| 05 (60,55 s) | đạt: hết đốm sáng hình chữ |
+| 07 (82,1 s) | đạt, sát: còn vân khối rất nhạt (kiểu khối nén của video gốc), không thành hình nét chữ |
+
+Nguyên nhân gốc và sửa:
+- Khung 05: nhánh `ref` dán nguyên vùng chữ từ khung tham chiếu chụp ở thời điểm khác, lệch sáng nhẹ nên vùng dán hiện thành bóng hình chữ. Sửa: trước khi dán, cộng vào ref phần chênh lệch sáng/màu mượt đo ở vòng quanh vùng (`_paste_ref`, nội suy push-pull ở 1/4 kích thước). Dùng cho cả `ref` và `lamaref`.
+- Khung 04: dùng lại kết quả LaMa cũ với ngưỡng 4,5 nên có vá cũ. Ngưỡng dùng lại hạ còn 2,5 mức xám (gần sàn nhiễu video 1-1,7), giữ 4 kết quả, và dán cũng cân sáng như trên. Đã thử gọi LaMa mọi khung không dùng lại (chạy A): khung 04 sạch nhưng khung 05 vẫn còn đốm (nhánh ref) và chậm (550 s), nên không chọn.
+- Đã loại bỏ việc tính trên cả khung 1080x1920 trong `lama_inpaint` (chỉ tính trên dải lát cắt: 0,40 -> 0,22 s mỗi khung có LaMa, kết quả giống từng pixel), `align_ref` tìm pha ở nửa kích thước và dừng sớm khi khớp <= 1,6.
+
+Gói cài vào venv OCR (`repo-tests/ocr`): `onnxruntime-gpu 1.23.2` (wheel 244 508 327 byte, cp312 win_amd64), gỡ `onnxruntime 1.31.1`. Kéo theo `coloredlogs 15.0.1`, `humanfriendly 10.0`, `flatbuffers 25.12.19`, `sympy 1.14.0`, `mpmath 1.3.0` (nhỏ). `rapidocr-onnxruntime 1.4.4` vẫn chạy (OCR 1 khung: đọc đúng "怎么这么多天没过来", 1,5 s trên CPU); OCR giữ nguyên CPU. Không có file requirements nào liệt kê venv OCR nên không cập nhật.
+- `onnxruntime-gpu 1.31.1` (bản mới nhất) cần CUDA 13 (`cublasLt64_13.dll`): thử, không tải được CUDA, rơi về CPU, đã gỡ. Bản 1.23.2 dùng CUDA 12 + cuDNN 9, khớp DLL của torch 2.8.0+cu128.
+- DLL CUDA/cuDNN nạp (chỉ đọc) từ `D:/OmniVoice/venv/Lib/site-packages/torch/lib` qua `os.add_dll_directory` (venv `repo-tests/runtime/.venv` không chứa torch). Setting `cuda_dll_dir` (env `DUBFLOW_CUDA_DLL_DIR`). Thiếu thư mục hoặc không có CUDA provider: chạy CPU và cảnh báo (stderr, `erase.json.warnings`, cảnh báo job).
+
+Thời gian (CUDA, 1 lần LaMa 512x512 = 0,20 s; CPU trước đó 2,5 s): chạy cuối `erase` 237 s (tính cả mở model, 8-40 s tuỳ cache), fills: lama 366, lamaref 740, ref 1098, none 61. Gọi LaMa mọi khung không dùng lại: 550 s (trước tối ưu hoá), ngưỡng 2,5 trước tối ưu hoá: 333 s.
+
+Nhấp nháy giữa 3 khung liên tiếp (`p2-evidence/v4/flicker-*.jpg`, hàng dưới là hiệu số x8): chênh trung bình trong vùng chữ so với ngoài vùng (sàn nhiễu video): 60,55 s (nhánh ref) 0,05-0,07 so với 0,32-0,33; 47,0 s (cảnh chuyển động, LaMa/lamaref) 0,85 / 4,1 so với 1,6 / 4,7. Không có nhấp nháy vượt nhiễu video gốc.
+
+Thay đổi khác: `ERASE_VERSION` 5; `erase.json` ghi `fill` (lama/smooth), `provider` (cuda/cpu), `cuda_dll_dir`. `erase_current(..., settings=...)` coi lần chạy lùi (không có model, hoặc CPU khi nay có thư mục DLL CUDA khác lần thử hỏng) là không còn hiện hành; không lặp vô hạn nếu CUDA vẫn hỏng với cùng thư mục.
+
+Test: backend (venv backend) `unittest discover -s tests` 229 test OK (24 skipped); `tests.test_subtitle_erase` 24 OK và 76 test subtitle_track/subtitle_mask OK trong venv OCR.

@@ -208,6 +208,26 @@ class PipelineTests(unittest.TestCase):
             p.write(Path(d)/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
             self.assertIn('erase',self._erase_prepare(Path(d),seg,self._stamp(Path(d),fps='30000/1001')))
 
+    def test_erase_rerun_when_run_fell_back_and_lama_is_now_available(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            model,dll=d/'lama.onnx',d/'cuda'
+            model.write_bytes(b'm'); dll.mkdir()
+            (d/'clean.mp4').write_bytes(b'clean')
+            def current(**over):
+                p.write(d/'erase.json',self._stamp(d,**over))
+                return p.erase_current(d,d/'source.mp4',dict(fps=25),settings=SimpleNamespace(lama_model=str(model),cuda_dll_dir=str(dll)))
+            self.assertTrue(current(fill='lama',provider='cuda'))
+            self.assertFalse(current(fill='smooth',provider=None))                      # ran without a model, model exists now
+            self.assertFalse(current(fill='lama',provider='cpu',cuda_dll_dir=None))     # CPU fallback, CUDA folder configured now
+            self.assertTrue(current(fill='lama',provider='cpu',cuda_dll_dir=str(dll)))  # same CUDA attempt already failed: no loop
+            model.unlink()
+            self.assertTrue(current(fill='smooth',provider=None))                       # model still missing: nothing better to do
+            self.assertTrue(p.erase_current(d,d/'source.mp4',dict(fps=25)))             # callers without settings ignore the fill
+
     def test_erase_warnings_from_engine_reach_the_job(self):
         seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
