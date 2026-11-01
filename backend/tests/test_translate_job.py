@@ -117,6 +117,30 @@ class TranslateJobTest(unittest.TestCase):
         cache = json.loads((self.d / 'translation-cache-v2.json').read_text(encoding='utf-8'))
         self.assertNotIn('Anh đang nó', json.dumps(cache, ensure_ascii=False))
 
+    def test_split_never_raises_with_huge_items(self):
+        p = prefs(max_output_tokens=1000)
+        huge = Item('h', '长' * 400, 0, 5, 'A', 'cue')
+        normal = make_items(30, step=3.2)
+        mixed = normal[:15] + [huge] + normal[15:]
+        chunks = plan_translation(mixed, 'dub', p).chunks
+        self.assertEqual([i.id for c in chunks for i in c], [i.id for i in mixed])
+        self.assertIn(['h'], [[i.id for i in c] for c in chunks])
+        every = [Item('h%d' % i, '长' * 400, i * 6, i * 6 + 5, 'A', 'cue') for i in range(5)]
+        self.assertEqual([len(c) for c in plan_translation(every, 'dub', p).chunks], [1] * 5)
+        self.assertEqual(len(plan_translation(every[:1], 'dub', p).chunks), 1)
+        self.assertEqual([len(c) for c in plan_translation(every[:2], 'dub', p).chunks], [1, 1])
+        out = run(self.d, mixed, p=p, fake=Fake())
+        self.assertEqual(len(out.texts), len(mixed))
+
+    def test_non_string_ids_are_ignored(self):
+        items = make_items(3)
+        rows = [{'id': ['c0'], 'vi': 'x'}, {'id': {'a': 1}, 'vi': 'y'}, {'id': 'c0', 'vi': 'a'},
+                {'id': 'c1', 'vi': 'b'}, {'id': 'c2', 'vi': 'c'}]
+        out = run(self.d, items, fake=Fake(script=[reply(rows)]), )
+        self.assertEqual(out.texts, {'c0': 'a', 'c1': 'b', 'c2': 'c'})
+        out2 = run(self.d, make_items(3), fake=Fake(script=[reply(rows)]), terminology='x')
+        self.assertEqual(out2.failed, [])
+
     def test_unknown_mode_raises_vietnamese_error(self):
         with self.assertRaises(ValueError):
             plan_translation(make_items(2), 'xyz', prefs())

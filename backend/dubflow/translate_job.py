@@ -142,21 +142,35 @@ def _chunk_est(items, mode, prefs, terminology) -> tuple[int, int]:
 
 
 def _split(items: list[Item], mode, prefs, terminology) -> list[list[Item]]:
-    n = len(items)
-
+    """Chia ít phần nhất, tất định, không bao giờ lỗi. Câu đơn lẻ không bao giờ vừa nằm riêng một phần."""
     def fits(part):
         i, o = _chunk_est(part, mode, prefs, terminology)
-        return o <= OUT_BUDGET * prefs.max_output_tokens and i * (1 + CONTEXT_RESERVE) <= prefs.max_input_tokens
+        return o <= OUT_BUDGET * prefs.max_output_tokens and i <= prefs.max_input_tokens * (1 - CONTEXT_RESERVE)
 
+    if len(items) < 2 or fits(items):
+        return [items] if items else []
+    parts, run = [], []
+    for it in items:
+        if fits([it]):
+            run.append(it)
+            continue
+        parts += _split_fitting(run, fits)
+        parts.append([it])
+        run = []
+    return parts + _split_fitting(run, fits)
+
+
+def _split_fitting(items: list[Item], fits) -> list[list[Item]]:
+    """Chia dãy câu mà từng câu đều vừa; ranh giới ở khoảng lặng lớn nhất quanh điểm chia đều."""
+    n = len(items)
     if n < 2 or fits(items):
-        return [items]
+        return [items] if items else []
     cum = [0.0]
     for it in items:
         cum.append(cum[-1] + _est_out(it))
     total = cum[-1]
     gap = lambda b: items[b].start - items[b - 1].end
-    k = max(2, math.ceil(total / (OUT_BUDGET * prefs.max_output_tokens)))
-    hopeless = any(not fits([it]) for it in items)  # có câu đơn lẻ không bao giờ vừa: không tăng k
+    k = 2
     while True:
         cuts, prev = [], 0
         for j in range(1, k):
@@ -169,7 +183,7 @@ def _split(items: list[Item], mode, prefs, terminology) -> list[list[Item]]:
             cuts.append(prev)
         edges = [0, *cuts, n]
         parts = [items[a:b] for a, b in zip(edges, edges[1:])]
-        if k >= n or hopeless or all(fits(p) for p in parts):
+        if k >= n or all(fits(p) for p in parts):
             return parts
         k += 1
 
@@ -221,7 +235,7 @@ def _check(reply, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
     for r in rows:
         if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in wanted:
             seen.setdefault(r['id'], []).append(r.get('vi'))
-    last = next((r['id'] for r in reversed(rows) if isinstance(r, dict) and r.get('id') in seen), None)
+    last = next((r['id'] for r in reversed(rows) if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in seen), None)
     good = {}
     for i, vals in seen.items():
         if reply.truncated and i == last:  # câu cuối của bản trả bị cắt có thể dở dang
