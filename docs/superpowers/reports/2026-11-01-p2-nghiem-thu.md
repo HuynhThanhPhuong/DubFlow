@@ -34,3 +34,38 @@ Lệch tối đa 2 px (0,1% chiều cao), cùng font, cỡ và vị trí: đạt
 ## Lưu ý
 - Lời Việt chỉ là mẫu để thử xuống dòng; câu dài tạo 3-4 dòng, đúng thiết kế sẽ cờ `LINES_OVERFLOW`.
 - Test backend: `unittest discover` 214 test OK (11 skipped).
+
+## Lần 2 (Task 6): viết lại mặt nạ và điền nền
+
+Kết luận: KHÔNG ĐẠT. Khung sạch 7/10 (cần 10/10). Các khối chữ nhật mờ của lần 1 đã hết; khung 01, 02, 04 còn vệt mờ nhỏ ở chỗ cạnh vật thể (tay/nền đen, tay/quần jean) cắt qua dòng chữ.
+
+Ảnh mới: `p2-evidence/v2/clean-band-NN.jpg` (dải y 1380-1640, phóng 2x) và `clean-full-NN.jpg`, cùng 10 mốc 1,25 / 10,65 / 26,25 / 39,0 / 47,0 / 60,55 / 70,9 / 82,1 / 93,35 / 103,2 s. Đã xem từng ảnh.
+
+| Khung | Kết quả |
+|---|---|
+| 00, 03, 05, 06, 07, 08, 09 | đạt (00 còn vài chấm sáng/tối cỡ vài px dưới chân chữ, không đọc được) |
+| 01, 02, 04 | KHÔNG: không còn nét chữ Trung, không còn hộp chữ nhật, nhưng còn vệt xám/xanh mờ ở chỗ cạnh tay-nền đen và tay-quần jean, vài chấm tối nhỏ trên cánh tay |
+
+Nguyên nhân gốc của lần 1 (đo được): mặt nạ cuối gấp 4,5-4,7 lần diện tích nét trắng (khung 01: nét trắng 12 671 px, mặt nạ 60 173 px) vì giãn 19x19 để che bóng đổ. Chữ có bóng đổ mềm (lệch 3 px, mờ sigma 5 px, làm tối nền tới 40%). Bóng này không phải nét chữ nên che bằng hộp thì phải điền cả dòng bằng nội suy phẳng.
+
+Thay đổi:
+- `glyph_mask`: chỉ lấy nét trắng có pixel tối hơn nhiều trong bán kính 5 px (bắt cả nét trên nền da sáng mà bản cũ bỏ sót), giãn 2 px. Không che khoảng giữa các chữ.
+- Bóng đổ được chia ngược (nền = khung / (1 - a)) theo mô hình a = lam * 0,42 * (1 - exp(-T/0,38)), T = mặt nạ chữ lệch 3 px rồi mờ sigma 5 px. Hằng số khớp trên 3 cặp khung (có chữ / sạch) của cảnh tĩnh: sai số tuyệt đối trung bình trong vùng bóng 10,6 mức xám giảm còn 2,8. `lam` tự ước lượng từng khung (so độ sáng sát chữ với 20-40 px xa, trung vị theo khối cột) và làm mượt qua các khung; không có bóng thì lam về 0.
+- Chỉ điền lại nét chữ (giãn 6 px, đóng khe 5 px, bóng sạch ở ngoài); gần cạnh ảnh (gradient > 14) chỉ giãn 3 px để không làm nhòe cạnh. Điền bằng push-pull, mép hoà trộn sigma 4 px, hạt nhiễu lấy theo MAD của vòng quanh.
+- Khung tham chiếu tĩnh (`ref`) vẫn dùng khi sai khác vòng quanh <= 6; vùng thay là chữ + bóng.
+- `ERASE_VERSION` 2 -> 3 (cache cũ bị vô hiệu). Bỏ `fill_frame` (không còn dùng).
+
+Số đo trên 3 cặp khung tĩnh (so với khung sạch thật, sai số tuyệt đối trung bình trong vùng quanh chữ, mức xám): nội suy cũ ~10,6 (không xử lý bóng); bản này 3,3 / 2,2 / 2,4 với giãn 3 px, 3,1 / 1,9 / 2,0 với 4 px, 4,1 / 1,7 / 1,5 với 6 px (chọn 6). Sàn nhiễu video khoảng 1-1,7.
+
+Đã thử và bỏ:
+- Telea/NS trên mặt nạ giãn: mặt khối đa giác, và kéo lại điểm sáng của nét chưa che.
+- Chỉ Telea cho nét mỏng không xử lý bóng: còn bóng hình chữ rõ.
+- Nhân gain tuyến tính 0,6*T: đốm sáng/tối ở khe giữa nét. Đường cong bão hoà đo được thay thế.
+- Quang lưu Farneback dịch khung tham chiếu cách 1-1,5 s: biến dạng cả nền, tệ hơn nội suy.
+- Phân hai lớp sáng/tối khi điền (giữ cạnh): cạnh giả răng cưa ở tay/quần jean, bỏ.
+
+Thời gian `erase`: 129,5 s cho 106 s video (lần 1: 116,5 s; giới hạn 233 s). Fills: smooth 1118, ref 1086, none 61.
+
+Test: backend `unittest discover -s tests` 220 test OK (17 skipped); `tests.test_subtitle_erase` 17 test OK trong venv OCR (mới: mặt nạ mỏng, khe giữa chữ, nền sáng trơn, ước lượng bóng, không bóng ma, ref tĩnh/ref lệch).
+
+Điều còn thiếu để đạt 10/10: nội dung dưới chữ ở khung 01, 02, 04 là cạnh của vật thể chuyển động (tay, cánh tay), không có khung tham chiếu cùng vị trí. Cách khả thi tiếp theo là bù chuyển động theo cục bộ từ các khung gần (trước/sau 0,2-0,4 s) kết hợp kiểm tra phần dư từng pixel; cần đệm nhiều khung và ước lượng chuyển động chịu được chữ cố định trên màn hình. Đây là thay đổi kiến trúc của stage `erase`, chưa làm.

@@ -478,7 +478,6 @@ def erase(directory, request):
     segs = sorted(track.get('segments', []), key=lambda s: s['s'])
     k = max(width, height) / 1920
     grow, frame_dt = int(round(14 * k)), 1 / fps
-    spread = np.ones((2 * int(round(9 * k)) + 1,) * 2, np.uint8)  # cover the dark outline/shadow, not only the white strokes
     margin, min_px = 0.25, max(10, 30 * k * k)
     band = track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]
     ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
@@ -528,7 +527,7 @@ def erase(directory, request):
         shutil.rmtree(refs_dir, ignore_errors=True)
         raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
-    loaded = (None, None)
+    loaded, style = (None, None), {}
     try:
         while True:
             # cancel.request is normally handled by the pipeline's wait_owned (kills this process and raises Cancelled);
@@ -565,13 +564,12 @@ def erase(directory, request):
                 if x1 <= x0 or y1 <= y0:
                     continue
                 part = glyph_mask(gray[y0:y1, x0:x1], k)
-                grown = cv2.dilate(part.astype(np.uint8), spread) > 0
                 # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
                 if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
                     continue
                 mask = np.zeros((height, width), bool)
-                mask[y0:y1, x0:x1] = grown
-                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k)
+                mask[y0:y1, x0:x1] = part
+                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, style=style)
                 fills[how] = fills.get(how, 0) + 1
                 if how == 'ref':
                     ref_diffs.append(rd)
@@ -603,7 +601,7 @@ def erase(directory, request):
         reader.wait()
         shutil.rmtree(refs_dir, ignore_errors=True)
     os.replace(out, directory/'clean.mp4')
-    write(directory/'erase.json', dict(version=2, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+    write(directory/'erase.json', dict(version=3, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

@@ -6,7 +6,8 @@ try:
 except ImportError:  # backend venv has no cv2
     cv2 = None
 if cv2 is not None:
-    from dubflow.subtitle_erase import erase_frame, fill_frame, glyph_mask, _ring_of
+    from dubflow.subtitle_erase import (SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow, glyph_mask,
+                                        shadow_field)
 
 
 def _bg(h=120, w=360):
@@ -30,40 +31,103 @@ def _gray(img):
 
 
 @unittest.skipUnless(cv2 is not None, "cv2 not available")
-class SubtitleEraseTest(unittest.TestCase):
+class GlyphMaskTest(unittest.TestCase):
     def setUp(self):
         self.bg = _bg()
-        self.clean = cv2.cvtColor(self.bg, cv2.COLOR_GRAY2BGR)
         self.frame = _with_text(self.bg)
         self.gray = _gray(self.frame)
-        self.box = (0, 0, self.frame.shape[1], self.frame.shape[0])
         self.mask = glyph_mask(self.gray, 1.0)
 
-    def test_mask_covers_white_glyph_and_outline(self):
+    def test_mask_covers_white_strokes_but_not_the_whole_line(self):
         white = self.gray > 200
-        outline = self.gray < 60
         self.assertGreaterEqual(self.mask[white].mean(), 0.99)
-        self.assertGreaterEqual(self.mask[outline].mean(), 0.95)
-        self.assertLessEqual(self.mask.sum(), 2.5 * (white | outline).sum())
+        # thin mask: strokes plus a 2 px rim, far less than the old dilated whole-line box
+        self.assertLessEqual(self.mask.sum(), 3.5 * white.sum())
+        wide = cv2.dilate(self.mask.astype(np.uint8), np.ones((19, 19), np.uint8)) > 0  # the old whole-line style mask
+        self.assertLess(self.mask.sum(), 0.5 * wide.sum())
 
-    def test_static_background_copied_from_clean_ref(self):
-        out = fill_frame(self.frame, self.mask, self.box, self.clean)
-        diff = np.abs(out.astype(int) - self.clean.astype(int))[self.mask]
-        self.assertLess(diff.mean(), 3)
+    def test_gaps_between_characters_are_not_masked(self):
+        cols = self.mask.any(0)
+        white_cols = (self.gray > 200).any(0)
+        gap = ~cv2.dilate(white_cols.astype(np.uint8)[None, :], np.ones((1, 15), np.uint8))[0].astype(bool)
+        inside = np.arange(len(gap))
+        inside = (inside > np.where(white_cols)[0].min()) & (inside < np.where(white_cols)[0].max())
+        self.assertFalse(cols[gap & inside].any())
 
-    def test_moving_background_uses_inpaint_not_ref(self):
-        ref = np.roll(self.clean, 20, axis=1)
-        out = fill_frame(self.frame, self.mask, self.box, ref)
-        self.assertFalse(np.array_equal(out[self.mask], ref[self.mask]))
-        self.assertEqual((_gray(out)[self.mask] > 200).sum(), 0)
+    def test_plain_bright_area_is_not_a_glyph(self):
+        bright = np.full((120, 360), 230, np.uint8)
+        self.assertEqual(glyph_mask(bright, 1.0).sum(), 0)
 
-    def test_no_ref_inpaints(self):
-        out = fill_frame(self.frame, self.mask, self.box, None)
-        self.assertEqual((_gray(out)[self.mask] > 200).sum(), 0)
+    def test_scale_grows_the_rim(self):
+        self.assertGreater(glyph_mask(self.gray, 2.0).sum(), self.mask.sum())
 
-    def test_pixels_outside_mask_untouched(self):
-        out = fill_frame(self.frame, self.mask, self.box, None)
-        self.assertTrue(np.array_equal(out[~self.mask], self.frame[~self.mask]))
+
+def _shadowed(bg_gray, scale=1.0):
+    """Frame with white text and a soft drop shadow that follows the fitted model; returns (frame, clean, text_mask)."""
+    h, w = bg_gray.shape
+    text = np.zeros((h, w), np.uint8)
+    cv2.putText(text, "SUB 88", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.8, 255, 5, cv2.LINE_8)
+    core = cv2.dilate(text, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+    T = shadow_field(core, scale)
+    a = SHADOW_AMAX * (1 - np.exp(-T / SHADOW_TAU))
+    clean = cv2.cvtColor(bg_gray, cv2.COLOR_GRAY2BGR)
+    frame = np.clip(clean.astype(np.float32) * (1 - a)[..., None] + .5, 0, 255).astype(np.uint8)
+    frame[text > 0] = 255
+    return frame, clean, text > 0
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class ShadowEraseTest(unittest.TestCase):
+    def setUp(self):
+        self.frame, self.clean, self.text = _shadowed(_bg())
+        self.h, self.w = self.frame.shape[:2]
+        self.mask = glyph_mask(_gray(self.frame), 1.0)
+
+    def _erase(self, refs=()):
+        return erase_frame(self.frame, self.mask, (0, 0, self.w, self.h), list(refs), (0, self.h), 1.0, style={})
+
+    def test_shadow_strength_is_estimated(self):
+        core = self.mask
+        T = shadow_field(core, 1.0)
+        lam = estimate_shadow(_gray(self.frame), T, cv2.dilate(core.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0, 1.0)
+        self.assertIsNotNone(lam)
+        self.assertGreater(lam, 0.6)
+        self.assertLess(lam, 1.4)
+
+    def test_no_evidence_gives_none(self):
+        empty = np.zeros((60, 60), bool)
+        self.assertIsNone(estimate_shadow(np.full((60, 60), 120, np.uint8), shadow_field(empty), empty))
+
+    def test_glyphs_and_soft_shadow_are_gone_without_a_reference(self):
+        out, how, _ = self._erase()
+        self.assertEqual(how, 'smooth')
+        zone = cv2.dilate(self.text.astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+        err = np.abs(_gray(out).astype(int) - _gray(self.clean).astype(int))
+        self.assertEqual((_gray(out)[self.text] > 200).sum(), 0)
+        self.assertLess(err[zone].mean(), 3.0)
+        self.assertLess(err[zone].max(), 25)
+
+    def test_no_embossed_ghost_of_the_text(self):
+        out, _, _ = self._erase()
+        diff = (_gray(out).astype(np.float32) - _gray(self.clean).astype(np.float32))
+        ghost = cv2.GaussianBlur(diff, (0, 0), 2.0)[cv2.dilate(self.text.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0]
+        self.assertLess(np.abs(ghost).max(), 5.0)
+
+    def test_pixels_far_from_text_untouched(self):
+        out, _, _ = self._erase()
+        far = ~(cv2.dilate(self.mask.astype(np.uint8), np.ones((61, 61), np.uint8)) > 0)
+        self.assertTrue(np.array_equal(out[far], self.frame[far]))
+
+    def test_static_reference_is_used_when_it_matches(self):
+        out, how, diff = self._erase([self.clean])
+        self.assertEqual(how, 'ref')
+        zone = cv2.dilate(self.text.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+        self.assertLess(np.abs(out.astype(int) - self.clean.astype(int))[zone].mean(), 2.0)
+
+    def test_moving_reference_is_rejected(self):
+        out, how, _ = self._erase([np.roll(self.clean, 30, axis=1)])
+        self.assertEqual(how, 'smooth')
+        self.assertEqual((_gray(out)[self.text] > 200).sum(), 0)
 
 
 def _textured(h=120, w=360, seed=3):
@@ -152,7 +216,7 @@ class EraseStageTest(unittest.TestCase):
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (2, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (3, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile

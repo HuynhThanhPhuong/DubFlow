@@ -159,7 +159,7 @@ class PipelineTests(unittest.TestCase):
 
     def _stamp(self, directory, **over):
         st=(directory/'source.mp4').stat()
-        return dict(dict(version=2,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),fps='25',
+        return dict(dict(version=p.ERASE_VERSION,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),fps='25',
                          source_size=st.st_size,source_mtime_ns=st.st_mtime_ns,frames_touched=1,seconds=1),**over)
 
     def _erase_prepare(self, directory, segments, stamp=None):

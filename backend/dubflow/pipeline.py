@@ -290,7 +290,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
-ERASE_VERSION = 2
+ERASE_VERSION = 3
 
 def erase_current(directory, source, meta=None, full=True):
     """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full)."""
