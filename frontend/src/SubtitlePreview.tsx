@@ -113,6 +113,7 @@ export function SubtitlePreview({
     .filter(
       (r) =>
         r.enabled &&
+        !r.erased &&
         !(cleanVideo && r.kind === "subtitle") &&
         [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
         r.width > 0 &&

@@ -97,6 +97,10 @@ export interface Region {
   text: string;
   translation: string;
   enabled: boolean;
+  auto?: boolean;
+  confirmed?: boolean;
+  label?: string;
+  erased?: boolean;
 }
 export interface Part {
   id: string;

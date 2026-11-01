@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import WaveSurfer from "wavesurfer.js";
 import type { Cue, Job, Region } from "./types";
-import { api, mediaUrl } from "./api";
+import { api, ApiError, mediaUrl } from "./api";
+import { RegionOverlay } from "./RegionOverlay";
 import { isBusy, playerSource, time } from "./helpers";
 import { Button, Empty } from "./ui";
 import { SubtitlePreview, fitVideoRect } from "./SubtitlePreview";
@@ -41,6 +42,8 @@ export function Player({
   const [now, setNow] = useState(Number.isFinite(seek.time) ? seek.time : 0);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const togglePlay = async () => {
     if (!video.current) return;
     try {
@@ -67,7 +70,6 @@ export function Player({
   }, [preferred]);
   useEffect(() => {
     setRegions([]);
-    if (!hasVietnamese) return;
     let live = true;
     api
       .regions(job.id)
@@ -80,7 +82,39 @@ export function Player({
     return () => {
       live = false;
     };
-  }, [job.id, job.updated_at, hasVietnamese]);
+  }, [job.id, job.updated_at]);
+  const videoW = job.width || video.current?.videoWidth || 0;
+  const videoH = job.height || video.current?.videoHeight || 0;
+  const saveRegions = (rows: Region[]) => {
+    setRegions(rows);
+    api
+      .saveRegions(job.id, rows)
+      .then(setRegions)
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "Không lưu được vùng che."),
+      );
+  };
+  const detectLogos = async () => {
+    setDetecting(true);
+    setError("");
+    try {
+      await api.detectLogos(job.id);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 409
+          ? "Video đang xử lý, hãy thử dò logo lại sau."
+          : e instanceof Error
+            ? e.message
+            : "Không dò được logo.",
+      );
+    } finally {
+      setDetecting(false);
+    }
+  };
+  const startDrawing = () => {
+    video.current?.pause();
+    setDrawing(true);
+  };
   useEffect(() => {
     const node = frame.current;
     if (!node) return;
@@ -186,7 +220,19 @@ export function Player({
             cleanVideo={!!cleanSource}
           />
         )}
-        {source && !playing && (
+        {source && videoW > 0 && (
+          <RegionOverlay
+            regions={regions}
+            rect={rect}
+            videoWidth={videoW}
+            videoHeight={videoH}
+            duration={job.duration || video.current?.duration || 0}
+            drawing={drawing}
+            onChange={saveRegions}
+            onDrawEnd={() => setDrawing(false)}
+          />
+        )}
+        {source && !playing && !drawing && (
           <Button
             className="video-play-overlay media-button"
             aria-label="Phát video"
@@ -201,6 +247,21 @@ export function Player({
           {error}
         </p>
       )}
+      <div className="region-tools" aria-label="Che logo">
+        <Button
+          variant="ghost"
+          disabled={detecting || isBusy(job)}
+          onClick={() => void detectLogos()}
+        >
+          {detecting ? "Đang dò…" : "Dò logo"}
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={() => (drawing ? setDrawing(false) : startDrawing())}
+        >
+          {drawing ? "Xong vẽ" : "Vẽ vùng che"}
+        </Button>
+      </div>
       <div className="play-controls system-controls">
         <Button
           className="media-button"

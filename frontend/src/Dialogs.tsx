@@ -273,7 +273,7 @@ export function SettingsDialog({
       title={kind === "regions" ? "Tuỳ chỉnh vùng chữ" : "Chia phần video"}
       description={
         kind === "regions"
-          ? `Toạ độ pixel trên video gốc ${job.width || "?"} × ${job.height || "?"}. Thời gian tính bằng giây.`
+          ? "Kéo vẽ vùng trực tiếp trên video để đổi vị trí. Ở đây chỉnh thời gian (giây), loại vùng và bật/tắt."
           : "Điều chỉnh điểm bắt đầu/kết thúc theo giây. Các phần không được chồng lấn."
       }
       onClose={onClose}
@@ -291,27 +291,18 @@ export function SettingsDialog({
             {kind === "regions"
               ? regions.map((r, i) => (
                   <fieldset key={r.id}>
-                    <legend>Vùng {i + 1}</legend>
+                    <legend>
+                      Vùng {i + 1}
+                      {r.label ? ` · ${r.label}` : ""}
+                      {!r.enabled && r.confirmed ? " · đã bỏ" : ""}
+                    </legend>
                     <div className="field-grid">
-                      {(
-                        ["x", "y", "width", "height", "start", "end"] as const
-                      ).map((field) => (
+                      {(["start", "end"] as const).map((field) => (
                         <label key={field}>
-                          {
-                            {
-                              x: "X (px)",
-                              y: "Y (px)",
-                              width: "Rộng (px)",
-                              height: "Cao (px)",
-                              start: "Bắt đầu (s)",
-                              end: "Kết thúc (s)",
-                            }[field]
-                          }
+                          {field === "start" ? "Bắt đầu (s)" : "Kết thúc (s)"}
                           <input
                             type="number"
-                            step={
-                              field === "start" || field === "end" ? ".01" : "1"
-                            }
+                            step=".01"
                             value={r[field]}
                             onChange={(e) =>
                               updateRegion(r.id, {
@@ -427,14 +418,17 @@ export function SettingsDialog({
                         id: crypto.randomUUID(),
                         x: 0,
                         y: 0,
-                        width: Math.min(300, job.width || 300),
-                        height: Math.min(80, job.height || 80),
+                        width: job.width || 300,
+                        height: job.height || 80,
                         start: 0,
                         end: job.duration || 1,
-                        kind: "subtitle",
+                        kind: "static",
                         text: "",
                         translation: "",
                         enabled: true,
+                        auto: false,
+                        confirmed: true,
+                        label: "Vùng thêm tay",
                       },
                     ])
                   : setParts([

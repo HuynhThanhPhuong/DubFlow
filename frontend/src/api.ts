@@ -122,6 +122,8 @@ export const api = {
   regions: (id: string) => request<Region[]>(`/jobs/${key(id)}/regions`),
   saveRegions: (id: string, data: Region[]) =>
     request<Region[]>(`/jobs/${key(id)}/regions`, json("PUT", data)),
+  detectLogos: (id: string) =>
+    request<Job>(`/jobs/${key(id)}/detect-logos`, json("POST", {})),
   parts: (id: string) => request<Part[]>(`/jobs/${key(id)}/parts`),
   saveParts: (id: string, data: Part[]) =>
     request<Part[]>(`/jobs/${key(id)}/parts`, json("PUT", data)),
