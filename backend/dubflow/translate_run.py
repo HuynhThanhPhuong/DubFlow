@@ -146,10 +146,10 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     emit('translating', 'Đang dịch lời gốc và chữ trên hình sang tiếng Việt', 45)
     prefs = prefs_ns(settings)
     provider = None
+    stop_file = folder / 'cancel.request'
     try:
         provider = make_provider(name, key, model, thinking=settings.thinking)
         limiter = RateLimiter(Path(settings.data_dir) / RATE_FILE, prefs.rate_rpm, prefs.rate_rpd, scope=f'{name}/{model}')
-        stop_file = folder / 'cancel.request'
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow,
                                   spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
@@ -161,10 +161,12 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
             provider.close()
     # Request đã gửi luôn được ghi vào số liệu dùng. Khi hủy thì không ghi chữ vào cues.json
     # (người dùng có thể đang sửa); bản dịch đã trả tiền vẫn nằm trong cache.
-    if outcome.paused != 'cancelled':
+    cancelled = outcome.paused == 'cancelled' or stop_file.exists()
+    if not cancelled:
         apply_outcome(folder, items, outcome, scope, terminology)
     _add_usage(folder, name, model, mode, outcome)
-    _set_paused(folder, outcome.paused)
+    if not cancelled:
+        _set_paused(folder, outcome.paused)
     check_cancel()
     warnings = []
     if outcome.error:

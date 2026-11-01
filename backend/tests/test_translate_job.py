@@ -275,9 +275,9 @@ class TranslateJobTest(unittest.TestCase):
         self.assertTrue(all(len(c['items']) < 40 for c in f.calls))
 
     def test_bad_replies_are_failed_and_not_cached(self):
-        items = [Item('a', '你好吗', 0, 2, 'A', 'cue'), Item('b', 'OK', 2, 4, 'A', 'cue'),
+        items = [Item('a', '你好吗', 0, 2, 'A', 'cue'), Item('b', '好', 2, 4, 'A', 'cue'),
                  Item('c', '谢谢', 4, 6, 'A', 'cue'), Item('d', '再见', 6, 8, 'A', 'cue')]
-        rows = [{'id': 'a', 'vi': 'Bạn khỏe 好 không'}, {'id': 'b', 'vi': 'OK'},
+        rows = [{'id': 'a', 'vi': 'Bạn khỏe 好 không'}, {'id': 'b', 'vi': '好'},
                 {'id': 'c', 'vi': 'cảm ơn ' * 40}, {'id': 'd', 'vi': 'Tạm biệt'}]
         f = Fake(script=[reply(rows), reply([])])
         out = run(self.d, items, fake=f, mode='dub')
@@ -289,6 +289,11 @@ class TranslateJobTest(unittest.TestCase):
         self.assertNotIn('cảm ơn', blob)
         out2 = run(self.d / 'v', items, fake=Fake(script=[reply([{'id': 'c', 'vi': 'cảm ơn bạn ' * 2}] + [{'id': 'a', 'vi': 'x'}])]), mode='vietsub')
         self.assertIn('a', out2.texts)
+
+    def test_identical_allowed_when_zh_has_no_cjk(self):
+        it = Item('a', 'OK', 0, 2, 'A', 'cue')
+        out = run(self.d, [it], fake=Fake(script=[reply([{'id': 'a', 'vi': 'OK'}])]), mode='dub')
+        self.assertEqual(out.texts, {'a': 'OK'})
 
     def test_mild_overrun_is_not_rejected(self):
         it = Item('a', '你好', 0, 2, 'A', 'cue')  # max_syllables = 9

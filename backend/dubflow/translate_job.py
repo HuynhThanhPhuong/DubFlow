@@ -243,7 +243,7 @@ def _merge_context(base: dict, new) -> dict:
 
 def _too_long(it: Item, vi: str, mode: str, prefs) -> bool:
     """Hỏng hẳn: còn chữ Hán, y nguyên bản gốc, hoặc dài quá 1,5 lần giới hạn cứng. Vượt nhẹ thì để cờ review bắt."""
-    if needs_translation(vi) or vi == it.zh.strip():
+    if needs_translation(vi) or (needs_translation(it.zh) and vi == it.zh.strip()):
         return True
     p = _payload_item(it, mode, prefs)
     if mode == 'vietsub':

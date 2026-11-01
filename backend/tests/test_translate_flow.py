@@ -333,6 +333,21 @@ class RunTests(Base):
         self.assertEqual(self.store.get_job(self.jid)['status'], 'cancelled')
         self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)
 
+    def test_cancel_during_final_request_leaves_cues_and_records_usage(self):
+        self.configure()
+        self.make_job()
+        before = (self.folder / 'cues.json').read_bytes()
+
+        class Cancelling(Fake):
+            def generate(inner, *a):
+                r = Fake.generate(inner, *a)
+                (self.folder / 'cancel.request').touch()
+                return r
+
+        self.run_translate_raw(Cancelling())
+        self.assertEqual((self.folder / 'cues.json').read_bytes(), before)
+        self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)
+
     def test_pause_flag_set_and_cleared(self):
         self.configure(max_output_tokens=256)
         cues = [dict(id=f'c{i}', start=i * 3, end=i * 3 + 2, speaker='A', original=LONG, text='') for i in range(6)]
