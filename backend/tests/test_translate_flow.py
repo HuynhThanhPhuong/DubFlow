@@ -236,6 +236,23 @@ class RunTests(Base):
         self.run_translate(Fake(error=ProviderError('hỏng')), scope='all')
         self.assertEqual((self.folder / 'translation-usage.json').read_text(encoding='utf-8'), before)
 
+    def test_latin_cue_is_sent(self):
+        self.configure()
+        cues = [dict(id='e1', start=0, end=2, speaker='A', original='Hello there', text='')]
+        self.make_job(cues=cues)
+        fake = Fake()
+        self.run_translate(fake)
+        self.assertIn('e1', [i for ids in fake.sent for i in ids])
+
+    def test_timed_out_request_counts_in_usage(self):
+        self.configure()
+        self.make_job()
+        err = ProviderError('quá lâu')
+        err.sent = True
+        self.run_translate(Fake(error=err))
+        usage = self.client.get(self.base).json()['translation_usage']
+        self.assertEqual((usage['requests'], usage['input_tokens'], usage['output_tokens']), (1, 0, 0))
+
     def test_no_key_never_calls_api(self):
         self.make_job()
         with patch('dubflow.translate_run.make_provider') as make:

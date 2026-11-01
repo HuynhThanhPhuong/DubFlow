@@ -59,7 +59,7 @@ def collect_items(folder: Path, scope: str) -> list[Item]:
     items: list[Item] = []
     for c in _read(folder / 'cues.json', []):
         zh = str(c.get('original') or '').strip()
-        if zh and needs_translation(zh) and (scope == 'all' or not str(c.get('text') or '').strip()):
+        if zh and (scope == 'all' or not str(c.get('text') or '').strip()):
             items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), str(c.get('speaker') or ''), 'cue'))
     for r in _read(folder / 'regions.json', []):
         if not (r.get('enabled') and r.get('kind') == 'transient' and str(r.get('text') or '').strip() and needs_translation(r.get('text'))):

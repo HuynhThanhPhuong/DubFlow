@@ -413,7 +413,7 @@ def prepare(job_dir, settings, emit):
         load_state(directory)
         write(directory/'source-evidence.json',source_evidence(cues,read(directory/'regions.json',[])))
     # Translation never runs here: the user starts it (or types the text) after reviewing the source.
-    if any(not c.get('text','').strip() and (not c.get('original','').strip() or needs_translation(c.get('original',''))) for c in cues):
+    if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review source transcript and enter Vietnamese text in cues; offline manual translation is the default')
     if not cues:
         raise NeedsReview('No speech detected; add or import cues')
@@ -622,7 +622,7 @@ def render(job_dir, settings, emit):
     regions = (refine_text_regions(directory,source,meta,settings,emit)
                if getattr(settings,'blur_original',True) else read(directory/'regions.json', []))
     cues = read(directory/'cues.json', [])
-    if any(not c.get('text','').strip() and (not c.get('original','').strip() or needs_translation(c.get('original',''))) for c in cues):
+    if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
     mode = job.get('mode','dub')
     if job.get('export_kind'):

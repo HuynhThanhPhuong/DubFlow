@@ -98,6 +98,15 @@ class TranslateApiTest(unittest.TestCase):
         self.assertNotIn('Không kết nối', str(c.exception))
         self.assertNotIn(KEY, str(c.exception))
 
+    def test_connect_and_pool_timeouts_are_connection_errors(self):
+        for exc in (httpx.ConnectTimeout('x'), httpx.PoolTimeout('x')):
+            def h(req, exc=exc):
+                raise exc
+            with self.assertRaises(ProviderError) as c:
+                gem(h).generate('s', 'u', SCHEMA, 10)
+            self.assertIn('Không kết nối được tới Gemini (hết thời gian kết nối)', str(c.exception))
+            self.assertNotIn('quá lâu', str(c.exception))
+
     def test_default_client_timeout_values(self):
         t = make_provider('gemini', KEY, 'm').client.timeout
         self.assertEqual((t.connect, t.read, t.write, t.pool), (15.0, 600.0, 60.0, 15.0))

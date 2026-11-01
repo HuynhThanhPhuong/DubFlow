@@ -310,6 +310,10 @@ class _Run:
                 if attempt >= len(RATE_BACKOFF):
                     raise
                 self.sleep(e.retry_after if e.retry_after is not None else RATE_BACKOFF[attempt])
+            except ProviderError as e:
+                if e.sent:  # đã gửi nhưng không có kết quả: server có thể đã tính phí, token không rõ
+                    self.requests += 1
+                raise
         self.requests += 1
         u = reply.usage
         self.usage = Usage(self.usage.input_tokens + u.input_tokens, self.usage.output_tokens + u.output_tokens,

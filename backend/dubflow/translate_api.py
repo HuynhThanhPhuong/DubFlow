@@ -23,6 +23,7 @@ LABELS = {'gemini': 'Gemini', 'openai': 'OpenAI', 'anthropic': 'Anthropic'}
 
 class ProviderError(Exception):
     """Lỗi provider; thông điệp tiếng Việt, không chứa key."""
+    sent = False  # True khi yêu cầu đã tới server (có thể đã bị tính phí)
 
 
 class RateLimited(ProviderError):
@@ -133,9 +134,13 @@ class _Base:
     def _send(self, method: str, path: str, **kw) -> httpx.Response:
         try:
             resp = self.client.request(method, self.base + path, headers=self._headers(), **kw)
-        except httpx.TimeoutException:
-            raise ProviderError(f'{self.label} trả lời quá lâu (quá {int(READ_TIMEOUT)} giây). '
-                                'Thử lại, hoặc giảm mức suy nghĩ trong Cài đặt → Dịch.') from None
+        except httpx.ReadTimeout:
+            err = ProviderError(f'{self.label} trả lời quá lâu (quá {int(READ_TIMEOUT)} giây). '
+                                'Thử lại, hoặc giảm mức suy nghĩ trong Cài đặt → Dịch.')
+            err.sent = True
+            raise err from None
+        except httpx.TimeoutException:  # connect / pool / write
+            raise ProviderError(f'Không kết nối được tới {self.label} (hết thời gian kết nối).') from None
         except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
             raise ProviderError(f'Không kết nối được tới {self.label}. Kiểm tra mạng rồi thử lại.') from None
         if resp.status_code >= 400:
