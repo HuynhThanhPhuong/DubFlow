@@ -28,19 +28,26 @@ def apply_candidates(cues, indices, labels):
     return output,'automatic_candidate'
 
 
-def speakers(directory, request):
-    import numpy as np
+def load_encoder():
+    """The local ECAPA speaker encoder on CPU (shared by speaker grouping and take similarity)."""
     import torch
     from speechbrain.inference.speaker import EncoderClassifier
     from speechbrain.utils.fetching import LocalStrategy
-    from engine_cli import decode
-    from pipeline import ROOT,read,write,cache_key
+    from pipeline import ROOT
     model=ROOT/'repo-tests/models/speaker-ecapa-voxceleb'
     required=['hyperparams.yaml','embedding_model.ckpt','mean_var_norm_emb.ckpt','classifier.ckpt','label_encoder.txt']
     if any(not (model/f).is_file() for f in required):raise ValueError('Thiếu model phân nhóm giọng local; không tự tải thêm.')
-    cues=read(directory/'cues.json',[])
     torch.set_num_threads(4)
-    encoder=EncoderClassifier.from_hparams(source=str(model),savedir=str(model),overrides={'pretrained_path':str(model)},run_opts={'device':'cpu'},local_strategy=LocalStrategy.COPY)
+    return EncoderClassifier.from_hparams(source=str(model),savedir=str(model),overrides={'pretrained_path':str(model)},run_opts={'device':'cpu'},local_strategy=LocalStrategy.COPY)
+
+
+def speakers(directory, request):
+    import numpy as np
+    import torch
+    from engine_cli import decode
+    from pipeline import ROOT,read,write,cache_key
+    cues=read(directory/'cues.json',[])
+    encoder=load_encoder()
     audio=decode(request['source'],request['ffmpeg'])
     vectors=[];indices=[]
     for i,c in enumerate(cues):

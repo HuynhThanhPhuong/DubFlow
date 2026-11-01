@@ -443,6 +443,85 @@ class EngineStageTests(unittest.TestCase):
             self.run_stage(code=1)
 
 
+def take(seed, duration, similarity=None, exact=True):
+    row = dict(path='lines/take.wav', duration=duration, seed=seed, exact=exact, passed=exact, engine='omnivoice')
+    if similarity is not None:
+        row['similarity'] = similarity
+    return row
+
+
+class ChooseTakeTests(unittest.TestCase):
+    def test_highest_similarity_wins_over_a_better_duration_fit(self):
+        best = p.choose_take([take(1, 1.0, .5), take(2, .7, .8)], slot=1.0)
+        self.assertEqual(best['seed'], 2)
+
+    def test_ties_within_002_go_to_the_best_duration_fit(self):
+        best = p.choose_take([take(1, .6, .80), take(2, .95, .79), take(3, 1.0, .70)], slot=1.0)
+        self.assertEqual(best['seed'], 2)
+
+    def test_a_take_longer_than_slot_plus_03_does_not_fit(self):
+        self.assertEqual(p.choose_take([take(1, 1.5, .8), take(2, 1.25, .8)], slot=1.0)['seed'], 2)  # 1.25 fits, 1.5 does not
+        self.assertEqual(p.choose_take([take(1, 2.0, .8), take(2, 1.6, .8)], slot=1.0)['seed'], 2)  # none fits: the shortest
+
+    def test_failing_takes_are_never_chosen(self):
+        self.assertEqual(p.choose_take([take(1, 1., .99, exact=False), take(2, 1., .1)], slot=1.)['seed'], 2)
+        self.assertIsNone(p.choose_take([take(1, 1., .99, exact=False)], slot=1.))
+
+    def test_missing_scores_fall_back_to_duration_only(self):
+        self.assertEqual(p.choose_take([take(1, .6, .9), take(2, 1.0)], slot=1.0)['seed'], 2)
+
+
+class SimilarityPipelineTests(unittest.TestCase):
+    def rig(self, fail_similarity=False):
+        scores = {1000: .5, 1001: .9, 1002: .88}  # seed -> similarity; durations differ so the tie is decided by fit
+        durations = {1000: 1.0, 1001: .5, 1002: .95}
+        rig = Rig(self, texts=('Xin chào',), policy=lambda engine, i: False, crash=('similarity',) if fail_similarity else ())
+        base = rig.stage
+
+        def stage(name, directory, settings, payload, **kwargs):
+            base(name, directory, settings, payload, **kwargs)
+            if name == 'pick' and payload['tasks']:
+                state = p.read(directory / 'state.json', {})
+                for task in payload['tasks']:
+                    state[task['key']]['takes'] = {str(s): take(s, durations[s]) for s in scores}
+                p.write(directory / 'state.json', state)
+            if name == 'similarity':
+                state = p.read(directory / 'state.json', {})
+                for task in payload['tasks']:
+                    for s, row in state[task['key']]['takes'].items():
+                        row['similarity'] = scores[int(s)]
+                p.write(directory / 'state.json', state)
+        rig.stage = stage
+        return rig
+
+    def test_similarity_runs_after_pick_and_the_pipeline_chooses(self):
+        rig = self.rig()
+        rig.run()
+        self.assertEqual([c[0] for c in rig.calls], ['gen_omni', 'pick', 'similarity'])
+        self.assertEqual(rig.payloads[-1][1]['tasks'][0]['ref']['path'], str((rig.dir / 'ref.wav').resolve()))
+        manifest = p.read(rig.dir / 'manifest.json')
+        self.assertEqual(manifest['lines'][0]['seed'], 1002)  # 0.90 and 0.88 tie; 0.95 s fits the 1 s slot better than 0.5 s
+
+    def test_similarity_failure_falls_back_to_duration_with_a_warning(self):
+        rig = self.rig(fail_similarity=True)
+        with self.assertLogs('dubflow.pipeline', 'WARNING'):
+            rig.run()
+        manifest = p.read(rig.dir / 'manifest.json')
+        self.assertEqual(manifest['lines'][0]['seed'], 1000)  # 1.0 s is the exact slot, whatever the similarity
+        self.assertEqual(len(manifest['warnings']), 1)
+        self.assertIn('độ giống giọng', manifest['warnings'][0])
+
+    def test_engine_routes_similarity_to_the_speaker_python(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            seen = []
+            fake = types.SimpleNamespace(wait=lambda *a, **k: 0)
+            settings = SimpleNamespace(speaker_python=sys.executable, asr_python='asr-missing', tts_python='tts-missing', ocr_python='ocr-missing')
+            with patch.object(p.subprocess, 'Popen', side_effect=lambda cmd, **kw: seen.append(cmd) or fake), patch.object(p, 'wait_owned', return_value=0):
+                p.engine('similarity', Path(d), settings, dict(tasks=[]))
+            self.assertEqual(seen[0][0], sys.executable)
+            self.assertEqual(seen[0][2], 'similarity')
+
+
 class PickTests(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
@@ -455,7 +534,22 @@ class PickTests(unittest.TestCase):
         self.assertEqual(engine_cli.text_match(task, 'Anh cây ô ky bán hàng')[0], False)
         plain = dict(cue=dict(text='Xin chào'), params={})
         self.assertEqual(engine_cli.text_match(plain, 'xin chào!'), (True, False))
-        self.assertFalse(engine_cli.text_match(plain, 'xin chao')[0])
+        long = dict(cue=dict(text='Xin chào các bạn hôm nay'), params={})
+        self.assertFalse(engine_cli.text_match(long, 'xin chao các bạn hôm nay')[0])
+
+    def test_short_line_rule(self):
+        import engine_cli
+        short = dict(cue=dict(text='Xóa đi ư?'), params={})
+        self.assertEqual(engine_cli.text_match(short, 'Xóa đi?'), (True, True))
+        self.assertEqual(engine_cli.text_match(short, 'Xóa đi ư'), (True, False))
+        self.assertFalse(engine_cli.text_match(short, 'Svá đưa')[0])
+        six = dict(cue=dict(text='Hôm nay trời đẹp quá bạn ơi'), params={})
+        self.assertEqual(len(p.tokens(six['cue']['text'])), 7)
+        self.assertFalse(engine_cli.text_match(six, 'Hôm nay trời đẹp quá bạn ới')[0])
+        six = dict(cue=dict(text='Hôm nay trời đẹp quá nhé'), params={})
+        self.assertEqual(engine_cli.text_match(six, 'Hôm nay trời đẹp quá nhá'), (False, False))
+        self.assertEqual(engine_cli.token_distance(['a', 'b'], ['a', 'c', 'b']), 1)
+        self.assertEqual(engine_cli.token_distance([], ['a', 'b']), 2)
 
     def test_pick_records_the_engine_of_each_take(self):
         import engine_cli
@@ -475,7 +569,8 @@ class PickTests(unittest.TestCase):
                 engine_cli.pick(directory, dict(tasks=[task], count=1, ffmpeg='ffmpeg'))
             take = p.read(directory / 'state.json')['k']['takes']['1000']
             self.assertEqual((take['engine'], take['exact'], take['short_rule']), ('omnivoice', True, False))
-            self.assertEqual(p.read(directory / 'state.json')['k']['accepted']['engine'], 'omnivoice')
+            self.assertEqual((take['passed'], take['heard']), (True, 'Xin chào'))
+            self.assertNotIn('accepted', p.read(directory / 'state.json')['k'])  # the pipeline chooses, not pick
 
     def test_main_dispatches_gen_omni_through_the_stage_map(self):
         import engine_cli

@@ -199,7 +199,56 @@ def text_match(task, heard):
     """(passed, short_rule_used) for one heard take. The pronounce map is applied to both sides, so the abbreviation
     the engine was given as spoken words is judged against the same spoken words."""
     mapping = task['params'].get('pronounce')
-    return tokens(apply_pronounce(heard, mapping)) == tokens(apply_pronounce(task['cue']['text'], mapping)), False
+    got, want = tokens(apply_pronounce(heard, mapping)), tokens(apply_pronounce(task['cue']['text'], mapping))
+    if got == want:
+        return True, False
+    # Short lines (up to 3 words) are judged by ASR noise too often: one token edit is tolerated.
+    if 0 < len(want) <= 3 and token_distance(got, want) <= 1:
+        return True, True
+    return False, False
+
+
+def token_distance(a, b):
+    """Levenshtein distance between two token lists."""
+    row = list(range(len(b)+1))
+    for i, x in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, y in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j]+1, row[j-1]+1, prev+(x != y))
+    return row[-1]
+
+
+def similarity(directory, request):
+    """ECAPA cosine of each passing take against its line's reference (both 16 kHz mono). CPU only."""
+    import numpy as np
+    import torch
+    from speakers import load_encoder
+    encoder = load_encoder()
+    state = read(directory/'state.json', {})
+    vectors = {}
+
+    def embed(path):
+        if path not in vectors:
+            wave = decode(path, request['ffmpeg'])
+            if len(wave) < 1600:  # under 0.1 s there is nothing to compare
+                vectors[path] = None
+            else:
+                with torch.inference_mode():
+                    vector = encoder.encode_batch(torch.from_numpy(wave).unsqueeze(0)).reshape(-1).cpu().numpy()
+                norm = float(np.linalg.norm(vector))
+                vectors[path] = vector/norm if np.isfinite(norm) and norm > 1e-8 else None
+        return vectors[path]
+
+    for task in request['tasks']:
+        st = state.get(task['key'], {})
+        reference = embed(task['ref']['path'])
+        for seed, take in st.get('takes', {}).items():
+            if not take.get('exact') or 'similarity' in take or not (directory/take['path']).exists():
+                continue
+            vector = embed(str(directory/take['path']))
+            take['similarity'] = None if vector is None or reference is None else round(float(np.dot(vector, reference)), 4)
+            print('similarity', task['i'], seed, take['similarity'], flush=True)
+    write(directory/'state.json', state)
 
 
 def pick(directory, request):
@@ -218,11 +267,8 @@ def pick(directory, request):
             info = sf.info(trimmed)
             heard = asr({'raw':decode(trimmed,request['ffmpeg']),'sampling_rate':16000},generate_kwargs={'language':'vi','task':'transcribe','num_beams':1})['text'].strip() if info.frames else ''  # all-silent take
             passed, short_rule = text_match(task, heard)
-            st['takes'][str(seed)] = dict(path=str(trimmed.relative_to(directory)),duration=info.frames/info.samplerate,asr=heard,exact=passed,short_rule=short_rule,seed=seed,engine=task['params'].get('engine','voxcpm2'))
-            # Persist every scored candidate; cancellation can safely resume.
-            good = [v for v in st['takes'].values() if v['exact'] and (directory/v['path']).exists()]
-            if good:
-                st['accepted'] = min(good,key=lambda v:v['duration'])
+            st['takes'][str(seed)] = dict(path=str(trimmed.relative_to(directory)),duration=info.frames/info.samplerate,asr=heard,heard=heard,exact=passed,passed=passed,short_rule=short_rule,seed=seed,engine=task['params'].get('engine','voxcpm2'))
+            # Persist every scored candidate; cancellation can safely resume. The pipeline chooses the accepted take.
             write(directory/'state.json',state)
             print('scored',task['i'],seed,heard,flush=True)
 
@@ -870,7 +916,7 @@ def erase(directory, request):
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 
-STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)  # 'speakers' is added lazily by main
+STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)  # 'speakers' is added lazily by main
 
 
 def main():

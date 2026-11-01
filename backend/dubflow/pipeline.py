@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -201,7 +202,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             payload[name] = str(value)
     request = directory/'engine-request.json'
     # gen_omni runs in the OmniVoice environment (asr_python, read-only); every other unlisted stage does too.
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase','logos') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase','logos') else 'speaker_python' if stage in ('speakers','similarity') else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
@@ -569,6 +570,21 @@ def take_rounds(budget):
     """Cumulative take counts, in rounds of 4 (4, 8, ... budget)."""
     return list(range(4,budget,4))+[budget] if budget > 0 else []
 
+def choose_take(takes, slot, margin=.02):
+    """Best passing take: highest ECAPA similarity (within `margin` of the best is a tie), then the best duration fit.
+    Without a similarity score on every passing take the choice is by duration fit only."""
+    passing = [t for t in takes if t.get('exact')]
+    if not passing:
+        return None
+    scored = [t for t in passing if isinstance(t.get('similarity'), (int, float))]
+    if len(scored) == len(passing):
+        best = max(t['similarity'] for t in scored)
+        passing = [t for t in scored if t['similarity'] >= best-margin]
+    fits = [t for t in passing if t['duration'] <= slot+.3]
+    if fits:
+        return min(fits, key=lambda t:abs(slot-t['duration']))
+    return min(passing, key=lambda t:t['duration'])
+
 def omni_reference_problem(path, ffmpeg='ffmpeg'):
     """Why a dub speaker clip is unusable as an OmniVoice reference (under 2 s or RMS under 0.005), else None."""
     import numpy as np
@@ -693,6 +709,32 @@ def synthesize(job_dir, settings, emit):
                 return name, task, take
         return None
 
+    sim_warnings = []
+
+    def settle(pending, emit):
+        """Score the passing takes by voice similarity, then pick each line's accepted take."""
+        nonlocal state
+        state = read(directory/'state.json', {})
+        todo = [t for t in pending if any(v.get('exact') and 'similarity' not in v for v in state.get(t['key'],{}).get('takes',{}).values())]
+        if todo and not sim_warnings:
+            try:
+                engine('similarity', directory, settings, {'tasks':todo}, emit=emit)
+            except Cancelled:
+                raise
+            except NeedsReview as exc:  # voice similarity must never block synthesis
+                warning = 'Không đo được độ giống giọng, chọn bản theo độ khớp thời lượng: '+str(exc)
+                logging.getLogger(__name__).warning(warning)
+                sim_warnings.append(warning)
+                emit('synthesizing', warning, 70)
+            state = read(directory/'state.json', {})
+        for task in pending:
+            st = state.setdefault(task['key'], {'takes':{}})
+            takes = [v for v in st.get('takes',{}).values() if v.get('exact') and (directory/v['path']).exists()]
+            best = choose_take(takes, task['cue']['end']-task['cue']['start'])
+            if best:
+                st['accepted'] = best
+        write(directory/'state.json', state)
+
     limit = getattr(settings, 'max_takes', 24)
     budgets = [limit, getattr(settings, 'fallback_takes', 8)]
     ran, errors = [], {}
@@ -712,6 +754,7 @@ def synthesize(job_dir, settings, emit):
             except NeedsReview as exc:  # a crashed engine must not stop the other one
                 errors[name] = str(exc)
                 emit('synthesizing', f'{name} lỗi, chuyển sang bộ giọng còn lại nếu còn dòng chưa đạt', 50+count)
+            settle(pending, emit)  # also keeps takes that pick scored before a later stage crashed
             state = read(directory/'state.json', {})  # pick saves every scored take, even when a later stage failed
             if name in errors:
                 break
@@ -736,7 +779,7 @@ def synthesize(job_dir, settings, emit):
             warning = translate_message(f"Cue {row['i']}: delay {row['delay']:.3f}s, overrun {row['overrun']:.3f}s")
             warnings.append(warning)
             emit('placing', warning, 80)
-    write(directory/'manifest.json', dict(speed_change=False, lines=rows, warnings=warnings, input_cues=cue_inputs(original_cues), mode=job.get('mode'), references=[t['ref'] for t in tasks], parameters=[t['params'] for t in tasks], voice_ref=job.get('voice_ref')))
+    write(directory/'manifest.json', dict(speed_change=False, lines=rows, warnings=sim_warnings+warnings, input_cues=cue_inputs(original_cues), mode=job.get('mode'), references=[t['ref'] for t in tasks], parameters=[t['params'] for t in tasks], voice_ref=job.get('voice_ref')))
     for cue,row in zip(original_cues,rows):
         cue.update(status='ready',asr_edits=0,take_path=str(directory/row['path']),delay=row['delay'],overrun=row['overrun'])
     write(directory/'cues.json',original_cues)
