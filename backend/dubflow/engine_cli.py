@@ -525,8 +525,73 @@ def active_segments(segs, first, t, margin):
     return active, upcoming
 
 
+def static_clusters(boxes, margin):
+    """Group boxes (x0, y0, x1, y1) whose margin-grown rectangles touch -> list of lists of indices (stable order)."""
+    groups = [[i] for i in range(len(boxes))]
+    def grown(g):
+        return (min(boxes[i][0] for i in g) - margin, min(boxes[i][1] for i in g) - margin,
+                max(boxes[i][2] for i in g) + margin, max(boxes[i][3] for i in g) + margin)
+    merged = True
+    while merged:
+        merged = False
+        for a in range(len(groups)):
+            for b in range(a + 1, len(groups)):
+                ga, gb = grown(groups[a]), grown(groups[b])
+                if ga[0] < gb[2] and gb[0] < ga[2] and ga[1] < gb[3] and gb[1] < ga[3]:
+                    groups[a] = sorted(groups[a] + groups.pop(b))
+                    merged = True
+                    break
+            if merged:
+                break
+    return sorted(groups)
+
+
+def erase_static_boxes(frame, boxes, k, lama, static_tol, reuse_tol, styles):
+    """Erase solid rectangles (logos, fixed text) from one BGR frame with the subtitle eraser -> (frame, fills used).
+
+    Touching boxes share one call on a crop that carries the LaMa context around them (same result as on the full
+    frame, far cheaper); styles keeps one erase_frame style (recent LaMa fills) per box group across frames."""
+    import numpy as np
+    from subtitle_erase import LAMA_CTX, erase_frame
+    H, W = frame.shape[:2]
+    ctx = int(round(LAMA_CTX * k)) + 4
+    used = {}
+    for group in static_clusters(boxes, ctx):
+        members = [boxes[i] for i in group]
+        cx0, cy0 = max(0, min(b[0] for b in members) - ctx), max(0, min(b[1] for b in members) - ctx)
+        cx1, cy1 = min(W, max(b[2] for b in members) + ctx), min(H, max(b[3] for b in members) + ctx)
+        mask = np.zeros((cy1 - cy0, cx1 - cx0), bool)
+        for b in members:
+            mask[b[1] - cy0:b[3] - cy0, b[0] - cx0:b[2] - cx0] = True
+        out, how, _ = erase_frame(frame[cy0:cy1, cx0:cx1], mask, (0, 0, cx1 - cx0, cy1 - cy0), [], (0, cy1 - cy0), k,
+                                  static_tol=static_tol, style=styles.setdefault(tuple(members), {}), lama=lama,
+                                  reuse_tol=reuse_tol, rigid=True)
+        if how != 'none':
+            if not frame.flags.writeable:
+                frame = frame.copy()
+            frame[cy0:cy1, cx0:cx1] = out
+        used[how] = used.get(how, 0) + 1
+    return frame, used
+
+
+def clean_static_regions(request, width, height):
+    """Valid enabled static rectangles of the erase request, clamped to the frame: dicts with x0 y0 x1 y1 start end."""
+    out = []
+    for r in request.get('static_regions') or []:
+        try:
+            x0, y0 = max(0, int(round(float(r['x'])))), max(0, int(round(float(r['y']))))
+            x1, y1 = min(width, int(round(float(r['x']) + float(r['width'])))), min(height, int(round(float(r['y']) + float(r['height']))))
+            start, end = float(r.get('start', 0)), float(r['end'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if x1 > x0 and y1 > y0 and end > start:
+            out.append(dict(id=str(r.get('id', '')), x0=x0, y0=y0, x1=x1, y1=y1, start=start, end=end))
+    return out
+
+
 def erase(directory, request):
-    """Remove burned-in subtitle glyphs from every frame -> clean.mp4 (video re-encoded, source audio muxed)."""
+    """Remove burned-in subtitle glyphs and the enabled static regions (logos, fixed text) from every frame
+    -> clean.mp4 (video re-encoded, source audio muxed)."""
     import subprocess
     import cv2
     import numpy as np
@@ -548,12 +613,15 @@ def erase(directory, request):
     from fractions import Fraction
     fps_arg = str(request.get('fps_arg') or request.get('fps') or 25)  # rational such as 30000/1001
     fps = float(Fraction(fps_arg))
-    track = read(directory/'subtrack.json', {})
+    track = read(directory/'subtrack.json', {}) or {}
     segs = sorted(track.get('segments', []), key=lambda s: s['s'])
+    statics = clean_static_regions(request, width, height)
+    if not segs and not statics:
+        raise RuntimeError('nothing to erase: no subtitle segments and no static regions')
     k = max(width, height) / 1920
     grow, frame_dt = int(round(14 * k)), 1 / fps
     margin, min_px = 0.25, max(10, 30 * k * k)
-    band = track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]
+    band = (track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]) if segs else [0, 0]
     ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
     out = directory/'clean.tmp.mp4'
     out.unlink(missing_ok=True)
@@ -565,7 +633,7 @@ def erase(directory, request):
     # crops live on disk (erase-refs/) and are loaded one at a time, so memory is bounded by the current segment
     after, pending, bh = {}, list(range(len(segs))), ry1 - ry0
     scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={width}:{bh}:0:{ry0}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
-                            stdout=subprocess.PIPE, stderr=None)
+                            stdout=subprocess.PIPE, stderr=None) if segs else None
     try:
         m_ = 0
         while pending:
@@ -587,7 +655,8 @@ def erase(directory, request):
                     after[i] = m_
                 pending = [i for i in pending if i not in due]
     finally:
-        scan.kill(); scan.stdout.close(); scan.wait()
+        if scan is not None:
+            scan.kill(); scan.stdout.close(); scan.wait()
     seg_index = {id(s): i for i, s in enumerate(segs)}
     reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
                               stdout=subprocess.PIPE, stderr=None)
@@ -602,6 +671,7 @@ def erase(directory, request):
         raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
     loaded, style = (None, None), {}
+    static_styles, static_fills, static_frames = {}, {}, 0
     try:
         while True:
             # cancel.request is normally handled by the pipeline's wait_owned (kills this process and raises Cancelled);
@@ -643,6 +713,13 @@ def erase(directory, request):
                 if how in ('ref', 'lamaref'):
                     ref_diffs.append(rd)
                 done = True
+            live = [r for r in statics if r['start'] - 1e-6 <= t < r['end'] - 1e-6]
+            if live:  # after the glyph pass, so the solid boxes also cover subtitle strokes that cross them
+                frame, used = erase_static_boxes(frame, [(r['x0'], r['y0'], r['x1'], r['y1']) for r in live], k, lama,
+                                                 static_tol, reuse_tol, static_styles)
+                for how, count in used.items():
+                    static_fills[how] = static_fills.get(how, 0) + count
+                static_frames += 1
             if done:
                 touched += 1
             else:
@@ -679,7 +756,7 @@ def erase(directory, request):
     extra = getattr(lama, 'event_count', 0) - len(runtime_events)
     if extra > 0:
         runtime_events.append(f'... and {extra} more LaMa fallback event(s)')
-    smooth_frames = style.get('lama_failed', 0)
+    smooth_frames = style.get('lama_failed', 0) + sum(st.get('lama_failed', 0) for st in static_styles.values())
     if smooth_frames:
         runtime_events.append(f'LaMa failed on {smooth_frames} frame(s), smooth fill used')
     if runtime_events:
@@ -695,11 +772,13 @@ def erase(directory, request):
     lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
                     mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
                     cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
-    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
+    write(directory/'erase.json', dict(version=6, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
+                                       static_hash=request.get('static_hash', ''), static_ids=[r['id'] for r in statics],
+                                       static_frames=static_frames, static_fills=static_fills,
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 

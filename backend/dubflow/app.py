@@ -414,8 +414,14 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.get('/api/jobs/{job_id}/regions')
     def get_regions(job_id: str):
-        job_or_404(job_id)
+        j=job_or_404(job_id)
         rows=read_json(job_dir(job_id) / 'regions.json',[])
+        folder=job_dir(job_id)
+        if j.get('source_path') and (folder / 'clean.mp4').is_file() and erase_current(folder, j['source_path'], full=False):
+            erased=set(read_json(folder / 'erase.json',{}).get('static_ids') or [])
+            for row in rows:
+                if row.get('kind')=='static' and row.get('id') in erased:
+                    row['erased']=True
         for row in rows:
             for index,box in enumerate(row.get('boxes',[row])):
                 if box.get('mask_path') and box.get('mask_crop'):

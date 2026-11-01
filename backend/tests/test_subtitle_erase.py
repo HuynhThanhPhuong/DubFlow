@@ -443,14 +443,15 @@ class EraseStageTest(unittest.TestCase):
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual(done['version'], 5)
+            self.assertEqual(done['version'], 6)
+            self.assertEqual((done['static_hash'], done['static_ids']), ('', []))
             self.assertEqual((done['fill'], done['provider']), ('smooth', None))
             self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
             self.assertTrue(any('LaMa' in w for w in done['warnings']))
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (5, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (6, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile
@@ -467,6 +468,93 @@ class EraseStageTest(unittest.TestCase):
                 self._run(10.0, tmp)  # source has 2 s but metadata claims 10 s
             self.assertFalse((Path(tmp) / 'clean.mp4').exists())
             self.assertFalse((Path(tmp) / 'clean.tmp.mp4').exists())
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class StaticEraseStageTest(unittest.TestCase):
+    """erase() on a synthetic clip: a red box drawn all the time on grey is erased only inside its region and time range."""
+    W, H, FPS = 320, 240, 25
+
+    def _ff(self):
+        import os, shutil
+        ff = os.getenv('DUBFLOW_FFMPEG') or shutil.which('ffmpeg')
+        if not ff:
+            try:
+                from dubflow.config import Settings
+                ff = Settings().ffmpeg
+            except Exception:
+                ff = None
+        if not ff or not (Path(ff).exists() or shutil.which(ff)):
+            self.skipTest('ffmpeg unavailable')
+        return ff
+
+    def _frames(self, ff, path):
+        import subprocess
+        import numpy as np
+        raw = subprocess.run([ff, '-v', 'error', '-i', str(path), '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], check=True, capture_output=True).stdout
+        size = self.W * self.H * 3
+        return np.frombuffer(raw, np.uint8).reshape(-1, self.H, self.W, 3)
+
+    def _erase(self, tmp, statics, segments=(), drawn=(100, 60, 60, 40)):
+        import json, subprocess, sys
+        ff = self._ff()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        d = Path(tmp)
+        x, y, w, h = drawn
+        src = d / 'source.mp4'
+        subprocess.run([ff, '-v', 'error', '-y', '-f', 'lavfi', '-i', f'color=c=0x808080:s={self.W}x{self.H}:r={self.FPS}:d=2',
+                        '-vf', f'drawbox=x={x}:y={y}:w={w}:h={h}:color=red:t=fill', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(src)], check=True)
+        (d / 'subtrack.json').write_text(json.dumps(dict(version=1, fps=10, band=[170, 220], segments=list(segments))))
+        req = dict(ffmpeg=ff, source=str(src), width=self.W, height=self.H, fps_arg=str(self.FPS), duration=2.0, static_regions=statics,
+                   static_hash='sh', source_hash='h', subtrack_hash='s', source_size=1, source_mtime_ns=2)
+        engine_cli.erase(d, req)
+        return ff, d
+
+    def test_static_box_is_erased_only_inside_its_region_and_time_range(self):
+        import json, tempfile
+        import numpy as np
+        region = dict(id='logo', x=92, y=52, width=76, height=56, start=0.5, end=1.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            ff, d = self._erase(tmp, [region])  # no subtitle segments at all: clean.mp4 is still produced
+            self.assertTrue((d / 'clean.mp4').is_file())
+            done = json.loads((d / 'erase.json').read_text())
+            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (6, 'sh', ['logo']))
+            self.assertEqual(done['frames_touched'], 0)
+            self.assertEqual(done['static_frames'], 25)  # 0.5 s .. 1.5 s at 25 fps
+            frames = self._frames(ff, d / 'clean.mp4')
+            self.assertEqual(len(frames), 50)
+            box = (slice(60, 100), slice(100, 160))  # the red rectangle, inside the region
+            red = lambda f: float(f[box][..., 2].mean() - f[box][..., 1].mean())  # R - G: 0 on grey
+            self.assertGreater(red(frames[5]), 80)    # t = 0.2 s: before the range, untouched
+            self.assertGreater(red(frames[45]), 80)   # t = 1.8 s: after the range, untouched
+            for i in (13, 25, 37):                    # inside the range: the box is gone
+                self.assertLess(red(frames[i]), 12, i)
+            grey = frames[25].astype(int)
+            far = np.ones((self.H, self.W), bool)
+            far[52 - 6:108 + 6, 92 - 6:168 + 6] = False  # everything farther than 6 px from the region
+            self.assertLess(float(np.abs(grey[far] - 128).max()), 6)  # nothing outside the region changed (codec noise only)
+
+    def test_static_box_and_subtitle_erase_in_one_clip(self):
+        import tempfile
+        seg = dict(s=.5, e=1.2, x0=60, y0=180, x1=260, y1=210, text='a')
+        region = dict(id='logo', x=92, y=52, width=76, height=56, start=0, end=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            ff, d = self._erase(tmp, [region], segments=[seg])
+            frames = self._frames(ff, d / 'clean.mp4')
+            self.assertLess(float(frames[20][60:100, 100:160, 2].mean() - frames[20][60:100, 100:160, 1].mean()), 12)
+
+    def test_box_group_helpers(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        from engine_cli import clean_static_regions, static_clusters
+        self.assertEqual(static_clusters([(0, 0, 10, 10), (12, 0, 20, 10), (200, 200, 220, 220)], 4), [[0, 1], [2]])
+        self.assertEqual(static_clusters([(0, 0, 10, 10), (200, 0, 210, 10)], 4), [[0], [1]])
+        rows = clean_static_regions(dict(static_regions=[dict(id='a', x=-5, y=10, width=30, height=20, start=0, end=1),
+                                                         dict(id='bad', x=1, y=1, width=0, height=5, end=1),
+                                                         dict(id='late', x=1, y=1, width=5, height=5, start=2, end=1),
+                                                         dict(id='out', x=500, y=1, width=5, height=5, end=1)]), 320, 240)
+        self.assertEqual([(r['id'], r['x0'], r['x1']) for r in rows], [('a', 0, 25)])
 
 
 if __name__ == "__main__":

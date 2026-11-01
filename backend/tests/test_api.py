@@ -43,6 +43,25 @@ class ApiTests(unittest.TestCase):
         atomic_json(folder/'subtrack.json',{'segments':[1]})
         self.assertIsNone(self.client.get(f"/api/jobs/{j['id']}").json()['clean_url'])
 
+    def test_regions_mark_static_regions_erased_only_while_clean_video_is_current(self):
+        from dubflow.media import atomic_json
+        from dubflow.pipeline import ERASE_VERSION, file_hash, static_hash
+        j=self.app.state.store.create_job({'title':'c','mode':'vietsub','duration':5,'width':320,'height':240})
+        folder=self.settings.jobs_dir/j['id']; folder.mkdir()
+        source=folder/'source.mp4'; source.write_bytes(b'src')
+        self.app.state.store.update_job(j['id'],source_path=str(source))
+        box=lambda rid,**o:dict({'id':rid,'x':10,'y':10,'width':40,'height':20,'start':0,'end':5,'kind':'static','enabled':True},**o)
+        atomic_json(folder/'regions.json',[box('a'),box('b',enabled=False),box('t',kind='transient')])
+        atomic_json(folder/'subtrack.json',{'segments':[]})
+        (folder/'clean.mp4').write_bytes(b'0123456789')
+        st=source.stat()
+        atomic_json(folder/'erase.json',{'version':ERASE_VERSION,'source_size':st.st_size,'source_mtime_ns':st.st_mtime_ns,
+                    'subtrack_hash':file_hash(folder/'subtrack.json'),'static_hash':static_hash(folder),'static_ids':['a']})
+        rows={r['id']:r for r in self.client.get(f"/api/jobs/{j['id']}/regions").json()}
+        self.assertEqual([k for k,r in rows.items() if r.get('erased')],['a'])
+        atomic_json(folder/'regions.json',[box('a',x=11),box('b',enabled=False)])  # box moved since the erase: stale
+        self.assertFalse(any(r.get('erased') for r in self.client.get(f"/api/jobs/{j['id']}/regions").json()))
+
     def test_zip_excludes_parts_from_an_older_render(self):
         from dubflow.media import atomic_json
         j = self.app.state.store.create_job({'title':'a','mode':'vietsub','status':'done'})

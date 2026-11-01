@@ -309,8 +309,37 @@ def detect_logos(directory, source, meta, settings, emit, warnings=None, force=F
             raise
         warnings.append('Chưa tìm được logo và chữ cố định: '+str(exc))
 
-ERASE_VERSION = 5
+ERASE_VERSION = 6
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
+
+def erase_static_regions(directory):
+    """Enabled static regions (logos, fixed text) the eraser removes, as engine rows, sorted for a stable hash."""
+    rows = []
+    for r in read(Path(directory)/'regions.json', []) or []:
+        if r.get('kind') != 'static' or not r.get('enabled'):
+            continue
+        try:
+            row = dict(id=str(r['id']), x=round(float(r['x']), 3), y=round(float(r['y']), 3), width=round(float(r['width']), 3),
+                       height=round(float(r['height']), 3), start=round(float(r.get('start', 0)), 3), end=round(float(r['end']), 3))
+        except (KeyError, TypeError, ValueError):
+            continue
+        finite = all(math.isfinite(v) for v in (row['x'], row['y'], row['width'], row['height'], row['start'], row['end']))
+        if finite and row['width'] > 0 and row['height'] > 0 and row['end'] > row['start']:
+            rows.append(row)
+    return sorted(rows, key=lambda r: (r['start'], r['end'], r['y'], r['x'], r['id']))
+
+def static_hash(directory):
+    """sha256 of the static region list the eraser would get; '' when there is none."""
+    rows = erase_static_regions(directory)
+    return cache_key(rows) if rows else ''
+
+def subtrack_hash(directory):
+    path = Path(directory)/'subtrack.json'
+    return file_hash(path) if path.is_file() else ''
+
+def erase_wanted(directory):
+    """True when clean.mp4 has something to remove: subtitle segments or enabled static regions."""
+    return bool((read(Path(directory)/'subtrack.json', {}) or {}).get('segments')) or bool(erase_static_regions(directory))
 
 def erase_knobs(meta):
     """The static/reuse tolerances a run would use (meta overrides, normally unset)."""
@@ -337,7 +366,7 @@ def erase_fell_back(done, settings):
     return done.get('provider') == 'cpu' and bool(dll) and Path(dll).is_dir() and done.get('cuda_dll_dir') != str(dll)
 
 def erase_current(directory, source, meta=None, full=True, settings=None):
-    """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full).
+    """True when clean.mp4 matches the current source, subtrack.json and enabled static regions (cheap size+mtime check unless full).
     With settings, a run that fell back to a weaker fill (see erase_fell_back) is not current."""
     directory, source = Path(directory), Path(source)
     done = read(directory/'erase.json', {}) or {}
@@ -346,7 +375,8 @@ def erase_current(directory, source, meta=None, full=True, settings=None):
         ok = (done.get('version') == ERASE_VERSION and (directory/'clean.mp4').is_file()
               and not (settings is not None and erase_fell_back(done, settings))
               and done.get('source_size') == stat.st_size and done.get('source_mtime_ns') == stat.st_mtime_ns
-              and done.get('subtrack_hash') == file_hash(directory/'subtrack.json'))
+              and done.get('subtrack_hash') == subtrack_hash(directory)
+              and done.get('static_hash', '') == static_hash(directory))
         if ok and meta is not None:
             knobs = erase_knobs(meta)  # runs recorded before the knobs were stored used the defaults
             ok = (done.get('fps') == str(meta.get('fps_arg') or meta.get('fps') or 25)
@@ -359,17 +389,17 @@ def erase_current(directory, source, meta=None, full=True, settings=None):
         return False
 
 def erase_subtitles(directory, source, meta, settings, emit, warnings):
-    """Build clean.mp4 (hard subtitles removed) once per (source, subtrack) pair."""
-    track = read(directory/'subtrack.json', {}) or {}
+    """Build clean.mp4 (hard subtitles and enabled static regions removed) once per (source, subtrack, static regions)."""
     clean, stamp = directory/'clean.mp4', directory/'erase.json'
-    if not track.get('segments') or not getattr(settings, 'ocr_python', None):
+    if not erase_wanted(directory) or not getattr(settings, 'ocr_python', None):
         return
     if erase_current(directory, source, meta, full=False, settings=settings):  # size+mtime is enough; the hash is stored for full checks
         return
     stat = Path(source).stat()
-    hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'),
-                  source_size=stat.st_size, source_mtime_ns=stat.st_mtime_ns)
-    emit('erase', 'Đang xóa sub gốc trên hình', 38)
+    statics = erase_static_regions(directory)
+    hashes = dict(source_hash=file_hash(source), subtrack_hash=subtrack_hash(directory), static_regions=statics,
+                  static_hash=static_hash(directory), source_size=stat.st_size, source_mtime_ns=stat.st_mtime_ns)
+    emit('erase', 'Đang xóa sub gốc và logo trên hình' if statics else 'Đang xóa sub gốc trên hình', 38)
     fps_value = float(meta.get('fps') or 25)
     expected = (meta.get('video_frames') if not meta.get('video_duration') and meta.get('video_frames')
                 else round(float(meta.get('video_duration') or meta['duration']) * fps_value))
@@ -400,7 +430,6 @@ def prepare(job_dir, settings, emit):
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
         build_source(directory, source, audio, meta, settings, emit, warnings)
-    erase_subtitles(directory, source, meta, settings, emit, warnings)
     if not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
         try:
@@ -415,6 +444,7 @@ def prepare(job_dir, settings, emit):
     elif getattr(settings,'blur_original',True):
         refine_text_regions(directory,source,meta,settings,emit)
     detect_logos(directory, source, meta, settings, emit, warnings)
+    erase_subtitles(directory, source, meta, settings, emit, warnings)  # after the logo candidates, so the first erase already covers them
     cues = read(directory/'cues.json', [])
     speaker_signature=cache_key([{k:c.get(k) for k in ('id','start','end','original')} for c in cues])
     speaker_marker=read(directory/'speaker-candidates.json',{})
@@ -672,6 +702,12 @@ def render(job_dir, settings, emit):
         # not shift the replacement away from the original on-screen text.
     if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip() for r in regions):
         raise NeedsReview('Có chữ xuất hiện thoáng qua chưa được dịch. Mở Tuỳ chỉnh vùng chữ để nhập lời Việt trước khi xuất.')
+    render_warnings = []
+    if getattr(settings,'blur_original',True) and erase_wanted(directory) and getattr(settings,'ocr_python',None):
+        # a stale clean.mp4 (subtitles or logo boxes changed since) is rebuilt now rather than quietly replaced by ffmpeg blur
+        erase_subtitles(directory, source, meta, settings, lambda stage, message, progress: emit(stage, message, 85), render_warnings)
+        if not erase_current(directory, source, None, full=False):
+            render_warnings.append('Không xóa được sub gốc và logo bằng bộ xóa; video xuất dùng làm mờ thường ở các vùng đó.')
     (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height']),encoding='utf-8-sig')
     ff = getattr(settings,'ffmpeg','ffmpeg')
     cmd = [ff,'-v','error','-y','-filter_complex_threads','2','-i',str(source)]
@@ -682,10 +718,10 @@ def render(job_dir, settings, emit):
     graph, last = [], '0:v'
     mask_regions = refined_regions(regions,meta['width'],meta['height'],meta['duration'])
     use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
-                 and bool((read(directory/'subtrack.json', {}) or {}).get('segments'))
-                 and erase_current(directory, source, None, full=False))
-    if use_clean:  # subtitle glyphs are already erased in clean.mp4; logo/transient masks still apply
-        mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle']
+                 and erase_wanted(directory) and erase_current(directory, source, None, full=False))
+    if use_clean:  # subtitle glyphs and the static regions listed in erase.json are already erased in clean.mp4; transient masks still apply
+        erased = set((read(directory/'erase.json', {}) or {}).get('static_ids') or [])
+        mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle' and not (r.get('kind') == 'static' and r.get('id') in erased)]
         last = 'cleanv'
     mask_inputs = 0
     if getattr(settings,'blur_original',True):
@@ -765,4 +801,7 @@ def render(job_dir, settings, emit):
         run([ff,'-v','error','-y','-i',str(directory/'output.mp4'),'-ss',str(start),'-t',str(end-start),'-c:v','libx264','-c:a','aac','-movflags','+faststart',str(directory/path)],cwd=directory)
         parts.append(dict(part,path=path))
     write(directory/'part-outputs.json',parts)
-    return dict(output_path=str(directory/'output.mp4'),parts=parts,**meta)
+    result = dict(output_path=str(directory/'output.mp4'),parts=parts,**meta)
+    if render_warnings:
+        result['warnings'] = list(job.get('warnings', [])) + [w for w in render_warnings if w not in job.get('warnings', [])]
+    return result

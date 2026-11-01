@@ -159,8 +159,9 @@ class PipelineTests(unittest.TestCase):
 
     def _stamp(self, directory, **over):
         st=(directory/'source.mp4').stat()
-        return dict(dict(version=p.ERASE_VERSION,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.file_hash(directory/'subtrack.json'),fps='25',
-                         source_size=st.st_size,source_mtime_ns=st.st_mtime_ns,frames_touched=1,seconds=1),**over)
+        return dict(dict(version=p.ERASE_VERSION,source_hash=p.file_hash(directory/'source.mp4'),subtrack_hash=p.subtrack_hash(directory),fps='25',
+                         source_size=st.st_size,source_mtime_ns=st.st_mtime_ns,frames_touched=1,seconds=1,
+                         static_hash=p.static_hash(directory),static_ids=[r['id'] for r in p.erase_static_regions(directory)]),**over)
 
     def _erase_prepare(self, directory, segments, stamp=None):
         (directory/'source.mp4').write_bytes(b'src')
@@ -300,6 +301,114 @@ class PipelineTests(unittest.TestCase):
                 p.erase_subtitles(d,d/'source.mp4',dict(duration=5,fps=25),SimpleNamespace(ocr_python=sys.executable),lambda *a:None,warnings)
             self.assertEqual(warnings,['LaMa model missing (x)'])
 
+    def test_prepare_detects_logos_before_the_first_erase(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            calls=self._erase_prepare(Path(d),seg)
+            self.assertLess(calls.index('logos'),calls.index('erase'))
+
+    def _static_region(self, rid='l', **over):
+        return dict(dict(id=rid,kind='static',enabled=True,x=10,y=20,width=40,height=30,start=0,end=3,auto=True,confirmed=False),**over)
+
+    def test_erase_request_has_enabled_static_regions_only(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=[]))
+            p.write(d/'regions.json',[self._static_region('on'),self._static_region('off',enabled=False),
+                                      dict(self._static_region('sub'),kind='subtitle'),dict(self._static_region('tr'),kind='transient')])
+            sent=[]
+            def stage(name,directory,settings,payload,**kwargs):
+                sent.append(payload)
+                p.write(directory/'erase.json',dict(version=p.ERASE_VERSION))
+            with patch.object(p,'engine',side_effect=stage):
+                # a video with only static regions and no subtitle segments still gets a clean.mp4
+                p.erase_subtitles(d,d/'source.mp4',dict(duration=5,fps=25),SimpleNamespace(ocr_python=sys.executable),lambda *a:None,[])
+            self.assertEqual(len(sent),1)
+            self.assertEqual([r['id'] for r in sent[0]['static_regions']],['on'])
+            self.assertEqual(sorted(sent[0]['static_regions'][0]),['end','height','id','start','width','x','y'])
+            self.assertEqual(sent[0]['static_hash'],p.static_hash(d))
+            # neither subtitle segments nor enabled static regions: nothing to erase
+            p.write(d/'regions.json',[self._static_region('off',enabled=False)])
+            sent.clear()
+            with patch.object(p,'engine',side_effect=stage):
+                p.erase_subtitles(d,d/'source.mp4',dict(duration=5,fps=25),SimpleNamespace(ocr_python=sys.executable),lambda *a:None,[])
+            self.assertEqual(sent,[])
+
+    def test_changed_static_region_makes_erase_stale(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src'); (d/'clean.mp4').write_bytes(b'clean')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]))
+            p.write(d/'regions.json',[self._static_region()])
+            p.write(d/'erase.json',self._stamp(d))
+            current=lambda: p.erase_current(d,d/'source.mp4',dict(fps=25))
+            self.assertTrue(current())
+            for change in (dict(x=11),dict(width=41),dict(start=.5),dict(end=2.5),dict(enabled=False),dict(id='z')):
+                p.write(d/'regions.json',[self._static_region(**change)])
+                self.assertFalse(current(),change)
+            p.write(d/'regions.json',[self._static_region(),self._static_region('extra',x=100)])
+            self.assertFalse(current())
+            p.write(d/'regions.json',[self._static_region(),dict(self._static_region('t'),kind='transient')])  # transient edits never matter
+            self.assertTrue(current())
+            p.write(d/'regions.json',[self._static_region(label='Logo',confirmed=True)])  # ticking does not change what is erased
+            self.assertTrue(current())
+
+    def _render_with_erase(self, directory, stage_effect):
+        """Render with a stale clean.mp4 (the logo box moved after the erase) and a patched engine."""
+        self._render_cmd(directory,True)  # builds the fixtures with a current clean.mp4
+        p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))  # regions are not legacy: no OCR refinement run
+        p.write(directory/'regions.json',[dict(r,x=r['x']+1) if r['kind']=='static' else r for r in p.read(directory/'regions.json')])
+        calls,emitted=[],[]
+        def stage(name,d,settings,payload,**kwargs):
+            calls.append((name,payload))
+            stage_effect(name,d,settings,payload)
+        with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'run'):
+            try:
+                result=p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:emitted.append(a))
+            except Exception:
+                result=None
+        return calls,emitted,result
+
+    def test_render_rebuilds_a_stale_erase_before_composing(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            def fresh(name,d,settings,payload):
+                (d/'clean.mp4').write_bytes(b'new')
+                p.write(d/'erase.json',dict(self._stamp(d),static_ids=[r['id'] for r in payload['static_regions']],static_hash=payload['static_hash']))
+            calls,emitted,result=self._render_with_erase(directory,fresh)
+            self.assertEqual([c[0] for c in calls],['erase'])
+            self.assertEqual([r['x'] for r in calls[0][1]['static_regions']],[1])
+            self.assertTrue(any(e[0]=='erase' for e in emitted))
+            graph=(directory/'render-filter.txt').read_text()
+            self.assertIn('cleanv',graph)
+            self.assertEqual(graph.count('overlay='),1)  # the rebuilt clean.mp4 covers the logo: only the transient mask is left
+            self.assertNotIn('warnings',result)
+
+    def test_render_keeps_ffmpeg_masks_with_a_warning_when_the_erase_fails(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            def failing(name,d,settings,payload):
+                raise p.NeedsReview('erase unavailable or failed (exit 1)')
+            calls,emitted,result=self._render_with_erase(directory,failing)
+            self.assertEqual([c[0] for c in calls],['erase'])
+            self.assertFalse((directory/'clean.mp4').exists())
+            graph=(directory/'render-filter.txt').read_text()
+            self.assertNotIn('cleanv',graph)
+            self.assertEqual(graph.count('overlay='),3)  # subtitle + static + transient through ffmpeg, as before
+            self.assertTrue(any('Không xóa được sub gốc' in w for w in result['warnings']))
+
+    def test_render_with_current_clean_drops_erased_static_but_keeps_transient(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,True)
+            self.assertEqual((directory/'render-filter.txt').read_text().count('overlay='),1)  # transient only
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            # an erase that did not cover the static region (recorded without it) must still mask it
+            self._render_cmd(directory,True,stamp=dict(static_ids=[]))
+            self.assertEqual((directory/'render-filter.txt').read_text().count('overlay='),2)
+
     def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None):
         (directory/'source.mp4').write_bytes(b'src')
         (directory/'dry.wav').write_bytes(b'x')
@@ -333,7 +442,7 @@ class PipelineTests(unittest.TestCase):
             graph=(directory/'render-filter.txt').read_text()
             self.assertIn('[2:v]null[cleanv]',graph)
             self.assertIn('[0:a]volume',graph)
-            self.assertEqual(graph.count('overlay='),2)  # static + transient only
+            self.assertEqual(graph.count('overlay='),1)  # transient only: subtitle and static are erased in clean.mp4
             old=Path(d)/'old'; old.mkdir()
             self._render_cmd(old,False)
             plain=(old/'render-filter.txt').read_text()

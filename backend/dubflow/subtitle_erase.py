@@ -338,7 +338,7 @@ def _paste_ref(fb: np.ndarray, ref: np.ndarray, zone: np.ndarray, scale: float) 
 
 def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, band: tuple,
                 scale: float = 1.0, static_tol: float = STATIC_TOL, style: dict | None = None, lama=None,
-                reuse_tol: float = LAMA_REUSE_TOL):
+                reuse_tol: float = LAMA_REUSE_TOL, rigid: bool = False):
     """Erase glyphs (mask = glyph_mask output, full-frame, limited to box) and their drop shadow.
 
     refs: band-sized BGR crops (frame[y0b:y1b]). A motion-aligned reference is used when its ring diff <= static_tol
@@ -347,6 +347,8 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
     earlier LaMa result is reused only when reuse_tol > 0 and its ring diff <= reuse_tol: faster, but can leave stale
     patches); without it they use smooth_fill.
     style: dict shared across frames; keeps the shadow strength and the recent LaMa results.
+    rigid: the mask is a solid region (logo / fixed text box), not glyph strokes: it is used as is, with no stroke growth,
+    gap closing or drop-shadow model.
     Returns (out, how, ring_diff) with how in {'none','ref','lamaref','lama','smooth'}."""
     x0, y0, x1, y1 = (int(v) for v in box)
     H, W = frame.shape[:2]
@@ -366,16 +368,21 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         c = 2 * int(round(gap * scale)) + 1
         return cv2.morphologyEx(mk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (c, c))) > 0
 
-    m_small, m_big = grown(FILL_GROW_EDGE, FILL_CLOSE_EDGE), grown(FILL_GROW, FILL_CLOSE)
-    T = shadow_field(core, scale)
-    lam = estimate_shadow(gray, T, m_small, scale)
     style = style if style is not None else {}
-    if lam is not None:
-        style['lam'] = lam if 'lam' not in style else 0.7 * style['lam'] + 0.3 * lam
-    lam = style.get('lam', 1.0)
-    a = lam * _shadow_unit(T)
-    a[a < 0.004] = 0.0
-    zone = m_big | (a > 0.03)
+    if rigid:
+        m_small = m_big = core
+        a = np.zeros(core.shape, np.float32)
+        zone = core
+    else:
+        m_small, m_big = grown(FILL_GROW_EDGE, FILL_CLOSE_EDGE), grown(FILL_GROW, FILL_CLOSE)
+        T = shadow_field(core, scale)
+        lam = estimate_shadow(gray, T, m_small, scale)
+        if lam is not None:
+            style['lam'] = lam if 'lam' not in style else 0.7 * style['lam'] + 0.3 * lam
+        lam = style.get('lam', 1.0)
+        a = lam * _shadow_unit(T)
+        a[a < 0.004] = 0.0
+        zone = m_big | (a > 0.03)
     ring = _ring_of(zone)
     best, best_diff = None, None
     for ref in refs or []:
