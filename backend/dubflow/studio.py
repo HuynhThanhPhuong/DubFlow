@@ -5,7 +5,8 @@ import uuid
 from fastapi import Body, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
-from .preferences import Preferences, CollectionInput, preferences, public_preferences
+from .preferences import Preferences, CollectionInput, PROVIDERS, preferences, public_preferences
+from .translate_api import LABELS, ProviderError, make_provider
 from .native import pick_folder, open_folder
 from .publisher import publish, PublishConflict
 from .voices import get_voice
@@ -28,18 +29,32 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
     def get_settings():
         return public_preferences(preferences(store,settings))
 
+    @app.get('/api/settings/models')
+    def settings_models(provider: str):
+        if provider not in PROVIDERS: raise HTTPException(422,'Nhà cung cấp dịch không hợp lệ.')
+        prefs=preferences(store,settings)
+        key=prefs[f'{provider}_api_key']
+        if not key.strip(): raise HTTPException(409,f'Chưa nhập key {LABELS[provider]}. Nhập key trong Cài đặt rồi thử lại.')
+        try:
+            with make_provider(provider,key,prefs[f'{provider}_model'],thinking=prefs['thinking']) as p:
+                models=p.list_models()
+        except ProviderError as e:
+            raise HTTPException(502,str(e).replace(key,'***')) from None
+        return dict(models=models)
+
     @app.put('/api/settings')
     def put_settings(body: dict=Body(...)):
         with settings_lock:
             body=dict(body)
             current=preferences(store,settings)
-            clear=body.pop('clear_api_key',False)
-            if not isinstance(clear,bool): raise HTTPException(422,'clear_api_key phải là boolean.')
-            body.pop('has_api_key',None)
-            if clear:
-                body['translation_api_key']=''
-            elif body.get('translation_api_key')=='':
-                body.pop('translation_api_key')
+            for name in PROVIDERS:
+                clear=body.pop(f'clear_{name}_key',False)
+                if not isinstance(clear,bool): raise HTTPException(422,f'clear_{name}_key phải là boolean.')
+                body.pop(f'has_{name}_key',None)
+                if clear:
+                    body[f'{name}_api_key']=''
+                elif body.get(f'{name}_api_key')=='':
+                    body.pop(f'{name}_api_key')
             try:
                 value=Preferences(**(current | body)).model_dump()
             except ValidationError:

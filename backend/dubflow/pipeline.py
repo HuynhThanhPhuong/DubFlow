@@ -174,17 +174,15 @@ def context(job_dir, settings):
 
 def engine(stage, directory, settings, payload=None, emit=None):
     payload = dict(payload or {})
-    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','translation_model','translation_api_url','translation_api_key','translation_api_model','translation_context','translation_num_ctx','lama_model','cuda_dll_dir'):
+    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','lama_model','cuda_dll_dir'):
         value = getattr(settings, name, None)
         if value is not None:
             payload[name] = str(value)
-    # Secret API key travels via process environment, never persistent stage input.
-    api_key = payload.pop('translation_api_key', '')
     request = directory/'engine-request.json'
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'translation_python' if stage == 'translate' else 'ocr_python' if stage in ('ocr','subtrack','erase') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
-    env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', DUBFLOW_TRANSLATION_KEY=api_key, PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
+    env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
     check_cancel(directory)
     try:
         write(request, payload)
@@ -193,7 +191,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             last = [time.monotonic()]
             def poll():
                 if emit and time.monotonic()-last[0]>=2:
-                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'translate':45,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
+                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
                     emit(stage, f'{stage} running', progress)
                     last[0] = time.monotonic()
             code = wait_owned(process,directory,poll)
@@ -412,30 +410,12 @@ def prepare(job_dir, settings, emit):
     if cues:
         load_state(directory)
         write(directory/'source-evidence.json',source_evidence(cues,read(directory/'regions.json',[])))
-    mode = getattr(settings, 'translation_mode', 'manual')
-    regions = read(directory/'regions.json', [])
-    if any(not c.get('text', '').strip() for c in cues) or any(r.get('enabled') and r.get('kind')=='transient' and r.get('text','').strip() and not r.get('translation','').strip() for r in regions):
-        if mode in ('local', 'api', 'ollama'):
-            emit('translating', 'Translating text only', 45)
-            engine('translate', directory, settings, {'mode':mode,'auto_context':True}, emit=emit)
-            cues = read(directory/'cues.json', [])
-        if not cues or any(not c.get('text','').strip() for c in cues):
-            raise NeedsReview('Review source transcript and enter Vietnamese text in cues; offline manual translation is the default')
+    # Translation never runs here: the user starts it (or types the text) after reviewing the source.
+    if any(not c.get('text','').strip() for c in cues):
+        raise NeedsReview('Review source transcript and enter Vietnamese text in cues; offline manual translation is the default')
     if not cues:
         raise NeedsReview('No speech detected; add or import cues')
     return dict(**meta, cue_count=len(cues), warnings=warnings)
-
-def translate_only(job_dir, settings, emit):
-    directory = Path(job_dir).resolve()
-    cues = read(directory/'cues.json', [])
-    if not cues:
-        raise NeedsReview('Chưa có lời gốc. Bấm Phân tích video trước khi dịch.')
-    mode = getattr(settings,'translation_mode','manual')
-    if mode not in ('local','api','ollama'):
-        raise NeedsReview('Chưa bật bộ dịch. Mở Cài đặt → Dịch tự động.')
-    emit('translating','Đang dịch lời gốc và chữ trên hình sang tiếng Việt',45)
-    engine('translate', directory, settings, {'mode':mode,'auto_context':True}, emit=emit)
-    return dict(cue_count=len(read(directory/'cues.json', [])),warnings=[])
 
 
 def ref_record(record, directory):

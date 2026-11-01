@@ -92,6 +92,11 @@ class RenderRequest(BaseModel):
     kind: Literal['auto','draft','final'] = 'auto'
 
 
+class TranslateRequest(BaseModel):
+    scope: Literal['missing','all'] = 'missing'
+    allow_over_cap: bool = False
+
+
 class Region(BaseModel):
     id: str = Field(max_length=100)
     x: FiniteFloat = Field(ge=0)

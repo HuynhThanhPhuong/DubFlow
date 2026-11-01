@@ -654,18 +654,13 @@ def erase(directory, request):
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 
-def translate(directory, request):
-    from translation import translate_files
-    translate_files(directory, request)
-
-
 def main():
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')
     stage,directory,request=sys.argv[1:4]
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,translate=translate)
+    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers

@@ -17,19 +17,19 @@ class StudioTests(unittest.TestCase):
         self.client.close()
         self.tmp.cleanup()
     def test_settings_persist_redact_validate(self):
-        r = self.client.put('/api/settings', json={'translation_api_key':'secret','original_gain':0.4})
+        r = self.client.put('/api/settings', json={'gemini_api_key':'secret','original_gain':0.4})
         self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()['has_api_key'])
-        self.assertEqual(r.json()['translation_api_key'], '')
+        self.assertTrue(r.json()['has_gemini_key'])
+        self.assertEqual(r.json()['gemini_api_key'], '')
         self.assertNotIn('secret', self.client.get('/api/settings').text)
-        self.client.put('/api/settings', json={'translation_api_key':''})
+        self.client.put('/api/settings', json={'gemini_api_key':''})
         other = TestClient(create_app(self.cfg, start_worker=False))
-        self.assertTrue(other.get('/api/settings').json()['has_api_key'])
+        self.assertTrue(other.get('/api/settings').json()['has_gemini_key'])
         self.assertEqual(other.get('/api/settings').json()['original_gain'], .4)
         other.close()
         self.assertEqual(self.client.put('/api/settings', json={'original_gain':2}).status_code,422)
-        self.client.put('/api/settings', json={'clear_api_key':True})
-        self.assertFalse(self.client.get('/api/settings').json()['has_api_key'])
+        self.client.put('/api/settings', json={'clear_gemini_key':True})
+        self.assertFalse(self.client.get('/api/settings').json()['has_gemini_key'])
     def job(self):
         j = self.app.state.store.create_job({'title':'../CON: demo','mode':'vietsub','status':'done'})
         folder=self.cfg.jobs_dir/j['id']; folder.mkdir()
@@ -69,14 +69,12 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(r.status_code,200)
         self.assertIsNone(r.json()['path'])
         picker.assert_called_once()
-    def test_upload_auto_analyze_requires_opt_in_and_provider(self):
-        cases=[({},'created'),({'auto_translate':True},'created'),({'auto_translate':False,'translation_mode':'api','translation_api_url':'https://example.test/v1/chat/completions','translation_api_model':'chosen'},'created'),({'auto_translate':True},'queued')]
-        for config,status in cases:
-            if config: self.assertEqual(self.client.put('/api/settings',json=config).status_code,200)
-            with patch('dubflow.app.probe',return_value={'duration':1,'width':16,'height':16}),patch('dubflow.app.poster'):
-                r=self.client.post('/api/jobs',data={'rights_confirmed':'true'},files={'file':('v.mp4',b'video')})
-            self.assertEqual(r.status_code,201,r.text)
-            self.assertEqual(r.json()['status'],status)
+    def test_upload_never_auto_analyzes(self):
+        self.client.put('/api/settings',json={'gemini_api_key':'k-test-123','gemini_model':'m'})
+        with patch('dubflow.app.probe',return_value={'duration':1,'width':16,'height':16}),patch('dubflow.app.poster'):
+            r=self.client.post('/api/jobs',data={'rights_confirmed':'true'},files={'file':('v.mp4',b'video')})
+        self.assertEqual(r.status_code,201,r.text)
+        self.assertEqual(r.json()['status'],'created')
 
     def test_cover_and_collections_survive_restart(self):
         c=self.client.post('/api/collections',json={'name':'Cover'}).json()
@@ -197,7 +195,7 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/jobs/'+j['id']+'/publish').status_code,409)
 
     def test_settings_reject_internal_output_and_do_not_echo_secret(self):
-        r=self.client.put('/api/settings',json={'translation_api_key':'SUPERSECRET','resolution':'invalid'})
+        r=self.client.put('/api/settings',json={'gemini_api_key':'SUPERSECRET','resolution':'invalid'})
         self.assertEqual(r.status_code,422)
         self.assertNotIn('SUPERSECRET',r.text)
         self.assertEqual(self.client.put('/api/settings',json={'output_dir':str(self.cfg.data_dir/'jobs')}).status_code,422)

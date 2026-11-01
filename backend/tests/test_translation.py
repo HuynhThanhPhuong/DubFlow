@@ -2,10 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
-from dubflow.translation import translate_files, parse_array
-from dubflow.pipeline import write, read, translate_only, NeedsReview
+from dubflow.pipeline import write, read
 from dubflow.app import create_app
 from dubflow.config import Settings
 
@@ -24,46 +22,6 @@ class TranslationTests(unittest.TestCase):
         ])
     def tearDown(self):
         self.tmp.cleanup()
-    def test_fills_blanks_and_transient_text_preserving_edits_timing_and_speakers(self):
-        generate = Mock(return_value=['Xin chào','Ngày đầu tiên'])
-        translate_files(self.root,dict(mode='local'),lambda _:generate)
-        generate.assert_called_once_with(['你好','第一天'])
-        cues = read(self.root/'cues.json')
-        self.assertEqual(cues[1]['text'],'Tôi đã sửa')
-        self.assertEqual((cues[0]['start'],cues[0]['end'],cues[0]['speaker']),(0,1,'m'))
-        self.assertEqual(cues[0]['original'],'你好')
-        self.assertEqual(cues[0]['status'],'needs_review')
-        regions = read(self.root/'regions.json')
-        self.assertEqual(regions[0]['translation'],'Ngày đầu tiên')
-        self.assertEqual(regions[1]['translation'],'')
-    def test_cache_changes_with_source_and_terminology(self):
-        generate=Mock(return_value=['Xin chào','Ngày đầu tiên'])
-        translate_files(self.root,dict(mode='local'),lambda _:generate)
-        cues=read(self.root/'cues.json'); cues[0]['text']=''; write(self.root/'cues.json',cues)
-        translate_files(self.root,dict(mode='local'),lambda _:self.fail('Cache should avoid model load'))
-        self.assertEqual(read(self.root/'cues.json')[0]['text'],'Xin chào')
-        cues[0]['text']=''; write(self.root/'cues.json',cues)
-        generate=Mock(return_value=['Chào bạn'])
-        translate_files(self.root,dict(mode='local',translation_context='Use bạn'),lambda _:generate)
-        generate.assert_called_once_with(['你好'])
-    def test_invalid_result_never_replaces_disk_edits(self):
-        before=(self.root/'cues.json').read_bytes()
-        with self.assertRaises(ValueError):
-            translate_files(self.root,dict(mode='local'),lambda _:lambda texts:['wrong count'])
-        self.assertEqual(before,(self.root/'cues.json').read_bytes())
-    def test_empty_original_fails_without_loading_model(self):
-        write(self.root/'cues.json',[dict(original='',text='')])
-        with self.assertRaisesRegex(ValueError,'lời gốc'):
-            translate_files(self.root,dict(mode='local'),lambda _:self.fail('No model load'))
-    def test_json_shape_validation(self):
-        self.assertEqual(parse_array('```json\n["Xin chào"]\n```',1),['Xin chào'])
-        for output in ('{}','[""]','["a","b"]','not json'):
-            with self.assertRaises(ValueError):parse_array(output,1)
-    def test_translate_only_skips_ocr_and_asr(self):
-        from types import SimpleNamespace
-        with patch('dubflow.pipeline.engine') as engine:
-            translate_only(self.root,SimpleNamespace(translation_mode='local'),lambda *a:None)
-            self.assertEqual(engine.call_args.args[0],'translate')
     def test_queue_requires_source_and_provider_and_does_not_render(self):
         cfg=Settings(root=self.root,data_dir=self.root/'data',system_voices=self.root/'voices')
         app=create_app(cfg,start_worker=False)
@@ -72,7 +30,7 @@ class TranslationTests(unittest.TestCase):
             folder=cfg.jobs_dir/j['id']; folder.mkdir()
             base='/api/jobs/'+j['id']
             self.assertEqual(c.post(base+'/translate').status_code,409)
-            c.put('/api/settings',json=dict(translation_mode='local',translation_model=str(self.root)))
+            c.put('/api/settings',json=dict(gemini_api_key='k-test-123',gemini_model='gemini-x'))
             self.assertEqual(c.post(base+'/translate').status_code,409)
             write(folder/'cues.json',read(self.root/'cues.json'))
             r=c.post(base+'/translate')

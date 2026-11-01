@@ -20,11 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
-from .preferences import preferences, provider_configured
+from .preferences import preferences, translation_ready
+from . import translate_run
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
-from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest
+from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest
 from . import review
 from .pipeline import erase_current
 from .store import Store
@@ -80,7 +81,11 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     def review_job(job):
         collection=store.get_record('collection',job.get('collection_id')) if job.get('collection_id') else None
-        return dict(job,review_terms=(collection or {}).get('terminology',''))
+        return dict(job,review_terms=(collection or {}).get('terminology',''),vietsub_cps=preferences(store,settings)['vietsub_cps'])
+
+    def terminology_for(job):
+        collection=store.get_record('collection',job.get('collection_id')) if job.get('collection_id') else None
+        return (collection or {}).get('terminology','')
 
     def job_dir(job_id):
         job_or_404(job_id)
@@ -109,6 +114,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['clean_url'] = None
         if clean.is_file() and job.get('source_path') and erase_current(folder, job['source_path'], full=False):
             value['clean_url'] = f'{base}/clean?v={clean.stat().st_mtime_ns}'
+        value['translation_usage'] = translate_run.read_usage(folder)
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
 
@@ -175,7 +181,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         cache = Path(settings.model_cache)
         capabilities = dict(ffmpeg=Path(settings.ffmpeg).exists(), voice_synthesis=Path(settings.tts_python).exists() and (cache / 'models--openbmb--VoxCPM2').exists(),
                             transcription=Path(settings.asr_python).exists(), ocr=Path(settings.ocr_python).exists(),
-                            automatic_translation=provider_configured(preferences(store,settings)),
+                            automatic_translation=translation_ready(preferences(store,settings)),
                             douyin_download=False)
         warnings = []
         if not capabilities['automatic_translation']:
@@ -244,9 +250,6 @@ def create_app(settings: Settings | None = None, start_worker=True):
         except ValueError:
             pass
         store.event(job['id'], 'created', 'Đã tải video lên máy chủ cục bộ.', 0)
-        if prefs['auto_translate'] and provider_configured(prefs):
-            dispatch(job['id'],'analyze')
-            job = store.get_job(job['id'])
         return public_job(job)
 
     @app.get('/api/jobs/{job_id}')
@@ -453,14 +456,38 @@ def create_app(settings: Settings | None = None, start_worker=True):
             store.update_job(job_id, cue_count=0)
         return dispatch(job_id, 'analyze')
 
+    def translate_preflight(job, scope):
+        prefs = preferences(store, settings)
+        if not translation_ready(prefs):
+            raise HTTPException(409, 'Chưa cấu hình bộ dịch. Mở Cài đặt → Dịch tự động, nhập key và chọn model.')
+        folder = job_dir(job['id'])
+        if not read_json(folder / 'cues.json', []):
+            raise HTTPException(409, 'Chưa có lời gốc. Bấm Phân tích video trước khi dịch.')
+        return prefs, folder
+
+    @app.get('/api/jobs/{job_id}/translate/estimate')
+    def translate_estimate(job_id: str, scope: Literal['missing', 'all'] = 'missing'):
+        job = job_or_404(job_id)
+        prefs, folder = translate_preflight(job, scope)
+        result = translate_run.estimate(folder, scope, job.get('mode') or 'vietsub', prefs, terminology_for(job))
+        if result is None:
+            raise HTTPException(409, 'Không có câu nào cần dịch.')
+        return result
+
     @app.post('/api/jobs/{job_id}/translate')
-    def translate_job(job_id: str):
-        writable(job_id)
-        if not provider_configured(preferences(store,settings)):
-            raise HTTPException(409,'Chưa cấu hình bộ dịch. Mở Cài đặt → Dịch tự động.')
-        if not read_json(job_dir(job_id)/'cues.json',[]):
-            raise HTTPException(409,'Chưa có lời gốc. Bấm Phân tích video trước khi dịch.')
-        return dispatch(job_id, 'translate')
+    def translate_job(job_id: str, body: TranslateRequest | None = None):
+        job = writable(job_id)
+        body = body or TranslateRequest()
+        prefs, folder = translate_preflight(job, body.scope)
+        if not translate_run.collect_items(folder, body.scope):
+            raise HTTPException(409, 'Không có câu nào cần dịch.')
+        request = folder / translate_run.REQUEST_FILE
+        atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap))
+        try:
+            return dispatch(job_id, 'translate')
+        except HTTPException:
+            request.unlink(missing_ok=True)
+            raise
 
     @app.get('/api/jobs/{job_id}/review')
     def get_review(job_id: str):

@@ -1,6 +1,5 @@
 """Durable studio preferences and collection records, shared by API and workers."""
 from pathlib import Path
-from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 from typing import Literal
 
@@ -12,13 +11,23 @@ class Preferences(BaseModel):
     export_srt: bool = True
     open_after_export: bool = False
     resolution: Literal['source', '1080p', '720p'] = 'source'
-    translation_mode: Literal['manual', 'local', 'ollama', 'api'] = 'manual'
-    translation_num_ctx: int = Field(default=4096, ge=2048, le=8192)
-    translation_model: str = Field(default='', max_length=2000)
-    translation_api_url: str = Field(default='', max_length=2000)
-    translation_api_model: str = Field(default='', max_length=200)
-    translation_api_key: str = Field(default='', max_length=8000)
-    auto_translate: bool = False
+    translation_provider: Literal['gemini', 'openai', 'anthropic'] = 'gemini'
+    gemini_api_key: str = Field(default='', max_length=8000)
+    openai_api_key: str = Field(default='', max_length=8000)
+    anthropic_api_key: str = Field(default='', max_length=8000)
+    gemini_model: str = Field(default='', max_length=200)
+    openai_model: str = Field(default='', max_length=200)
+    anthropic_model: str = Field(default='', max_length=200)
+    translation_tier: Literal['free', 'paid'] = 'free'
+    rate_rpm: int = Field(default=10, ge=1, le=1000)
+    rate_rpd: int = Field(default=250, ge=1, le=100000)
+    price_in_per_mtok: FiniteFloat = Field(default=0, ge=0)
+    price_out_per_mtok: FiniteFloat = Field(default=0, ge=0)
+    cost_cap_usd: FiniteFloat = Field(default=.5, ge=0)
+    vietsub_cps: FiniteFloat = Field(default=17, ge=8, le=30)
+    max_output_tokens: int = Field(default=32768, ge=256, le=1000000)
+    max_input_tokens: int = Field(default=200000, ge=1000, le=10000000)
+    thinking: Literal['default', 'low', 'high'] = 'default'
     default_mode: Literal['dub','tm','vietsub'] = 'dub'
     default_voice_id: str | None = Field(default=None, max_length=100)
     blur_original: bool = True
@@ -35,15 +44,6 @@ class Preferences(BaseModel):
             raise ValueError('Thư mục xuất phải là đường dẫn tuyệt đối.')
         return str(p.resolve())
 
-    @field_validator('translation_api_url')
-    @classmethod
-    def api_url(cls, value):
-        if value:
-            parsed=urlparse(value)
-            if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password:
-                raise ValueError('URL dịch phải dùng http/https và không chứa mật khẩu.')
-        return value
-
 class CollectionInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=200)
@@ -58,18 +58,27 @@ class CollectionInput(BaseModel):
             raise ValueError('Tên bộ sưu tập không được trống.')
         return value.strip()
 
+PROVIDERS = ('gemini', 'openai', 'anthropic')
+# Fields of the removed local/Ollama/URL translators; dropped when an old record is loaded.
+LEGACY_FIELDS = ('translation_mode', 'translation_num_ctx', 'translation_model', 'translation_api_url',
+                 'translation_api_model', 'translation_api_key', 'auto_translate')
+
 def preferences(store, settings):
     defaults = Preferences(output_dir=str(settings.root / 'outputs')).model_dump()
-    for key in ('translation_mode','translation_model','translation_api_url','translation_api_model','translation_api_key'):
-        defaults[key] = getattr(settings, key, defaults[key])
-    defaults.update(store.get_record('settings','main') or {})
+    stored = {k: v for k, v in (store.get_record('settings','main') or {}).items() if k not in LEGACY_FIELDS}
+    defaults.update(stored)
     return Preferences(**defaults).model_dump()
 
 def public_preferences(values):
-    return dict(values, translation_api_key='', has_api_key=bool(values['translation_api_key']))
+    result = dict(values)
+    for name in PROVIDERS:
+        result[f'{name}_api_key'] = ''
+        result[f'has_{name}_key'] = bool(values[f'{name}_api_key'])
+    return result
 
-def provider_configured(values):
-    return (values['translation_mode'] in ('local','ollama') and bool(values['translation_model'].strip())) or (values['translation_mode']=='api' and bool(values['translation_api_url'].strip()) and bool(values['translation_api_model'].strip()))
+def translation_ready(values):
+    name = values['translation_provider']
+    return bool(values[f'{name}_api_key'].strip()) and bool(values[f'{name}_model'].strip())
 
 def effective_settings(store, settings):
     from dataclasses import replace

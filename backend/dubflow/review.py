@@ -126,6 +126,7 @@ def quality_report(folder, job, state=None):
     regions=read(Path(folder)/'regions.json',[])
     fp=fingerprint(folder,job,state)
     flags=[]
+    failed_ids=set(i for i in read(Path(folder)/'translation-failed.json',[]) if isinstance(i,str))
     def flag(code, ids, message, severity='review'):
         key=cache_key([fp,code,ids,message])[:24]
         resolution=state.get('resolutions',{}).get(key)
@@ -172,6 +173,10 @@ def quality_report(folder, job, state=None):
             flag('OUTPUT_METADATA',[c['id']], 'Bản dịch có thể chứa nhãn do model thêm.')
         if e-s<.5 or len(text)/(e-s)>20 or any(len(line)>48 for line in text.splitlines()):
             flag('READABILITY',[c['id']], 'Câu ngắn hoặc khó đọc trong thời lượng hiện tại; ngưỡng chỉ để sàng lọc.')
+        if text and job.get('mode')=='vietsub' and job.get('vietsub_cps') and len(text)/(e-s)>float(job['vietsub_cps'])*1.15:
+            flag('READ_TOO_FAST',[c['id']], 'Câu Việt dài, khó đọc kịp; nên rút gọn.')
+        if not text and c['id'] in failed_ids:
+            flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
         if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height'])):
             flag('LINES_OVERFLOW',[c['id']], 'Câu quá dài, vượt 2 dòng sub; nên rút gọn lời Việt.')
         assignment=current_assignment(c,state)

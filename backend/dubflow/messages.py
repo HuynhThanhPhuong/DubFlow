@@ -47,12 +47,6 @@ _MESSAGES = {
         'Khung hình nhận dạng chữ không đầy đủ. Hãy kiểm tra video nguồn và phân tích lại.',
     'OCR decoder failed':
         'Không giải mã được video để nhận dạng chữ. Hãy kiểm tra video nguồn và nhật ký ocr.log rồi thử lại.',
-    'Explicit translation API URL/model required':
-        'Thiếu địa chỉ API hoặc tên model dịch. Hãy cấu hình cả hai hoặc nhập lời Việt thủ công.',
-    'Cached local translation model required':
-        'Chưa cấu hình model dịch cục bộ có sẵn. Hãy chọn model đã cài hoặc nhập lời Việt thủ công.',
-    'Translator returned invalid cue array':
-        'Kết quả dịch không khớp danh sách câu phụ đề. Hãy thử dịch lại hoặc nhập lời Việt thủ công.',
 }
 
 

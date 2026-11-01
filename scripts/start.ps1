@@ -9,14 +9,6 @@ $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONDONTWRITEBYTECODE = '1'
 $logDir = Join-Path $dubRoot 'data\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
-# The web launcher also starts the owned local model server when selected.
-# Query only the mode; never print persisted API credentials.
-$dubLocalMode = & $apiPython -c "from dubflow.config import Settings; from dubflow.store import Store; from dubflow.preferences import preferences; s=Settings().ensure(); print(preferences(Store(s.db_path),s)['translation_mode'])"
-if ($LASTEXITCODE -ne 0) { throw 'Khong doc duoc cau hinh dich local. Xem du lieu DubFlow.' }
-if ($dubLocalMode.Trim() -eq 'ollama') {
-    try { & (Join-Path $PSScriptRoot 'start-local-models.ps1') }
-    catch { Write-Warning ('Ollama local chua san sang: ' + $_.Exception.Message) }
-}
 if (-not $Development -and -not (Test-Path -LiteralPath (Join-Path $dubRoot 'frontend\dist\index.html'))) {
     Push-Location (Join-Path $dubRoot 'frontend')
     try { & npm.cmd run build; if ($LASTEXITCODE -ne 0) { throw 'Không build được frontend.' } } finally { Pop-Location }

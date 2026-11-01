@@ -61,8 +61,10 @@ def run_task(task, settings, store):
     jid = task['job_id']
     job = store.get_job(jid)
     collection = store.get_record('collection',job.get('collection_id')) if job and job.get('collection_id') else None
-    settings.translation_context = (collection or {}).get('terminology','')
-    if job:job['review_terms']=settings.translation_context
+    terminology = (collection or {}).get('terminology','')
+    if job:
+        job['review_terms']=terminology
+        job['vietsub_cps']=settings.vietsub_cps
     folder = settings.jobs_dir / jid
     if not job or job['status'] == 'cancelled' or (folder / 'cancel.request').exists():
         store.finish_task(task['id'], 'cancelled')
@@ -92,7 +94,11 @@ def run_task(task, settings, store):
             atomic_json(history/(uuid.uuid4().hex+'.json'),current)
             atomic_json(folder/'cues.json',ordered)
         if task['action'] in ('analyze','translate'):
-            result = (pipeline.translate_only if task['action']=='translate' else pipeline.prepare)(folder, settings, emit) or {}
+            if task['action']=='translate':
+                from . import translate_run
+                result = translate_run.run_job(folder, settings, job, emit, terminology, check_cancel=lambda: update_active()) or {}
+            else:
+                result = pipeline.prepare(folder, settings, emit) or {}
             cues = read_json(folder / 'cues.json')
             from .review import quality_report
             report=quality_report(folder,job)
