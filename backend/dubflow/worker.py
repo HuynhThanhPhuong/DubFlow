@@ -113,6 +113,11 @@ def run_task(task, settings, store):
             update_active(status='awaiting_review', stage='awaiting_review', progress=45, cue_count=len(cues),
                              warnings=[translate_message(w) for w in result.get('warnings', job.get('warnings', []))]+summaries)
             store.event(jid, 'awaiting_review', 'Nội dung đã sẵn sàng để duyệt.', 45)
+        elif task['action'] == 'detect_logos':
+            _, _, source, meta = pipeline.context(folder, settings)
+            pipeline.detect_logos(folder, source, meta, settings, emit, force=True)
+            update_active(status='awaiting_review', stage='awaiting_review', progress=45)
+            store.event(jid, 'awaiting_review', 'Đã tìm logo và chữ cố định; hãy xem các khung gợi ý.', 45)
         else:
             from .review import require_export
             try:

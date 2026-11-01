@@ -461,6 +461,55 @@ def subtrack(directory, request):
     write(directory/'subtrack.json', out)
 
 
+def sample_frames(ffmpeg, source, width, height, duration, target_width=640, step=2.0, limit=150):
+    """Sparse grayscale frames downscaled to target_width -> (frames, times, scale)."""
+    import numpy as np
+    import subprocess
+    scale = min(1.0, target_width / width)
+    w = max(2, round(width * scale))
+    h = max(2, round(height * scale))
+    fps = min(1 / step, limit / max(duration, 1e-6))
+    process = subprocess.Popen([ffmpeg, '-v', 'error', '-i', source, '-vf', f'fps={fps:.6f},scale={w}:{h},format=gray',
+                                '-f', 'rawvideo', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    frames = []
+    try:
+        while len(frames) < limit:
+            raw = process.stdout.read(w * h)
+            if len(raw) < w * h:
+                break
+            frames.append(np.frombuffer(raw, np.uint8).reshape(h, w).copy())
+    finally:
+        process.stdout.close()
+        process.kill()
+        process.wait()
+    return frames, [i / fps for i in range(len(frames))], scale
+
+
+def logos(directory, request):
+    """Logo / fixed-text candidates -> logo-candidates.json, merged into regions.json (user decisions are kept)."""
+    from logo_detect import apply_candidates, detect_static, merge_candidates
+    directory = Path(directory)
+    width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
+    frames, times, scale = sample_frames(request['ffmpeg'], request['source'], width, height, duration)
+    if not frames:
+        raise RuntimeError(translate_message('Could not read frames for logo detection'))
+    track = read(directory/'subtrack.json', {}) or {}
+    exclude = [(int(s['x0']), int(s['y0']), int(s['x1'] - s['x0']), int(s['y1'] - s['y0'])) for s in track.get('segments', [])
+               if s.get('x1', 0) > s.get('x0', 0) and s.get('y1', 0) > s.get('y0', 0)]
+    if exclude and track.get('band'):
+        # glyph strokes at the centre of a line are persistent edges too: also skip the band over the lines' x range
+        left, right = min(e[0] for e in exclude), max(e[0] + e[2] for e in exclude)
+        exclude.append((left, int(track['band'][0]), right - left, int(track['band'][1] - track['band'][0])))
+    detected = detect_static(frames, times, duration, exclude, scale)
+    regions = read(directory/'regions.json', []) or []
+    # OCR "static" fragments; anything the user touched (confirmed, disabled) or the detector made is not input
+    fragments = [r for r in regions if r.get('kind') == 'static' and not r.get('auto') and not r.get('confirmed') and r.get('enabled', True)]
+    candidates = merge_candidates(detected, fragments, duration)
+    write(directory/'logo-candidates.json', dict(version=1, source_hash=request.get('source_hash'), samples=len(frames),
+                                                  scale=scale, excluded=len(exclude), detected=detected, candidates=candidates))
+    write(directory/'regions.json', apply_candidates(regions, candidates))
+
+
 def active_segments(segs, first, t, margin):
     """(active, upcoming) at time t for segs sorted by start; first = index below which every segment has ended.
 
@@ -660,7 +709,7 @@ def main():
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase)
+    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers

@@ -25,7 +25,7 @@ from . import translate_run
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
-from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest
+from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
 from .pipeline import erase_current
 from .store import Store
@@ -537,6 +537,13 @@ def create_app(settings: Settings | None = None, start_worker=True):
             if exc.status_code == 503:  # Redis refused: nobody will read this request
                 request.unlink(missing_ok=True)
             raise
+
+    @app.post('/api/jobs/{job_id}/detect-logos')
+    def detect_logos_job(job_id: str, body: DetectLogosRequest):
+        job = writable(job_id)
+        if not job.get('source_path'):
+            raise HTTPException(409, 'Chưa có video nguồn.')
+        return dispatch(job_id, 'detect_logos')
 
     @app.get('/api/jobs/{job_id}/review')
     def get_review(job_id: str):

@@ -181,7 +181,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
         if value is not None:
             payload[name] = str(value)
     request = directory/'engine-request.json'
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase','logos') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
@@ -193,7 +193,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             last = [time.monotonic()]
             def poll():
                 if emit and time.monotonic()-last[0]>=2:
-                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
+                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'logos':36,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
                     emit(stage, f'{stage} running', progress)
                     last[0] = time.monotonic()
             code = wait_owned(process,directory,poll)
@@ -289,6 +289,24 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
+
+def detect_logos(directory, source, meta, settings, emit, warnings=None, force=False):
+    """Logo / fixed-text candidates (engine stage `logos`), once per source file unless forced.
+    With `warnings` a failed run is only noted; without it the NeedsReview propagates (on-demand detection)."""
+    if not getattr(settings, 'ocr_python', None):
+        return
+    digest = file_hash(source)
+    if not force and (read(directory/'logo-candidates.json', {}) or {}).get('source_hash') == digest:
+        return
+    emit('logos', 'Đang tìm logo và chữ cố định', 36)
+    try:
+        engine('logos', directory, settings, {'source': str(source), **meta, 'source_hash': digest}, emit=emit)
+    except Cancelled:
+        raise
+    except NeedsReview as exc:
+        if warnings is None:
+            raise
+        warnings.append('Chưa tìm được logo và chữ cố định: '+str(exc))
 
 ERASE_VERSION = 5
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
@@ -394,6 +412,7 @@ def prepare(job_dir, settings, emit):
         write(directory/'ocr-complete.json',read(directory/'ocr-complete.json',{}) | dict(warnings=warnings))
     elif getattr(settings,'blur_original',True):
         refine_text_regions(directory,source,meta,settings,emit)
+    detect_logos(directory, source, meta, settings, emit, warnings)
     cues = read(directory/'cues.json', [])
     speaker_signature=cache_key([{k:c.get(k) for k in ('id','start','end','original')} for c in cues])
     speaker_marker=read(directory/'speaker-candidates.json',{})

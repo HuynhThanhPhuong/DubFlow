@@ -109,6 +109,13 @@ class Region(BaseModel):
     text: str = Field(default='', max_length=5000)
     translation: str = Field(default='', max_length=5000)
     enabled: bool = True
+    auto: bool = False        # created by the logo/fixed-text detector
+    confirmed: bool = False   # the user ticked or crossed it, or drew it
+    label: str = Field(default='', max_length=100)
+
+
+class DetectLogosRequest(BaseModel):
+    pass
 
 
 class Part(BaseModel):

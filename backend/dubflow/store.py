@@ -86,7 +86,7 @@ class Store:
         return [dict(r) for r in rows]
 
     def enqueue(self, job_id, action, before_commit=None):
-        if action not in ('analyze', 'render', 'translate'):
+        if action not in ('analyze', 'render', 'translate', 'detect_logos'):
             raise ValueError('Tác vụ không hợp lệ.')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
