@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "./ui";
 import { workspaceApi } from "./workspaceApi";
@@ -15,6 +15,39 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </label>
+  );
+}
+
+type NumKey = "rate_rpm" | "rate_rpd" | "price_in_per_mtok" | "price_out_per_mtok" | "cost_cap_usd" | "vietsub_cps";
+// Giữ bản nháp dạng chuỗi để có thể xóa trắng khi đang gõ; hợp lệ mới ghi vào cài đặt, rời ô thì khôi phục giá trị hợp lệ gần nhất.
+function NumField({ label, value, min, max, step, hint, onValid }: {
+  label: string; value: number; min: number; max?: number; step: number; hint?: string; onValid: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const valid = (text: string) => {
+    const n = Number(text);
+    return text.trim() !== "" && Number.isFinite(n) && n >= min && (max === undefined || n <= max) ? n : null;
+  };
+  return (
+    <Field label={label}>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const n = valid(e.target.value);
+          if (n !== null) onValid(n);
+        }}
+        onBlur={() => {
+          if (valid(draft) === null) setDraft(String(value));
+        }}
+      />
+      {hint && <small>{hint}</small>}
+    </Field>
   );
 }
 
@@ -36,27 +69,16 @@ export function TranslationSettings({
     clearField = `clear_${provider}_key` as const;
   const hasKey = settings[hasField] && !settings[clearField];
   const paid = settings.translation_tier === "paid";
-  const num = (
-    key: "rate_rpm" | "rate_rpd" | "price_in_per_mtok" | "price_out_per_mtok" | "cost_cap_usd" | "vietsub_cps",
-    label: string,
-    min: number,
-    max?: number,
-    step = 1,
-  ) => (
-    <Field label={label}>
-      <input
-        type="number"
-        required
-        min={min}
-        max={max}
-        step={step}
-        value={settings[key]}
-        onChange={(e) => {
-          if (e.target.value !== "" && Number.isFinite(e.target.valueAsNumber))
-            set(key, e.target.valueAsNumber);
-        }}
-      />
-    </Field>
+  const num = (key: NumKey, label: string, min: number, max?: number, step = 1, hint?: string) => (
+    <NumField
+      label={label}
+      value={settings[key]}
+      min={min}
+      max={max}
+      step={step}
+      hint={hint}
+      onValid={(n) => set(key, n)}
+    />
   );
   const loadModels = async () => {
     setLoadingModels(true);
@@ -97,7 +119,13 @@ export function TranslationSettings({
           autoComplete="new-password"
           value={settings[keyField] ?? ""}
           placeholder={hasKey ? "Đã lưu key" : "Chưa lưu key"}
-          onChange={(e) => set(keyField, e.target.value)}
+          onChange={(e) => {
+            set(keyField, e.target.value);
+            if (e.target.value && settings[clearField]) {
+              set(clearField, false);
+              set(hasField, true);
+            }
+          }}
         />
       </Field>
       <div className="studio-actions">
@@ -158,7 +186,7 @@ export function TranslationSettings({
         <>
           {num("price_in_per_mtok", "Giá vào (USD / 1 triệu token)", 0, undefined, 0.01)}
           {num("price_out_per_mtok", "Giá ra (USD / 1 triệu token)", 0, undefined, 0.01)}
-          {num("cost_cap_usd", "Mức trần mỗi video (USD)", 0, undefined, 0.01)}
+          {num("cost_cap_usd", "Mức trần mỗi video (USD)", 0, undefined, 0.01, "0 = luôn hỏi trước mỗi lần dịch")}
         </>
       )}
       {num("vietsub_cps", "Số ký tự mỗi giây tối đa cho Vietsub (CPS)", 8, 30, 0.5)}

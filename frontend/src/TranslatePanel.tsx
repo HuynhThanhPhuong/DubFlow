@@ -36,16 +36,18 @@ export function TranslatePanel({
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
 }) {
-  const [scope, setScope] = useState<TranslateScope>("missing"),
+  const [scopeChoice, setScope] = useState<TranslateScope | null>(null),
+    [dialogError, setDialogError] = useState(""),
     [estimate, setEstimate] = useState<TranslateEstimate | null>(null),
     [working, setWorking] = useState(false),
     [prompt, setPrompt] = useState<string | null>(null),
     input = useRef<HTMLInputElement>(null);
+  const usage = job.translation_usage;
+  const stale = !!usage && usage.mode !== job.mode;
   const pause = isBusy(job) ? null : pauseKind(job);
+  const scope: TranslateScope = scopeChoice ?? (stale ? "all" : "missing");
   const effectiveScope: TranslateScope = pause ? "missing" : scope;
   const forceCap = pause === "cost_cap";
-  const usage = job.translation_usage;
-  const stale = usage && usage.mode !== job.mode;
   const off = disabled || working || isBusy(job);
   const guard = async (fn: () => Promise<void>) => {
     setWorking(true);
@@ -58,13 +60,23 @@ export function TranslatePanel({
     }
   };
   const askEstimate = () =>
-    guard(async () => setEstimate(await api.translateEstimate(job.id, effectiveScope)));
-  const confirm = (allowOverCap: boolean) =>
     guard(async () => {
+      setDialogError("");
+      setEstimate(await api.translateEstimate(job.id, effectiveScope));
+    });
+  const confirm = async (allowOverCap: boolean) => {
+    setWorking(true);
+    setDialogError("");
+    try {
       onJob(await api.translate(job.id, effectiveScope, allowOverCap));
       setEstimate(null);
       onNotice("Đã gửi vào hàng đợi xử lý.");
-    });
+    } catch (e) {
+      setDialogError(e instanceof Error ? e.message : "Chưa thực hiện được thao tác. Hãy thử lại.");
+    } finally {
+      setWorking(false);
+    }
+  };
   const buttonLabel = pause === "cost_cap"
     ? "Dịch tiếp, cho phép vượt trần"
     : pause === "quota"
@@ -72,6 +84,11 @@ export function TranslatePanel({
       : `Dịch bằng ${providerLabel}`;
   return (
     <div className="translate-panel">
+      {!ready && (
+        <p className="small">
+          Chưa cấu hình dịch API — vào Cài đặt → Dịch, hoặc dùng cách thủ công bên dưới.
+        </p>
+      )}
       {ready && (
         <>
           {!pause && (
@@ -123,7 +140,12 @@ export function TranslatePanel({
       >
         Xuất SRT Trung + lệnh mẫu
       </a>
-      <Button disabled={off} onClick={() => input.current?.click()}>
+      <Button
+        disabled={off}
+        title="Khớp theo số thứ tự của file SRT Trung đã xuất"
+        aria-description="Khớp theo số thứ tự của file SRT Trung đã xuất"
+        onClick={() => input.current?.click()}
+      >
         Nhập SRT Việt
       </Button>
       <input
@@ -131,7 +153,7 @@ export function TranslatePanel({
         className="sr-only"
         type="file"
         accept=".srt"
-        aria-label="Nhập SRT Việt"
+        aria-label="Chọn file SRT Việt"
         onChange={(e) => {
           const file = e.target.files?.[0];
           e.target.value = "";
@@ -164,8 +186,13 @@ export function TranslatePanel({
             <p className="warning">Lời Việt đã sửa của các câu này sẽ bị ghi đè.</p>
           )}
           {estimate.over_cap && (
-            <p className="warning" role="alert" style={{ color: "#c0392b" }}>
+            <p className="warning error" role="alert">
               Chi phí dự kiến vượt mức trần {estimate.cap_usd} USD cho mỗi video.
+            </p>
+          )}
+          {dialogError && (
+            <p className="warning error" role="status">
+              {dialogError}
             </p>
           )}
           <div className="dialog-foot">

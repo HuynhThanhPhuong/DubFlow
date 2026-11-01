@@ -687,7 +687,7 @@ export default function App() {
                       onClick={() => subtitleInput.current?.click()}
                     >
                       <Upload size={15} />
-                      Nhập SRT
+                      Nhập SRT (khớp theo thời gian)
                     </Button>
                     <TranslatePanel
                       job={currentJob}
