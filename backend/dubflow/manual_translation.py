@@ -10,10 +10,12 @@ _MODE_RULES = {
                'của chính khối đó (số ký tự tối đa = thời lượng giây x {cps:g}). Văn phong ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
     'tm': 'Đây là thuyết minh: một giọng đọc duy nhất đọc lại lời thoại đã dịch. Vẫn dịch từng câu như lời nhân vật nói '
           '(giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; '
-          'độ dài mỗi khối phải khớp với thời lượng của khối đó (khoảng 4,5 âm tiết mỗi giây, sai lệch trong 15%).',
+          'độ dài tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; '
+          'tuyệt đối không vượt quá số âm tiết tối đa của khối = thời lượng giây x 4,5 (làm tròn xuống).',
     'dub': 'Đây là lồng tiếng: viết lời thoại nói được thành tiếng cho từng nhân vật, hợp tính cách và cảm xúc '
-           '(khẩu ngữ, ngắt nhịp tự nhiên). Độ dài mỗi khối phải khớp với thời lượng của khối đó '
-           '(khoảng 4,5 âm tiết mỗi giây, sai lệch trong 15%).',
+           '(khẩu ngữ, ngắt nhịp tự nhiên). Độ dài tự nhiên, tương đương lời gốc '
+           '(khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; tuyệt đối không vượt quá số âm tiết '
+           'tối đa của khối = thời lượng giây x 4,5 (làm tròn xuống).',
 }
 
 

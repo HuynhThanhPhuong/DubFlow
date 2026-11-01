@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .translate_api import ProviderError, QuotaExhausted, RateLimited, Usage
 
-PROMPT_VERSION = 'p3-2'
+PROMPT_VERSION = 'p3-3'
 CACHE_FILE = 'translation-cache-v2.json'
 CONTEXT_FILE = 'translation-context.json'
 RUNS_DIR = 'translation-runs'
@@ -56,10 +56,11 @@ SYSTEM_COMMON = (
 SYSTEM_BY_MODE = {
     'vietsub': SYSTEM_COMMON + '\nCHẾ ĐỘ PHỤ ĐỀ: "max_chars" là giới hạn cứng, tuyệt đối không vượt. '
                                'Văn phong phụ đề: ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
-    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: một giọng đọc duy nhất đọc lại lời thoại đã dịch; vẫn dịch từng câu thoại như lời nhân vật nói (giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; số âm tiết mỗi câu sát "target_syllables" (sai lệch trong ±15%).',
+    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: một giọng đọc duy nhất đọc lại lời thoại đã dịch; vẫn dịch từng câu thoại như lời nhân vật nói (giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; độ dài tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; tuyệt đối không vượt "max_syllables" (giới hạn cứng số âm tiết).',
     'dub': SYSTEM_COMMON + '\nCHẾ ĐỘ LỒNG TIẾNG: viết lời thoại nói được thành tiếng cho giọng của từng nhân vật theo '
-                           '"speaker", hợp tính cách và cảm xúc của họ (khẩu ngữ, ngắt nhịp tự nhiên); số âm tiết mỗi '
-                           'câu sát "target_syllables" (sai lệch trong ±15%).',
+                           '"speaker", hợp tính cách và cảm xúc của họ (khẩu ngữ, ngắt nhịp tự nhiên); độ dài '
+                           'tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; '
+                           'tuyệt đối không vượt "max_syllables" (giới hạn cứng số âm tiết).',
 }
 
 _STR = {'type': 'string'}
@@ -120,7 +121,7 @@ def _payload_item(it: Item, mode: str, prefs) -> dict:
     if mode == 'vietsub':
         d['max_chars'] = max(1, round(dur * prefs.vietsub_cps))
     else:
-        d['target_syllables'] = max(1, round(dur * SYLLABLES_PER_SEC))
+        d['max_syllables'] = max(1, math.floor(dur * SYLLABLES_PER_SEC))
     return d
 
 

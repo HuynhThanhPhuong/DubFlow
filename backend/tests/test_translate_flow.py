@@ -338,6 +338,24 @@ class RunTests(Base):
         codes = [f['code'] for f in self.client.get(self.base + '/quality').json()['flags']]
         self.assertNotIn('READ_TOO_FAST', codes)
 
+    def test_speech_too_long_flag(self):
+        self.configure()
+        text = ' '.join(['a'] * 10)  # 10 âm tiết, max = floor(2 * 4.5) = 9
+        cues = [dict(id='c1', start=0, end=2, speaker='A', original='你好', text=text)]
+        for mode in ('tm', 'dub'):
+            self.make_job(mode=mode, cues=cues, regions=[])
+            flags = [f for f in self.client.get(self.base + '/quality').json()['flags'] if f['code'] == 'SPEECH_TOO_LONG']
+            self.assertEqual([f['cue_ids'] for f in flags], [['c1']])
+            self.assertEqual(flags[0]['message'], 'Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.')
+        cues[0]['text'] = ' '.join(['a'] * 9)
+        self.make_job(mode='tm', cues=cues, regions=[])
+        codes = [f['code'] for f in self.client.get(self.base + '/quality').json()['flags']]
+        self.assertNotIn('SPEECH_TOO_LONG', codes)
+        cues[0]['text'] = text
+        self.make_job(mode='vietsub', cues=cues, regions=[])
+        codes = [f['code'] for f in self.client.get(self.base + '/quality').json()['flags']]
+        self.assertNotIn('SPEECH_TOO_LONG', codes)
+
     def test_provider_error_midrun_keeps_paid_chunks(self):
         self.configure(max_output_tokens=256)
         cues = [dict(id=f'c{i}', start=i * 3, end=i * 3 + 2, speaker='A', original=LONG, text='') for i in range(6)]

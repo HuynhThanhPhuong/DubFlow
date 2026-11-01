@@ -177,6 +177,8 @@ def quality_report(folder, job, state=None):
             flag('READABILITY',[c['id']], 'Câu ngắn hoặc khó đọc trong thời lượng hiện tại; ngưỡng chỉ để sàng lọc.')
         if text and job.get('mode')=='vietsub' and job.get('vietsub_cps') and len(text)/(e-s)>float(job['vietsub_cps'])*1.15:
             flag('READ_TOO_FAST',[c['id']], 'Câu Việt dài, khó đọc kịp; nên rút gọn.')
+        if text and job.get('mode') in ('tm','dub') and len(text.split())>max(1,math.floor((e-s)*4.5)):
+            flag('SPEECH_TOO_LONG',[c['id']], 'Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.')
         if not text and c['id'] in failed_ids:
             flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
         if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height'])):

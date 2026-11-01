@@ -243,20 +243,21 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         text = logs[0].read_text(encoding='utf-8')
         self.assertNotIn(KEY, text)
-        self.assertEqual(json.loads(text)['prompt_version'], 'p3-2')
+        self.assertEqual(json.loads(text)['prompt_version'], 'p3-3')
 
     def test_vietsub_items_carry_max_chars(self):
         f = Fake()
         run(self.d, make_items(3, dur=2.0), p=prefs(vietsub_cps=17), fake=f, mode='vietsub')
         for it in f.calls[0]['items']:
             self.assertEqual(it['max_chars'], round(2.0 * 17))
-            self.assertNotIn('target_syllables', it)
+            self.assertNotIn('max_syllables', it)
 
-    def test_tm_items_carry_target_syllables(self):
+    def test_tm_items_carry_max_syllables(self):
         f = Fake()
         run(self.d, make_items(3, dur=2.0), fake=f, mode='tm')
         for it in f.calls[0]['items']:
-            self.assertEqual(it['target_syllables'], 9)
+            self.assertEqual(it['max_syllables'], 9)
+            self.assertNotIn('target_syllables', it)
             self.assertNotIn('max_chars', it)
 
 
