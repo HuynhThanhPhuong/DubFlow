@@ -461,6 +461,21 @@ def subtrack(directory, request):
     write(directory/'subtrack.json', out)
 
 
+def active_segments(segs, first, t, margin):
+    """(active, upcoming) at time t for segs sorted by start; first = index below which every segment has ended.
+
+    A segment is active while s - margin <= t < e + margin. Segments after a long one that already ended are skipped
+    (first only advances past the leading ended segments), so stale boxes are never processed."""
+    active, upcoming = [], None
+    for s in segs[first:]:
+        if s['s'] - margin > t:
+            upcoming = s['s']
+            break
+        if s['e'] + margin > t:
+            active.append(s)
+    return active, upcoming
+
+
 def erase(directory, request):
     """Remove burned-in subtitle glyphs from every frame -> clean.mp4 (video re-encoded, source audio muxed)."""
     import subprocess
@@ -554,12 +569,7 @@ def erase(directory, request):
                 if gone is not None and gone not in after.values():
                     (refs_dir/f'{gone}.npy').unlink(missing_ok=True)
                 first += 1
-            active, upcoming = [], None
-            for s in segs[first:]:
-                if s['s'] - margin > t:
-                    upcoming = s['s']
-                    break
-                active.append(s)
+            active, upcoming = active_segments(segs, first, t, margin)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if active else None
             refs = []
             if active:
@@ -602,6 +612,10 @@ def erase(directory, request):
         if reader.wait() != 0 or (expected and abs(n - expected) > max(2, 0.02 * expected)):
             raise RuntimeError(f'erase decode truncated: {n} frames, expected about {expected:.0f}')
     except BaseException:
+        try:
+            writer.stdin.close()
+        except Exception:  # noqa: BLE001 - already closed or broken pipe
+            pass
         reader.kill(); writer.kill(); writer.wait()
         out.unlink(missing_ok=True)
         raise
@@ -611,8 +625,18 @@ def erase(directory, request):
         reader.wait()
         shutil.rmtree(refs_dir, ignore_errors=True)
     os.replace(out, directory/'clean.mp4')
-    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill='lama' if lama is not None else 'smooth',
-                                       cuda_dll_dir=request.get('cuda_dll_dir'), warnings=[lama_warning] if lama_warning else [], source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+    # a LaMa run that fell back at run time is recorded so erase_current re-runs it once LaMa works again
+    runtime_events = list(getattr(lama, 'events', []) or [])
+    smooth_frames = style.get('lama_failed', 0)
+    if smooth_frames:
+        runtime_events.append(f'LaMa failed on {smooth_frames} frame(s), smooth fill used')
+    if runtime_events:
+        print('WARNING: ' + runtime_events[0], file=sys.stderr, flush=True)
+    fill = 'smooth' if lama is None else ('lama+smooth' if smooth_frames else 'lama')
+    warnings = ([lama_warning] if lama_warning else []) + runtime_events[:3]
+    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill=fill,
+                                       runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
+                                       cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

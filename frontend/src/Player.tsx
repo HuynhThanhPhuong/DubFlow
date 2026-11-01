@@ -51,7 +51,9 @@ export function Player({
     }
   };
   const cleanSource =
-    view === "preview" && job.clean_url ? mediaUrl(job.clean_url) : "";
+    view === "preview" && blurOriginal && job.clean_url
+      ? mediaUrl(job.clean_url)
+      : "";
   const source =
     cleanSource || playerSource(job, view === "output" ? "output" : "source");
   useEffect(() => {

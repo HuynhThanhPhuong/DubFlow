@@ -291,6 +291,12 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
 ERASE_VERSION = 5
+ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
+
+def erase_knobs(meta):
+    """The static/reuse tolerances a run would use (meta overrides, normally unset)."""
+    meta = meta or {}
+    return {k: float(meta.get(k, v)) for k, v in ERASE_KNOBS.items()}
 
 def erase_fell_back(done, settings):
     """True when the recorded run used a weaker fill than the current settings allow: smooth fill although the LaMa
@@ -298,7 +304,7 @@ def erase_fell_back(done, settings):
     model, dll = getattr(settings, 'lama_model', None), getattr(settings, 'cuda_dll_dir', None)
     if not model or not Path(model).is_file():
         return False
-    if done.get('fill') != 'lama':
+    if done.get('runtime_fallback') or done.get('fill') != 'lama':
         return True
     return done.get('provider') == 'cpu' and bool(dll) and Path(dll).is_dir() and done.get('cuda_dll_dir') != str(dll)
 
@@ -314,7 +320,10 @@ def erase_current(directory, source, meta=None, full=True, settings=None):
               and done.get('source_size') == stat.st_size and done.get('source_mtime_ns') == stat.st_mtime_ns
               and done.get('subtrack_hash') == file_hash(directory/'subtrack.json'))
         if ok and meta is not None:
-            ok = done.get('fps') == str(meta.get('fps_arg') or meta.get('fps') or 25)
+            knobs = erase_knobs(meta)  # runs recorded before the knobs were stored used the defaults
+            ok = (done.get('fps') == str(meta.get('fps_arg') or meta.get('fps') or 25)
+                  and float(done.get('static_tol', ERASE_KNOBS['erase_static_tol'])) == knobs['erase_static_tol']
+                  and float(done.get('reuse_tol', ERASE_KNOBS['lama_reuse_tol'])) == knobs['lama_reuse_tol'])
         if ok and full:
             ok = done.get('source_hash') == file_hash(source)
         return ok
@@ -327,7 +336,7 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings):
     clean, stamp = directory/'clean.mp4', directory/'erase.json'
     if not track.get('segments') or not getattr(settings, 'ocr_python', None):
         return
-    if erase_current(directory, source, meta, settings=settings):
+    if erase_current(directory, source, meta, full=False, settings=settings):  # size+mtime is enough; the hash is stored for full checks
         return
     stat = Path(source).stat()
     hashes = dict(source_hash=file_hash(source), subtrack_hash=file_hash(directory/'subtrack.json'),

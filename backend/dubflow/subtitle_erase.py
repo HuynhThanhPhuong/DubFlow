@@ -167,13 +167,45 @@ ALIGN_GOOD = 1.6  # ring diff (gray levels) that counts as a perfect match (vide
 STATIC_TOL = 6.0  # ring diff under which a motion-aligned clean reference replaces the glyph zone
 
 
+class LamaSession:
+    """onnxruntime session wrapper that survives run-time failures.
+
+    A failing CUDA run (e.g. out of memory) is retried on a CPU session that is created lazily; when that fails too the
+    exception reaches erase_frame, which uses the smooth fill for that frame. Every CUDA -> CPU retry is recorded in
+    events so the stage can note the fallback in erase.json."""
+
+    def __init__(self, session, provider, model):
+        self.session, self.provider, self.model = session, provider, model
+        self.cpu = None
+        self.events = []
+
+    def get_inputs(self):
+        return self.session.get_inputs()
+
+    def run(self, outputs, feeds):
+        try:
+            return self.session.run(outputs, feeds)
+        except Exception as exc:  # noqa: BLE001 - any runtime failure (CUDA OOM, driver reset) falls back
+            if self.provider != 'cuda':
+                raise
+            self.events.append(f'LaMa CUDA run failed, retried on CPU ({str(exc)[:120]})')
+            if self.cpu is None:
+                import onnxruntime as ort
+                self.cpu = ort.InferenceSession(str(self.model), providers=['CPUExecutionProvider'])
+            return self.cpu.run(outputs, feeds)
+
+
 def open_lama(model, dll_dir=None):
     """Open the LaMa ONNX model on CUDA when possible. Returns (session, provider, warning).
 
-    provider is 'cuda' or 'cpu'; warning is None or a short text when the slow CPU path is used. The CUDA 12 / cuDNN 9
-    DLLs are looked up in dll_dir (a setting, e.g. the torch/lib folder of another environment); nothing is copied."""
+    provider is 'cuda' or 'cpu'; warning is None or a short text when the slow CPU path is used. When onnxruntime is
+    missing or no session can be opened, returns (None, None, warning) and the caller uses the smooth fill. The CUDA 12 /
+    cuDNN 9 DLLs are looked up in dll_dir (a setting, e.g. the torch/lib folder of another environment); nothing is copied."""
     import os
-    import onnxruntime as ort
+    try:
+        import onnxruntime as ort
+    except Exception as exc:  # noqa: BLE001 - ImportError or a broken native install
+        return None, None, f'LaMa unavailable, smooth fill used: onnxruntime cannot be imported ({str(exc)[:120]})'
     warning = None
     cuda_listed = 'CUDAExecutionProvider' in ort.get_available_providers()
     if not cuda_listed:
@@ -188,11 +220,14 @@ def open_lama(model, dll_dir=None):
         try:
             session = ort.InferenceSession(str(model), so, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
             if session.get_providers()[0] == 'CUDAExecutionProvider':
-                return session, 'cuda', None
+                return LamaSession(session, 'cuda', model), 'cuda', None
             warning = 'LaMa runs on CPU (slow): CUDA provider could not start (see DLL folder and driver)'
         except Exception as exc:  # noqa: BLE001 - any CUDA init failure falls back to CPU
             warning = f'LaMa runs on CPU (slow): CUDA provider failed ({str(exc)[:120]})'
-    return ort.InferenceSession(str(model), providers=['CPUExecutionProvider']), 'cpu', warning
+    try:
+        return LamaSession(ort.InferenceSession(str(model), providers=['CPUExecutionProvider']), 'cpu', model), 'cpu', warning
+    except Exception as exc:  # noqa: BLE001 - corrupt or unreadable model
+        return None, None, f'LaMa unavailable, smooth fill used: model cannot be opened ({str(exc)[:120]})'
 
 
 def _tile_spans(lo: int, hi: int, limit: int):
@@ -208,47 +243,59 @@ def _tile_spans(lo: int, hi: int, limit: int):
 def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0, feather: float = 1.2) -> np.ndarray:
     """Inpaint the True pixels of mask (same HxW as img, BGR uint8) with a LaMa ONNX session (fixed 512x512 input).
 
-    The mask bounding box plus context is cut into horizontal tiles (<= 512 px wide, overlapping) and the tiles are
-    stacked into 512x512 canvases at native scale, so one model call normally covers a whole subtitle line. Only masked
-    pixels change (feathered ~1 px); the rest of img is returned untouched."""
+    The mask bounding box plus context is cut into overlapping bands (<= 512 rows) and, inside a band, overlapping tiles
+    (<= 512 px wide); a band's tiles are stacked into 512x512 canvases at native scale, so one model call normally covers
+    a whole subtitle line. Overlaps are blended. Only masked pixels change (feathered ~1 px); the rest of img is returned
+    untouched."""
     ys, xs = np.nonzero(mask)
     if not len(ys):
         return img
     H, W = mask.shape
     ctx = int(round(LAMA_CTX * scale))
     y_lo, y_hi = max(0, int(ys.min()) - ctx), min(H, int(ys.max()) + 1 + ctx)
-    th = min(y_hi - y_lo, LAMA_SIZE)
-    spans = [s for s in _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W) if mask[y_lo:y_lo + th, s[0]:s[1]].any()]
-    per = max(1, LAMA_SIZE // th)  # tiles stacked per canvas
+    col_spans = _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W)
     names = [i.name for i in session.get_inputs()]
     # everything below works on the rows/columns the tiles cover, not on the whole frame (4x faster than full-frame math)
-    if not spans:
-        return img
-    cx0, cx1 = min(a for a, _ in spans), max(b for _, b in spans)
-    rgb = cv2.cvtColor(np.ascontiguousarray(img[y_lo:y_lo + th, cx0:cx1]), cv2.COLOR_BGR2RGB)
-    mc = mask[y_lo:y_lo + th, cx0:cx1]
+    cx0, cx1 = min(a for a, _ in col_spans), max(b for _, b in col_spans)
+    rgb = cv2.cvtColor(np.ascontiguousarray(img[y_lo:y_hi, cx0:cx1]), cv2.COLOR_BGR2RGB)
+    mc = mask[y_lo:y_hi, cx0:cx1]
     acc = np.zeros(rgb.shape, np.float32)
     wsum = np.zeros(rgb.shape[:2], np.float32)
-    for c0 in range(0, len(spans), per):
-        group = spans[c0:c0 + per]
-        canvas = np.zeros((LAMA_SIZE, LAMA_SIZE, 3), np.float32)
-        cmask = np.zeros((LAMA_SIZE, LAMA_SIZE), np.float32)
-        for j, (a, b) in enumerate(group):
-            canvas[j * th:(j + 1) * th, :b - a] = rgb[:, a - cx0:b - cx0]
-            cmask[j * th:(j + 1) * th, :b - a] = mc[:, a - cx0:b - cx0]
-        # pad the unused canvas area with the nearest content so it does not look like a huge black hole edge
-        used = len(group) * th
-        if used < LAMA_SIZE:
-            canvas[used:] = canvas[used - 1:used]
-        feeds = {names[0]: (canvas / 255.0).transpose(2, 0, 1)[None].astype(np.float32), names[1]: cmask[None, None]}
-        res = np.asarray(session.run(None, feeds)[0])[0].transpose(1, 2, 0)
-        for j, (a, b) in enumerate(group):
-            w = np.ones(b - a, np.float32)
-            ramp = min(LAMA_OVERLAP, b - a)
-            w[:ramp] = np.minimum(w[:ramp], np.linspace(0.05, 1, ramp, dtype=np.float32)) if a > 0 else 1
-            w[-ramp:] = np.minimum(w[-ramp:], np.linspace(1, 0.05, ramp, dtype=np.float32)) if b < W else w[-ramp:]
-            acc[:, a - cx0:b - cx0] += res[j * th:(j + 1) * th, :b - a] * w[None, :, None]
-            wsum[:, a - cx0:b - cx0] += w[None, :]
+
+    def ramp_weights(a, b, limit):
+        w = np.ones(b - a, np.float32)
+        r = min(LAMA_OVERLAP, b - a)
+        if a > 0:
+            w[:r] = np.minimum(w[:r], np.linspace(0.05, 1, r, dtype=np.float32))
+        if b < limit:
+            w[-r:] = np.minimum(w[-r:], np.linspace(1, 0.05, r, dtype=np.float32))
+        return w
+
+    for ya, yb in _tile_spans(y_lo, y_hi, H):  # bands of <= LAMA_SIZE rows, overlapping when the mask is taller
+        th = yb - ya
+        spans = [s for s in col_spans if mask[ya:yb, s[0]:s[1]].any()]
+        if not spans:
+            continue
+        wy = ramp_weights(ya, yb, H)
+        r0, r1 = ya - y_lo, yb - y_lo
+        per = max(1, LAMA_SIZE // th)  # tiles stacked per canvas
+        for c0 in range(0, len(spans), per):
+            group = spans[c0:c0 + per]
+            canvas = np.zeros((LAMA_SIZE, LAMA_SIZE, 3), np.float32)
+            cmask = np.zeros((LAMA_SIZE, LAMA_SIZE), np.float32)
+            for j, (a, b) in enumerate(group):
+                canvas[j * th:(j + 1) * th, :b - a] = rgb[r0:r1, a - cx0:b - cx0]
+                cmask[j * th:(j + 1) * th, :b - a] = mc[r0:r1, a - cx0:b - cx0]
+            # pad the unused canvas area with the nearest content so it does not look like a huge black hole edge
+            used = len(group) * th
+            if used < LAMA_SIZE:
+                canvas[used:] = canvas[used - 1:used]
+            feeds = {names[0]: (canvas / 255.0).transpose(2, 0, 1)[None].astype(np.float32), names[1]: cmask[None, None]}
+            res = np.asarray(session.run(None, feeds)[0])[0].transpose(1, 2, 0)
+            for j, (a, b) in enumerate(group):
+                w = ramp_weights(a, b, W)[None, :] * wy[:, None]
+                acc[r0:r1, a - cx0:b - cx0] += res[j * th:(j + 1) * th, :b - a] * w[..., None]
+                wsum[r0:r1, a - cx0:b - cx0] += w
     got = wsum > 0
     filled = np.where(got[..., None], acc / np.maximum(wsum, 1e-6)[..., None], rgb.astype(np.float32))
     mf = mc.astype(np.float32)
@@ -256,7 +303,7 @@ def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0,
     alpha = np.minimum(alpha, 1.0) * got
     patch = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
     out = img.copy()
-    out[y_lo:y_lo + th, cx0:cx1] = cv2.cvtColor(np.clip(patch + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    out[y_lo:y_hi, cx0:cx1] =cv2.cvtColor(np.clip(patch + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     return out
 
 
@@ -352,12 +399,17 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         # out and inpainting only the strokes, which left grey smudges at object edges)
         hole = np.zeros((H, W), bool)
         hole[b0:b1] = zone
-        src = frame
-        out = lama_inpaint(lama, src, hole, scale)
-        if reuse_tol > 0:
-            keys.append(np.ascontiguousarray(out[b0:b1]))
-            del keys[:-LAMA_KEEP]
-        return out, 'lama', best_diff
+        try:
+            lama_out = lama_inpaint(lama, frame, hole, scale)
+        except Exception:  # noqa: BLE001 - model failed even after the CPU retry: smooth fill for this frame
+            style['lama_failed'] = style.get('lama_failed', 0) + 1
+            lama_out = None
+        if lama_out is not None:
+            out = lama_out
+            if reuse_tol > 0:
+                keys.append(np.ascontiguousarray(out[b0:b1]))
+                del keys[:-LAMA_KEEP]
+            return out, 'lama', best_diff
     corr = np.clip(fb.astype(np.float32) / (1.0 - a)[..., None] + .5, 0, 255).astype(np.uint8)
     # a wide rebuilt area hides the shadow remnants on smooth backgrounds, but smears picture edges that run under the
     # text, so near edges only the thin mask is rebuilt (textured/edged content hides the small shadow error)

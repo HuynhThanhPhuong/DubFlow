@@ -221,6 +221,16 @@ class LamaFillTest(unittest.TestCase):
         self.assertTrue((out[mask] == 100).all())  # overlap blending of identical tile outputs keeps the value
         self.assertTrue((out[:15] == 180).all() and (out[285:] == 180).all())
 
+    def test_tall_mask_is_tiled_vertically_and_fully_erased(self):
+        img = np.full((900, 300, 3), 180, np.uint8)
+        mask = np.zeros((900, 300), bool)
+        mask[20:880, 40:260] = True  # mask plus context is far taller than one 512 px model input
+        fake = _FakeLama()
+        out = lama_inpaint(fake, img, mask)
+        self.assertGreaterEqual(len(fake.calls), 2)
+        self.assertTrue((out[mask] == 100).all())
+        self.assertTrue((out[~cv2.dilate(mask.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)] == 180).all())
+
     def test_empty_mask_returns_input(self):
         img = np.full((50, 60, 3), 7, np.uint8)
         fake = _FakeLama()
@@ -273,6 +283,106 @@ class LamaFillTest(unittest.TestCase):
             _s, provider, warning = open_lama(model, None)
         self.assertEqual(provider, 'cpu')
         self.assertIn('onnxruntime-gpu', warning)
+
+
+class _Failing(_FakeLama):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def run(self, _outputs, feeds):
+        raise self.error
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class LamaFallbackTest(unittest.TestCase):
+    def setUp(self):
+        self.model = Path(__file__).resolve().parents[2] / 'models/lama/lama_fp32.onnx'
+
+    def test_missing_onnxruntime_means_smooth_fill_with_a_warning(self):
+        import sys
+        from unittest.mock import patch
+        with patch.dict(sys.modules, {'onnxruntime': None}):
+            session, provider, warning = open_lama('whatever.onnx', None)
+        self.assertEqual((session, provider), (None, None))
+        self.assertIn('smooth', warning)
+
+    def test_unopenable_model_means_smooth_fill_with_a_warning(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / 'bad.onnx'
+            bad.write_bytes(b'not an onnx model')
+            session, provider, warning = open_lama(bad, None)
+        self.assertEqual((session, provider), (None, None))
+        self.assertIn('cannot be opened', warning)
+
+    def test_session_open_failure_is_mocked_too(self):
+        from unittest.mock import patch
+        import onnxruntime as ort
+        with patch.object(ort, 'InferenceSession', side_effect=RuntimeError('boom')):
+            session, provider, warning = open_lama('x.onnx', None)
+        self.assertIsNone(session)
+        self.assertIn('boom', warning)
+
+    def test_cuda_run_failure_is_retried_on_a_lazily_created_cpu_session(self):
+        from unittest.mock import patch
+        import onnxruntime as ort
+        from dubflow.subtitle_erase import LamaSession
+        cpu = _FakeLama()
+        wrapper = LamaSession(_Failing(RuntimeError('CUDA out of memory')), 'cuda', 'm.onnx')
+        self.assertIsNone(wrapper.cpu)
+        with patch.object(ort, 'InferenceSession', return_value=cpu) as make:
+            img = np.full((100, 200, 3), 180, np.uint8)
+            mask = np.zeros((100, 200), bool)
+            mask[40:60, 50:150] = True
+            out = lama_inpaint(wrapper, img, mask)
+            lama_inpaint(wrapper, img, mask)
+        self.assertEqual(make.call_count, 1)  # created once, lazily
+        self.assertEqual(len(cpu.calls), 2)
+        self.assertTrue((out[mask] == 100).all())
+        self.assertTrue(wrapper.events and 'out of memory' in wrapper.events[0])
+
+    def test_cpu_run_failure_gives_smooth_fill_for_that_frame(self):
+        frame, _clean, _text = _shadowed(_bg())
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        style = {}
+        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style,
+                                  lama=_Failing(RuntimeError('cpu failed too')), reuse_tol=0)
+        self.assertEqual(how, 'smooth')
+        self.assertEqual(style['lama_failed'], 1)
+        self.assertEqual((_gray(out)[_text] > 200).sum(), 0)
+
+    def test_pipeline_defaults_match_the_erase_constants(self):
+        from dubflow.pipeline import ERASE_KNOBS
+        from dubflow.subtitle_erase import LAMA_REUSE_TOL, STATIC_TOL
+        self.assertEqual((ERASE_KNOBS['erase_static_tol'], ERASE_KNOBS['lama_reuse_tol']), (STATIC_TOL, LAMA_REUSE_TOL))
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class ActiveSegmentsTest(unittest.TestCase):
+    def test_long_segment_does_not_keep_ended_segments_active(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        from engine_cli import active_segments
+        segs = [dict(s=0.0, e=600.0)] + [dict(s=10.0 * i, e=10.0 * i + 2) for i in range(1, 50)]
+        for t in (5.0, 123.4, 300.0, 489.9):
+            active, upcoming = active_segments(segs, 0, t, 0.25)  # first stays 0: the long segment never ends
+            self.assertTrue(all(s['s'] - 0.25 <= t < s['e'] + 0.25 for s in active))
+            self.assertLessEqual(len(active), 2)  # the long one plus at most the current short one
+            self.assertIn(segs[0], active)
+            self.assertTrue(upcoming is None or upcoming - 0.25 > t)
+        active, upcoming = active_segments(segs, 0, 121.0, 0.25)
+        self.assertEqual([s['s'] for s in active], [0.0, 120.0])
+        self.assertEqual(upcoming, 130.0)
+
+    def test_overlapping_segments_stay_active_until_each_ends(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        from engine_cli import active_segments
+        segs = [dict(s=0.0, e=5.0), dict(s=1.0, e=2.0), dict(s=1.5, e=8.0)]
+        self.assertEqual(len(active_segments(segs, 0, 1.7, 0.25)[0]), 3)
+        self.assertEqual([s['e'] for s in active_segments(segs, 0, 3.0, 0.25)[0]], [5.0, 8.0])
 
 
 @unittest.skipUnless(cv2 is not None, "cv2 not available")

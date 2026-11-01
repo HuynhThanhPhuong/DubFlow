@@ -101,6 +101,23 @@ describe("native player source selection", () => {
       "/api/jobs/j/source",
     );
   });
+  it("keeps the original video in preview when masking is off, like the export", () => {
+    const cues = [
+      { id: "a", start: 0, end: 1, speaker: "m", original: "你好", text: "Xin chào" },
+    ];
+    render(
+      <Player
+        job={{ ...job, clean_url: "/api/jobs/j/clean?v=1" }}
+        cues={cues}
+        blurOriginal={false}
+        onTime={vi.fn()}
+        seek={{ time: 0.5, token: 1 }}
+      />,
+    );
+    expect(screen.getByLabelText("Video xem trước").getAttribute("src")).toBe(
+      "/api/jobs/j/source",
+    );
+  });
   it("does not overlay another Vietnamese layer on an encoded output", () => {
     render(
       <Player

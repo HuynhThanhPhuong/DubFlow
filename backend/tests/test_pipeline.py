@@ -227,6 +227,43 @@ class PipelineTests(unittest.TestCase):
             model.unlink()
             self.assertTrue(current(fill='smooth',provider=None))                       # model still missing: nothing better to do
             self.assertTrue(p.erase_current(d,d/'source.mp4',dict(fps=25)))             # callers without settings ignore the fill
+            model.write_bytes(b'm')
+            self.assertFalse(current(fill='lama+smooth',provider='cuda'))               # some frames fell back to the smooth fill
+            self.assertFalse(current(fill='lama',provider='cpu',cuda_dll_dir=str(dll),runtime_fallback=True))  # CUDA run failed mid-way
+
+    def test_erase_knobs_are_compared_and_old_stamps_mean_defaults(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            (d/'clean.mp4').write_bytes(b'clean')
+            def current(meta,**over):
+                p.write(d/'erase.json',self._stamp(d,**over))
+                return p.erase_current(d,d/'source.mp4',dict(fps=25,**meta))
+            self.assertTrue(current({}))                                                  # stamp without knobs = defaults
+            self.assertTrue(current({},static_tol=6.0,reuse_tol=2.5))
+            self.assertFalse(current({'erase_static_tol':9}))
+            self.assertTrue(current({'erase_static_tol':9},static_tol=9.0,reuse_tol=2.5))
+            self.assertFalse(current({},static_tol=9.0,reuse_tol=2.5))
+            self.assertFalse(current({'lama_reuse_tol':0},static_tol=6.0,reuse_tol=2.5))
+
+    def test_prepare_erase_check_does_not_hash_the_whole_source(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            (d/'clean.mp4').write_bytes(b'clean')
+            p.write(d/'erase.json',self._stamp(d))
+            hashed=[]
+            real=p.file_hash
+            def spy(path):
+                hashed.append(Path(path).name)
+                return real(path)
+            with patch.object(p,'file_hash',side_effect=spy):
+                p.erase_subtitles(d,d/'source.mp4',dict(duration=5,fps=25),SimpleNamespace(ocr_python=sys.executable),lambda *a:None,[])
+            self.assertNotIn('source.mp4',hashed)
 
     def test_erase_warnings_from_engine_reach_the_job(self):
         seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
