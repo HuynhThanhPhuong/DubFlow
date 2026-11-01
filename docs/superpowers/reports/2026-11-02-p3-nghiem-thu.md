@@ -74,3 +74,24 @@ Nghi vấn cần xử lý (chưa xác minh nguyên nhân): lời nhắc TM có t
 - Grep key trong log và `translation-usage.json` (controller tự chạy).
 - Video >10 phút / chia phần; chế độ dub; OpenAI, Anthropic.
 - Video test chỉ có 12 câu thoại, nên 1 request không nói được nhiều về video dài.
+
+## Lần 2 (sau sửa lỗi 90d89e9): chạy lại TM
+Cùng bản sao `tmp/p3-t7/job`, scope=all, chế độ `tm`, thinking `default` (nay gửi `thinkingLevel=low` cho Gemini 3). Chỉ chạy lại TM, không chạy lại Vietsub.
+
+| Mục | Giá trị |
+|---|---|
+| Số mục gửi | 14 (12 câu thoại + 2 chữ trên hình có chữ Hán), trước đó 44; vùng nhiễu `V/S/9/50` không còn gửi |
+| Ước tính | 1 request, 1567 token vào, 768 ra |
+| Thực tế | 1 request thành công, 1415 vào, 910 ra, 0 suy nghĩ |
+| Thời gian | 517,1 s (gần chạm timeout đọc mới 600 s) |
+| Câu lỗi | 0 |
+| Nhật ký | `tmp/p3-t7/job/translation-runs/20261101-193431.json` |
+| Tổng request Gemini cả hai lần | 4 (Vietsub 1, TM 2 hết giờ + 1 thành công) |
+
+Thinking: Vietsub lần 1 tốn 1961 token suy nghĩ (default, trước sửa) và 91 s. TM lần 2 tốn 0 token suy nghĩ (low). Vietsub với thinking=low nhiều khả năng cũng gần 0 token suy nghĩ và ít token ra hơn (khoảng 923 token ra thật), nhưng chưa chạy lại nên không biết chất lượng có khác không.
+
+Độ dài âm tiết (đếm âm tiết = số từ cách nhau bởi khoảng trắng, mục tiêu = giây x 4,5): 0/12 câu thoại trong ±15% (2/14 mục nếu tính cả 2 chữ trên hình). Các câu chỉ đạt 12-27 âm tiết so với mục tiêu 38-45, tức khoảng 50-65% mục tiêu, đều ngắn hơn. Có thể do mục tiêu tính theo cả thời lượng khối (khối 9-10 s gồm cả khoảng lặng/đệm) chứ không phải thời gian nói thật; chưa xác minh. Tiêu chí ±15% KHÔNG ĐẠT theo cách đo này.
+
+Đối chiếu 12 câu thoại: 11/12 đạt, giữ lời thoại ngôi thứ nhất/hai, không thành lời kể ngôi thứ ba. Nghĩa đúng, văn nói tự nhiên hơn Vietsub (ví dụ "Sao hả, em sợ ư? Sợ chứ, em rất sợ..."). Tên: Mẹ Niệm Niệm, thư ký Vương, hiệu trưởng đúng. Xưng hô: hiệu trưởng "tôi/em", mẹ Niệm Niệm "em/ông"; riêng c2 mẹ gọi "anh" ("video đó anh giấu kĩ lắm") trong khi các câu khác gọi "ông": một chỗ lệch xưng hô, tính là 1 câu chưa đạt.
+
+Việc chưa kiểm thêm: nguyên nhân TM chạy 517 s (thinking đã bằng 0 nên có thể do dịch vụ chậm); kiểm chứng định lượng với video dài; Vietsub low.
