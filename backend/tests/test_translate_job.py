@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from dubflow.translate_api import QuotaExhausted, RateLimited, Reply, Usage
-from dubflow.translate_job import Item, RateLimiter, plan_translation, run_translation
+from dubflow.translate_job import Cancelled, Item, RateLimiter, plan_translation, run_translation
 
 KEY = 'SECRET-key-999'
 
@@ -183,7 +183,8 @@ class TranslateJobTest(unittest.TestCase):
         waits = []
         f = Fake(script=[RateLimited('429', 37)])
         out = run(self.d, make_items(3), fake=f, sleep=waits.append)
-        self.assertEqual(waits, [37])
+        self.assertEqual(sum(waits), 37)
+        self.assertTrue(all(w <= 1 for w in waits))
         self.assertEqual(len(out.texts), 3)
 
     def test_rate_limited_backoff_and_give_up(self):
@@ -192,7 +193,7 @@ class TranslateJobTest(unittest.TestCase):
         out = run(self.d, make_items(3), fake=f, sleep=waits.append)
         self.assertEqual(out.error, '429')
         self.assertEqual(out.texts, {})
-        self.assertEqual(waits, [10, 30, 60])
+        self.assertEqual(sum(waits), 100)
 
     def test_cost_cap_pauses_before_exceeding(self):
         p = prefs(tier='paid', cost_cap_usd=0.0001)
@@ -211,6 +212,97 @@ class TranslateJobTest(unittest.TestCase):
         out = run(self.d, make_items(3), p=prefs(cost_cap_usd=0.0))
         self.assertIsNone(out.cost_usd)
         self.assertIsNone(out.paused)
+
+    def test_cancel_stops_after_first_chunk(self):
+        f = Fake()
+        out = run(self.d, make_items(40), p=prefs(max_output_tokens=1800), fake=f, should_stop=lambda: len(f.calls) >= 1)
+        self.assertEqual(len(f.calls), 1)
+        self.assertEqual(out.requests, 1)
+        self.assertEqual(out.paused, 'cancelled')
+        self.assertTrue(0 < len(out.texts) < 40)
+
+    def test_cancel_interrupts_backoff_in_slices(self):
+        waits = []
+        f = Fake(script=[RateLimited('429', 30)])
+        out = run(self.d, make_items(3), fake=f, sleep=waits.append, should_stop=lambda: len(waits) >= 2)
+        self.assertEqual(out.paused, 'cancelled')
+        self.assertEqual(waits, [1, 1])
+        self.assertEqual(len(f.calls), 1)
+
+    def test_cancel_interrupts_rpm_wait(self):
+        clock, waits = [1_000_000.0], []
+
+        def sleep(sec):
+            waits.append(sec)
+            clock[0] += sec
+
+        lim = RateLimiter(self.d / 'rate.json', 1, 100, now=lambda: clock[0], sleep=sleep)
+        lim.acquire()
+        with self.assertRaises(Cancelled):
+            lim.acquire(lambda: len(waits) >= 3)
+        self.assertEqual(waits, [1, 1, 1])
+
+    def test_spent_before_counts_toward_cap(self):
+        p = prefs(tier='paid', cost_cap_usd=0.5, price_in_per_mtok=1.0, price_out_per_mtok=2.0)
+        f = Fake()
+        out = run(self.d, make_items(3), p=p, fake=f, spent_before=0.4999999)
+        self.assertEqual((out.paused, f.calls), ('cost_cap', []))
+        out = run(self.d, make_items(3), p=p, fake=f, spent_before=0.4999999, allow_over_cap=True)
+        self.assertIsNone(out.paused)
+        self.assertLess(out.cost_usd, 0.01)  # chỉ tính phần của lần chạy này
+
+    def test_thinking_tokens_in_estimate(self):
+        items = make_items(5)
+        base = dict(tier='paid', price_in_per_mtok=0.0, price_out_per_mtok=1000.0)
+        low = plan_translation(items, 'dub', prefs(thinking='low', **base))
+        high = plan_translation(items, 'dub', prefs(thinking='high', **base))
+        self.assertAlmostEqual(low.cost_usd, low.output_tokens * 1000 / 1e6)
+        self.assertAlmostEqual(high.cost_usd, 2 * low.cost_usd)
+
+    def test_retry_is_split_to_fit_output_budget(self):
+        items = make_items(40)
+        p = prefs(max_output_tokens=1800)
+        calls = []
+
+        def bad_all(body):
+            calls.append(len(body['items']))
+            return Reply({'context': {}, 'items': []}, '', False, Usage(1, 1))
+
+        f = Fake(script=[bad_all, bad_all])
+        out = run(self.d, items, p=p, fake=f)
+        parts = len(plan_translation(items, 'dub', p).chunks)
+        self.assertEqual(out.requests, parts + parts)  # đợt đầu rỗng + gửi lại chia theo ngân sách
+        self.assertTrue(all(len(c['items']) < 40 for c in f.calls))
+
+    def test_bad_replies_are_failed_and_not_cached(self):
+        items = [Item('a', '你好吗', 0, 2, 'A', 'cue'), Item('b', 'OK', 2, 4, 'A', 'cue'),
+                 Item('c', '谢谢', 4, 6, 'A', 'cue'), Item('d', '再见', 6, 8, 'A', 'cue')]
+        rows = [{'id': 'a', 'vi': 'Bạn khỏe 好 không'}, {'id': 'b', 'vi': 'OK'},
+                {'id': 'c', 'vi': 'cảm ơn ' * 40}, {'id': 'd', 'vi': 'Tạm biệt'}]
+        f = Fake(script=[reply(rows), reply([])])
+        out = run(self.d, items, fake=f, mode='dub')
+        self.assertEqual(out.texts, {'d': 'Tạm biệt'})
+        self.assertEqual(out.failed, ['a', 'b', 'c'])
+        cache = json.loads((self.d / 'translation-cache-v2.json').read_text(encoding='utf-8'))
+        blob = json.dumps(cache, ensure_ascii=False)
+        self.assertNotIn('好', blob)
+        self.assertNotIn('cảm ơn', blob)
+        out2 = run(self.d / 'v', items, fake=Fake(script=[reply([{'id': 'c', 'vi': 'cảm ơn bạn ' * 2}] + [{'id': 'a', 'vi': 'x'}])]), mode='vietsub')
+        self.assertIn('a', out2.texts)
+
+    def test_mild_overrun_is_not_rejected(self):
+        it = Item('a', '你好', 0, 2, 'A', 'cue')  # max_syllables = 9
+        out = run(self.d, [it], fake=Fake(script=[reply([{'id': 'a', 'vi': ' '.join(['ừ'] * 12)}])]), mode='dub')
+        self.assertEqual(out.failed, [])
+
+    def test_prompt_per_mode(self):
+        from dubflow.translate_job import SYSTEM_BY_MODE
+        self.assertIn('"max_chars":24', SYSTEM_BY_MODE['vietsub'])
+        self.assertNotIn('max_syllables":', SYSTEM_BY_MODE['vietsub'].split('VÍ DỤ')[1].split('\n')[0])
+        for mode in ('tm', 'dub'):
+            self.assertIn('"max_syllables":7', SYSTEM_BY_MODE[mode])
+            self.assertNotIn('"max_chars":24', SYSTEM_BY_MODE[mode])
+        self.assertIn('tối đa 2 dòng', SYSTEM_BY_MODE['vietsub'])
 
     def test_rate_limiter_rpm_and_rpd(self):
         clock, waits = [1_000_000.0], []
@@ -243,7 +335,7 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         text = logs[0].read_text(encoding='utf-8')
         self.assertNotIn(KEY, text)
-        self.assertEqual(json.loads(text)['prompt_version'], 'p3-3')
+        self.assertEqual(json.loads(text)['prompt_version'], 'p3-4')
 
     def test_vietsub_items_carry_max_chars(self):
         f = Fake()

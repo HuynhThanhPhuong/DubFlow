@@ -15,9 +15,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .textcheck import needs_translation
 from .translate_api import ProviderError, QuotaExhausted, RateLimited, Usage
 
-PROMPT_VERSION = 'p3-3'
+PROMPT_VERSION = 'p3-4'
 CACHE_FILE = 'translation-cache-v2.json'
 CONTEXT_FILE = 'translation-context.json'
 RUNS_DIR = 'translation-runs'
@@ -34,6 +35,9 @@ SPLIT_WINDOW = 0.15         # tìm khoảng lặng lớn nhất trong ±15% quan
 SYLLABLES_PER_SEC = 4.5
 RATE_BACKOFF = (10, 30, 60)  # giây, khi 429 không có retry_after
 PACIFIC_FALLBACK = timezone(timedelta(hours=-8))
+THINKING_OUT_FACTOR = 1.0   # token suy nghĩ ước tính = 1,0 x đầu ra (0 khi thinking=low); tính theo giá đầu ra
+OVERRUN_REJECT = 1.5        # vượt giới hạn cứng quá 1,5 lần thì coi là hỏng, không cache
+WAIT_SLICE = 1.0            # giây; mọi lần chờ chia lát để còn kịp dừng
 
 SYSTEM_COMMON = (
     'Bạn là biên dịch viên Trung - Việt chuyên nghiệp cho video, viết tiếng Việt tự nhiên như người bản ngữ. '
@@ -50,14 +54,16 @@ SYSTEM_COMMON = (
     '(anh/em, chị/em, cô/cháu, tôi/cậu, mày/tao khi thô lỗ...). Cùng một cặp người phải dùng cùng một cặp xưng hô '
     'xuyên suốt video. Ghi lại vào context.address (from, to, xung, ho). Ghi tên nhân vật vào context.characters '
     'và tên riêng/thuật ngữ vào context.glossary; tên người Trung Quốc dùng âm Hán-Việt trừ khi "terminology" nói khác. '
-    '"context" trả về là bảng đầy đủ (kế thừa bảng đã có, thêm mục mới); chưa có gì thì để mảng rỗng.\n'
-    'VÍ DỤ: vào {"id":"c1","zh":"你怎么才来？","dur":1.6,"speaker":"S1","kind":"cue","max_chars":24} '
-    'thì ra {"id":"c1","vi":"Sao giờ cậu mới đến?"}.')
+    '"context" trả về là bảng đầy đủ (kế thừa bảng đã có, thêm mục mới); chưa có gì thì để mảng rỗng.')
+_EXAMPLE = '\nVÍ DỤ: vào {"id":"c1","zh":"你怎么才来？","dur":1.6,"speaker":"S1","kind":"cue","%s":%d} thì ra {"id":"c1","vi":"Sao giờ cậu mới đến?"}.'
+EXAMPLE_BY_MODE = {'vietsub': _EXAMPLE % ('max_chars', 24), 'tm': _EXAMPLE % ('max_syllables', 7),
+                   'dub': _EXAMPLE % ('max_syllables', 7)}
 SYSTEM_BY_MODE = {
-    'vietsub': SYSTEM_COMMON + '\nCHẾ ĐỘ PHỤ ĐỀ: "max_chars" là giới hạn cứng, tuyệt đối không vượt. '
-                               'Văn phong phụ đề: ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
-    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: một giọng đọc duy nhất đọc lại lời thoại đã dịch; vẫn dịch từng câu thoại như lời nhân vật nói (giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; độ dài tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; tuyệt đối không vượt "max_syllables" (giới hạn cứng số âm tiết).',
-    'dub': SYSTEM_COMMON + '\nCHẾ ĐỘ LỒNG TIẾNG: viết lời thoại nói được thành tiếng cho giọng của từng nhân vật theo '
+    'vietsub': SYSTEM_COMMON + EXAMPLE_BY_MODE['vietsub'] + '\nCHẾ ĐỘ PHỤ ĐỀ: "max_chars" là giới hạn cứng, tuyệt đối không vượt. '
+                               'Văn phong phụ đề: ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết. '
+                               'Mỗi câu tối đa 2 dòng khi hiển thị; không xuống dòng thủ công trừ khi cần.',
+    'tm': SYSTEM_COMMON + EXAMPLE_BY_MODE['tm'] + '\nCHẾ ĐỘ THUYẾT MINH: một giọng đọc duy nhất đọc lại lời thoại đã dịch; vẫn dịch từng câu thoại như lời nhân vật nói (giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; độ dài tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; tuyệt đối không vượt "max_syllables" (giới hạn cứng số âm tiết).',
+    'dub': SYSTEM_COMMON + EXAMPLE_BY_MODE['dub'] + '\nCHẾ ĐỘ LỒNG TIẾNG: viết lời thoại nói được thành tiếng cho giọng của từng nhân vật theo '
                            '"speaker", hợp tính cách và cảm xúc của họ (khẩu ngữ, ngắt nhịp tự nhiên); độ dài '
                            'tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; '
                            'tuyệt đối không vượt "max_syllables" (giới hạn cứng số âm tiết).',
@@ -111,7 +117,7 @@ class Outcome:
     requests: int
     usage: Usage
     cost_usd: float | None
-    paused: str | None  # None | 'quota' | 'cost_cap'
+    paused: str | None  # None | 'quota' | 'cost_cap' | 'cancelled'
     error: str | None = None  # lỗi provider giữa chừng; phần đã dịch vẫn nằm trong texts
 
 
@@ -194,6 +200,12 @@ def _cost(prefs, in_tokens: float, out_tokens: float) -> float:
     return in_tokens * prefs.price_in_per_mtok / 1e6 + out_tokens * prefs.price_out_per_mtok / 1e6
 
 
+def _est_cost(prefs, in_tokens: float, out_tokens: float) -> float:
+    """Giá ước tính: cộng thêm token suy nghĩ ước lượng, tính theo giá đầu ra."""
+    factor = 0.0 if getattr(prefs, 'thinking', 'default') == 'low' else THINKING_OUT_FACTOR
+    return _cost(prefs, in_tokens, out_tokens * (1 + factor))
+
+
 def _need_mode(mode: str) -> None:
     if mode not in SYSTEM_BY_MODE:
         raise ValueError(f'Chế độ dịch không hợp lệ: {mode}. Chọn vietsub, tm hoặc dub.')
@@ -205,7 +217,7 @@ def plan_translation(items: list[Item], mode: str, prefs, terminology: str = '')
     chunks = _split(list(items), mode, prefs, terminology) if items else []
     est = [_chunk_est(c, mode, prefs, terminology) for c in chunks]
     tin, tout = sum(e[0] for e in est), sum(e[1] for e in est)
-    cost = _cost(prefs, tin, tout) if prefs.tier == 'paid' else None
+    cost = _est_cost(prefs, tin, tout) if prefs.tier == 'paid' else None
     return Plan(chunks, len(chunks), tin, tout, cost)
 
 
@@ -229,13 +241,25 @@ def _merge_context(base: dict, new) -> dict:
     return out
 
 
-def _check(reply, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Trả (id -> vi hợp lệ, id lỗi). Id lạ bỏ qua; trùng id hoặc vi rỗng là lỗi."""
+def _too_long(it: Item, vi: str, mode: str, prefs) -> bool:
+    """Hỏng hẳn: còn chữ Hán, y nguyên bản gốc, hoặc dài quá 1,5 lần giới hạn cứng. Vượt nhẹ thì để cờ review bắt."""
+    if needs_translation(vi) or vi == it.zh.strip():
+        return True
+    p = _payload_item(it, mode, prefs)
+    if mode == 'vietsub':
+        return len(vi) > p['max_chars'] * OVERRUN_REJECT
+    return len(vi.split()) > p['max_syllables'] * OVERRUN_REJECT
+
+
+def _check(reply, part: list[Item], mode: str, prefs) -> tuple[dict[str, str], list[str]]:
+    """Trả (id -> vi hợp lệ, id lỗi). Id lạ bỏ qua; trùng id, vi rỗng hoặc vi hỏng là lỗi."""
+    wanted = [i.id for i in part]
+    by_id = {i.id: i for i in part}
     seen: dict[str, list] = {}
     data = reply.data if isinstance(reply.data, dict) else {}
     rows = data.get('items') if isinstance(data.get('items'), list) else []
     for r in rows:
-        if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in wanted:
+        if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in by_id:
             seen.setdefault(r['id'], []).append(r.get('vi'))
     last = next((r['id'] for r in reversed(rows) if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in seen), None)
     good = {}
@@ -243,7 +267,9 @@ def _check(reply, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
         if reply.truncated and i == last:  # câu cuối của bản trả bị cắt có thể dở dang
             continue
         if len(vals) == 1 and isinstance(vals[0], str) and vals[0].strip():
-            good[i] = vals[0].strip()
+            vi = vals[0].strip()
+            if not _too_long(by_id[i], vi, mode, prefs):
+                good[i] = vi
     return good, [i for i in wanted if i not in good]
 
 
@@ -261,13 +287,18 @@ def _load_json(path: Path, default):
     return data if isinstance(data, type(default)) else default
 
 
+class Cancelled(Exception):
+    """Người dùng yêu cầu dừng khi đang chờ."""
+
+
 class _Pause(Exception):
     def __init__(self, reason: str):
         self.reason = reason
 
 
 class _Run:
-    def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep):
+    def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
+                 spent_before=0.0, should_stop=None):
         _need_mode(mode)
         self.dir, self.mode, self.prefs, self.provider = Path(directory), mode, prefs, provider
         self.limiter, self.terminology, self.allow, self.sleep = limiter, terminology, allow_over_cap, sleep
@@ -283,6 +314,8 @@ class _Run:
         self.usage = Usage(0, 0, 0)
         self.usages: list[dict] = []
         self.spent = 0.0
+        self.before = float(spent_before or 0.0)  # đã tiêu ở các lần chạy trước (cùng video)
+        self.stop = should_stop or (lambda: False)
         self.paused = None
         self.chunk_keys: dict[str, str] = {}
         self.n_chunks = 0
@@ -292,25 +325,40 @@ class _Run:
                           self.terminology, payload_items], ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
+    def wait(self, seconds: float) -> None:
+        left = float(seconds)
+        while left > 0:
+            if self.stop():
+                raise _Pause('cancelled')
+            step = min(WAIT_SLICE, left)
+            self.sleep(step)
+            left -= step
+
     def request(self, part: list[Item]):
+        if self.stop():
+            raise _Pause('cancelled')
         payload = [_payload_item(i, self.mode, self.prefs) for i in part]
         if self.paid and not self.allow and self.prefs.cost_cap_usd is not None:
-            est = _cost(self.prefs, *_chunk_est(part, self.mode, self.prefs, self.terminology))
-            if self.spent + est > self.prefs.cost_cap_usd:
+            est = _est_cost(self.prefs, *_chunk_est(part, self.mode, self.prefs, self.terminology))
+            if self.before + self.spent + est > self.prefs.cost_cap_usd:
                 raise _Pause('cost_cap')
         user = _user(payload, self.terminology, self.context)
         for attempt in range(len(RATE_BACKOFF) + 1):
             try:
+                if self.stop():
+                    raise _Pause('cancelled')
                 if self.limiter is not None:
-                    self.limiter.acquire()
+                    self.limiter.acquire(self.stop)
                 reply = self.provider.generate(self.system, user, SCHEMA, self.prefs.max_output_tokens)
                 break
+            except Cancelled:
+                raise _Pause('cancelled') from None
             except QuotaExhausted:
                 raise _Pause('quota') from None
             except RateLimited as e:
                 if attempt >= len(RATE_BACKOFF):
                     raise
-                self.sleep(e.retry_after if e.retry_after is not None else RATE_BACKOFF[attempt])
+                self.wait(e.retry_after if e.retry_after is not None else RATE_BACKOFF[attempt])
             except ProviderError as e:
                 if e.sent:  # đã gửi nhưng không có kết quả: server có thể đã tính phí, token không rõ
                     self.requests += 1
@@ -326,8 +374,8 @@ class _Run:
         self.context = _merge_context(self.context, data.get('context'))
         return reply
 
-    def accept(self, reply, ids: list[str]) -> tuple[dict[str, str], list[str]]:
-        good, bad = _check(reply, ids)
+    def accept(self, reply, part: list[Item]) -> tuple[dict[str, str], list[str]]:
+        good, bad = _check(reply, part, self.mode, self.prefs)
         self.texts.update(good)
         return good, bad
 
@@ -345,7 +393,7 @@ class _Run:
             self.failed += [i for i in ids if i not in cached]
             return
         reply = self.request(part)
-        good, bad = self.accept(reply, ids)
+        good, bad = self.accept(reply, part)
         self.failed += bad
         self.cache[key] = {'items': good, 'context': self.context}
         _atomic_json(self.dir / CACHE_FILE, self.cache)
@@ -353,14 +401,15 @@ class _Run:
     def retry(self) -> None:
         wanted = set(self.failed)
         part = [i for i in self.items if i.id in wanted]
-        reply = self.request(part)
-        good, _ = self.accept(reply, [i.id for i in part])
-        for i, vi in good.items():
-            entry = self.cache.get(self.chunk_keys.get(i, ''))
-            if isinstance(entry, dict) and isinstance(entry.get('items'), dict):
-                entry['items'][i] = vi
-        _atomic_json(self.dir / CACHE_FILE, self.cache)
-        self.failed = [i for i in self.failed if i not in good]
+        for sub in _split(part, self.mode, self.prefs, self.terminology):
+            reply = self.request(sub)
+            good, _ = self.accept(reply, sub)
+            for i, vi in good.items():
+                entry = self.cache.get(self.chunk_keys.get(i, ''))
+                if isinstance(entry, dict) and isinstance(entry.get('items'), dict):
+                    entry['items'][i] = vi
+            _atomic_json(self.dir / CACHE_FILE, self.cache)
+            self.failed = [i for i in self.failed if i not in good]
 
     def execute(self) -> None:
         chunks = _split(self.items, self.mode, self.prefs, self.terminology) if self.items else []
@@ -389,8 +438,10 @@ class _Run:
 
 
 def run_translation(directory: Path, items: list[Item], mode: str, prefs, provider, *, limiter,
-                    terminology: str = '', allow_over_cap: bool = False, sleep=time.sleep) -> Outcome:
-    run = _Run(directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep)
+                    terminology: str = '', allow_over_cap: bool = False, sleep=time.sleep,
+                    spent_before: float = 0.0, should_stop=None) -> Outcome:
+    run = _Run(directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
+               spent_before, should_stop)
     Path(directory).mkdir(parents=True, exist_ok=True)
     error = None
     try:
@@ -418,7 +469,18 @@ class RateLimiter:
     def _day(self, t: float) -> str:
         return datetime.fromtimestamp(t, self.tz).date().isoformat()
 
-    def acquire(self) -> None:
+    def _wait(self, seconds: float, stop) -> None:
+        if stop is None:
+            self.sleep(seconds)
+            return
+        while seconds > 0:
+            if stop():
+                raise Cancelled()
+            step = min(WAIT_SLICE, seconds)
+            self.sleep(step)
+            seconds -= step
+
+    def acquire(self, stop=None) -> None:
         state = _load_json(self.path, {})
         t = self.now()
         s = state.get(self.scope)
@@ -429,7 +491,7 @@ class RateLimiter:
         recent = [x for x in s['recent'] if x > t - 60]
         if len(recent) >= self.rpm:
             until = recent[-self.rpm] + 60
-            self.sleep(max(0.0, until - t))
+            self._wait(max(0.0, until - t), stop)
             t = max(self.now(), until)
             recent = [x for x in recent if x > t - 60]
             if self._day(t) != s['day']:

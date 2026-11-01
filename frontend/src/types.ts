@@ -41,6 +41,7 @@ export interface TranslationUsage {
   provider: string;
   model: string;
   mode: Mode;
+  paused?: "quota" | "cost_cap" | null;
 }
 export interface TranslateEstimate {
   requests: number;
@@ -49,6 +50,7 @@ export interface TranslateEstimate {
   cost_usd: number | null;
   tier: "free" | "paid";
   cap_usd: number | null;
+  spent_usd?: number | null;
   over_cap: boolean;
   cue_count: number;
 }

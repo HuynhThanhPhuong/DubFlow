@@ -521,11 +521,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return result
 
     @app.post('/api/jobs/{job_id}/translate')
-    def translate_job(job_id: str, body: TranslateRequest | None = None):
+    def translate_job(job_id: str, body: TranslateRequest):
         job = writable(job_id)
         if any(t['job_id'] == job_id and t['action'] == 'translate' and t['state'] in ('pending', 'running') for t in store.active_tasks()):
             raise HTTPException(409, 'Đang dịch video này.')
-        body = body or TranslateRequest()
         prefs, folder = translate_preflight(job, body.scope)
         if not translate_run.collect_items(folder, body.scope):
             raise HTTPException(409, 'Không có câu nào cần dịch.')

@@ -28,7 +28,7 @@ class Fake:
             raise self.error
         items = json.loads(user)['items']
         self.sent.append([i['id'] for i in items])
-        rows = [{'id': i['id'], 'vi': 'VI ' + i['zh'][:6]} for i in items if i['id'] not in self.omit]
+        rows = [{'id': i['id'], 'vi': 'VI ' + i['id']} for i in items if i['id'] not in self.omit]
         return Reply({'context': {}, 'items': rows}, '', False, Usage(10, 5))
 
     def close(self):
@@ -80,6 +80,12 @@ class Base(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.text)
             run_task(self.store.claim_next(), self.cfg, self.store)
         return self.store.get_job(self.jid)
+
+    def run_translate_raw(self, fake, **body):
+        with patch('dubflow.translate_run.make_provider', return_value=fake):
+            r = self.client.post(self.base + '/translate', json=body)
+            self.assertEqual(r.status_code, 200, r.text)
+            run_task(self.store.claim_next(), self.cfg, self.store)
 
     def cue_texts(self):
         return {c['id']: c['text'] for c in p.read(self.folder / 'cues.json')}
@@ -256,7 +262,7 @@ class RunTests(Base):
     def test_no_key_never_calls_api(self):
         self.make_job()
         with patch('dubflow.translate_run.make_provider') as make:
-            r = self.client.post(self.base + '/translate')
+            r = self.client.post(self.base + '/translate', json={})
         self.assertEqual(r.status_code, 409)
         make.assert_not_called()
 
@@ -287,6 +293,61 @@ class RunTests(Base):
         self.run_translate(fake, allow_over_cap=True)
         self.assertEqual(len(fake.sent), 1)
         self.assertGreater(self.client.get(self.base).json()['translation_usage']['cost_usd'], 0)
+
+    def test_cap_is_cumulative_per_video(self):
+        self.configure(translation_tier='paid', price_in_per_mtok=50, price_out_per_mtok=50, cost_cap_usd=.47)
+        self.make_job()
+        est = self.client.get(self.base + '/translate/estimate').json()
+        self.assertFalse(est['over_cap'])
+        self.assertEqual(est['spent_usd'], 0)
+        p.write(self.folder / 'translation-usage.json', dict(requests=1, input_tokens=9000, output_tokens=1, cost_usd=.45,
+                                                           provider='gemini', model='gemini-x', mode='vietsub', paused=None))
+        est = self.client.get(self.base + '/translate/estimate').json()
+        self.assertTrue(est['over_cap'])
+        self.assertAlmostEqual(est['spent_usd'], .45)
+        fake = Fake()
+        job = self.run_translate(fake)
+        self.assertEqual(fake.sent, [])
+        self.assertTrue(any('mức trần chi phí' in w for w in job['warnings']))
+        self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)
+        fake = Fake()
+        self.run_translate(fake, allow_over_cap=True)
+        self.assertEqual(len(fake.sent), 1)
+
+    def test_cancel_during_run_sends_no_more_and_leaves_cues(self):
+        self.configure(max_output_tokens=256)
+        cues = [dict(id=f'c{i}', start=i * 3, end=i * 3 + 2, speaker='A', original=LONG, text='') for i in range(6)]
+        self.make_job(cues=cues, regions=[])
+        before = (self.folder / 'cues.json').read_bytes()
+
+        class Cancelling(Fake):
+            def generate(inner, *a):
+                r = Fake.generate(inner, *a)
+                (self.folder / 'cancel.request').touch()
+                return r
+
+        fake = Cancelling()
+        self.run_translate_raw(fake)
+        self.assertEqual(len(fake.sent), 1)
+        self.assertEqual((self.folder / 'cues.json').read_bytes(), before)
+        self.assertEqual(self.store.get_job(self.jid)['status'], 'cancelled')
+        self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)
+
+    def test_pause_flag_set_and_cleared(self):
+        self.configure(max_output_tokens=256)
+        cues = [dict(id=f'c{i}', start=i * 3, end=i * 3 + 2, speaker='A', original=LONG, text='') for i in range(6)]
+        self.make_job(cues=cues, regions=[])
+        self.run_translate(Fake(error=QuotaExhausted('x'), fail_on_call=2))
+        self.assertEqual(self.client.get(self.base).json()['translation_usage']['paused'], 'quota')
+        self.run_translate(Fake())
+        self.assertIsNone(self.client.get(self.base).json()['translation_usage']['paused'])
+
+    def test_translate_requires_json_body(self):
+        self.configure()
+        self.make_job()
+        r = self.client.post(self.base + '/translate', content='', headers={'content-type': 'text/plain'})
+        self.assertEqual(r.status_code, 422)
+        self.assertFalse((self.folder / 'translate-request.json').exists())
 
     def test_provider_error_does_not_fail_job_and_hides_key(self):
         self.configure()

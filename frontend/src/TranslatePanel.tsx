@@ -9,6 +9,8 @@ const PAUSE_PREFIX = "Tạm dừng – ";
 const COST_CAP_MARK = "mức trần chi phí";
 
 export function pauseKind(job: Job): "quota" | "cost_cap" | null {
+  const flag = job.translation_usage?.paused;
+  if (flag === "quota" || flag === "cost_cap") return flag;
   const warning = job.warnings.find((w) => w.startsWith(PAUSE_PREFIX));
   if (!warning) return null;
   return warning.includes(COST_CAP_MARK) ? "cost_cap" : "quota";
@@ -182,6 +184,9 @@ export function TranslatePanel({
           onClose={() => setEstimate(null)}
         >
           <p>{estimate.cue_count} câu sẽ được gửi tới nhà cung cấp dịch.</p>
+          {estimate.tier === "paid" && estimate.spent_usd != null && (
+            <p>Đã tiêu cho video này: {usd(estimate.spent_usd)}</p>
+          )}
           {effectiveScope === "all" && (
             <p className="warning">Lời Việt đã sửa của các câu này sẽ bị ghi đè.</p>
           )}

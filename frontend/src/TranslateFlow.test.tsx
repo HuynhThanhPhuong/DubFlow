@@ -49,7 +49,7 @@ function stub(over: Record<string, unknown>, calls: Call[], extra?: (path: strin
       else if (path === "/api/jobs/job1/cues")
         response = [{ id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "" }];
       else if (path.startsWith("/api/jobs/job1/translate/estimate"))
-        response = { requests: 3, input_tokens: 1000, output_tokens: 500, cost_usd: 0.12, tier: "paid", cap_usd: 0.05, over_cap: true, cue_count: 40 };
+        response = { requests: 3, input_tokens: 1000, output_tokens: 500, cost_usd: 0.12, tier: "paid", cap_usd: 0.05, spent_usd: 0.04, over_cap: true, cue_count: 40 };
       else if (path === "/api/jobs/job1/translate") response = current;
       else throw Error(`Unexpected request ${path}`);
       return new Response(JSON.stringify(response), { status: 200 });
@@ -64,6 +64,7 @@ it("shows the estimate, posts nothing on cancel, posts with over-cap consent", a
   fireEvent.click(await screen.findByRole("button", { name: "Dịch bằng Gemini" }));
   await screen.findByText(/Dự kiến: 3 request, khoảng 1\.500 token, khoảng 0\.12 USD/);
   expect(screen.getByRole("alert").textContent).toContain("vượt mức trần");
+  expect(screen.getByText(/Đã tiêu cho video này: 0\.04 USD/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Hủy" }));
   expect(calls.some((c) => c.path === "/api/jobs/job1/translate")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Dịch bằng Gemini" }));
@@ -85,6 +86,18 @@ it("shows usage, the stale-mode note and a resume button for a cost-cap pause", 
   await screen.findByRole("button", { name: "Dịch tiếp, cho phép vượt trần" });
   expect(screen.getByText(/Đã dùng: 4 request · 3\.000 token · 0\.25 USD/)).toBeTruthy();
   expect(screen.getByText(/Bản dịch hiện tại theo chế độ lồng tiếng/)).toBeTruthy();
+});
+it("prefers the structured pause flag over the warning text", async () => {
+  location.hash = "#editor?job=job1";
+  stub(
+    {
+      warnings: ["Tạm dừng – nội dung cảnh báo đã đổi"],
+      translation_usage: { requests: 1, input_tokens: 1, output_tokens: 1, cost_usd: 0.1, provider: "gemini", model: "m", mode: "dub", paused: "cost_cap" },
+    },
+    [],
+  );
+  render(<App />);
+  await screen.findByRole("button", { name: "Dịch tiếp, cho phép vượt trần" });
 });
 it("uses Dịch tiếp for a quota pause", async () => {
   location.hash = "#editor?job=job1";

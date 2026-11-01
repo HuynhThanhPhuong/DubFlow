@@ -89,6 +89,21 @@ def _add_usage(folder: Path, provider: str, model: str, mode: str, outcome) -> N
         at=datetime.now(timezone.utc).isoformat()))
 
 
+def _set_paused(folder: Path, paused: str | None) -> None:
+    """Ghi cờ tạm dừng có cấu trúc vào số liệu dùng (nếu đã có); xóa khi lần chạy không tạm dừng."""
+    old = read_usage(folder)
+    if old is None:
+        return
+    value = paused if paused in ('quota', 'cost_cap') else None
+    if 'paused' not in old or old['paused'] != value:
+        _write(Path(folder) / USAGE_FILE, {**old, 'paused': value})
+
+
+def spent_so_far(folder: Path) -> float:
+    cost = (read_usage(folder) or {}).get('cost_usd')
+    return float(cost) if isinstance(cost, (int, float)) else 0.0
+
+
 def apply_outcome(folder: Path, items: list[Item], outcome, scope: str, terminology: str) -> None:
     from .review import load_state, translation_dependency
     cues = _read(folder / 'cues.json', [])
@@ -134,16 +149,22 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     try:
         provider = make_provider(name, key, model, thinking=settings.thinking)
         limiter = RateLimiter(Path(settings.data_dir) / RATE_FILE, prefs.rate_rpm, prefs.rate_rpd, scope=f'{name}/{model}')
+        stop_file = folder / 'cancel.request'
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
-                                  terminology=terminology, allow_over_cap=allow)
+                                  terminology=terminology, allow_over_cap=allow,
+                                  spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
+                                  should_stop=stop_file.exists)
     except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
         return dict(warnings=[scrub(str(exc), key)])
     finally:
         if provider is not None:
             provider.close()
-    # Kết quả đã trả tiền luôn được lưu, kể cả khi người dùng vừa hủy.
-    apply_outcome(folder, items, outcome, scope, terminology)
+    # Request đã gửi luôn được ghi vào số liệu dùng. Khi hủy thì không ghi chữ vào cues.json
+    # (người dùng có thể đang sửa); bản dịch đã trả tiền vẫn nằm trong cache.
+    if outcome.paused != 'cancelled':
+        apply_outcome(folder, items, outcome, scope, terminology)
     _add_usage(folder, name, model, mode, outcome)
+    _set_paused(folder, outcome.paused)
     check_cancel()
     warnings = []
     if outcome.error:
@@ -166,7 +187,8 @@ def estimate(folder: Path, scope: str, mode: str, values, terminology: str) -> d
     plan = plan_translation(items, mode, prefs, terminology)
     paid = prefs.tier == 'paid'
     cap = prefs.cost_cap_usd if paid else None
+    spent = spent_so_far(Path(folder)) if paid else None
     return dict(requests=plan.requests, input_tokens=plan.input_tokens, output_tokens=plan.output_tokens,
-                cost_usd=plan.cost_usd, tier=prefs.tier, cap_usd=cap,
-                over_cap=bool(paid and plan.cost_usd is not None and cap is not None and plan.cost_usd > cap),
+                cost_usd=plan.cost_usd, tier=prefs.tier, cap_usd=cap, spent_usd=spent,
+                over_cap=bool(paid and plan.cost_usd is not None and cap is not None and spent + plan.cost_usd > cap),
                 cue_count=len(items))

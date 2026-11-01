@@ -29,15 +29,15 @@ class TranslationTests(unittest.TestCase):
             j=app.state.store.create_job(dict(title='Test',mode='vietsub',status='awaiting_review'))
             folder=cfg.jobs_dir/j['id']; folder.mkdir()
             base='/api/jobs/'+j['id']
-            self.assertEqual(c.post(base+'/translate').status_code,409)
+            self.assertEqual(c.post(base+'/translate',json={}).status_code,409)
             c.put('/api/settings',json=dict(gemini_api_key='k-test-123',gemini_model='gemini-x'))
-            self.assertEqual(c.post(base+'/translate').status_code,409)
+            self.assertEqual(c.post(base+'/translate',json={}).status_code,409)
             write(folder/'cues.json',read(self.root/'cues.json'))
-            r=c.post(base+'/translate')
+            r=c.post(base+'/translate',json={})
             self.assertEqual(r.status_code,200,r.text)
             task=app.state.store.claim_next()
             self.assertEqual(task['action'],'translate')
-            self.assertEqual(c.post(base+'/translate').status_code,409)
+            self.assertEqual(c.post(base+'/translate',json={}).status_code,409)
 
     def test_region_edit_keeps_server_masks_but_rejects_client_paths(self):
         cfg=Settings(root=self.root,data_dir=self.root/'data',system_voices=self.root/'voices')
