@@ -95,6 +95,32 @@ class ManualTranslationTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(self.stored()['a']['text'], 'Dòng một\nDòng hai')
 
+    def test_blank_line_inside_block_is_joined_to_previous(self):
+        r = self.post(srt('```srt', '1', '00:00:01,000 --> 00:00:02,000', 'Dòng một', '', 'Dòng hai', '',
+                          '2', '00:00:02,000 --> 00:00:03,000', 'Hai', '',
+                          '3', '00:00:03,000 --> 00:00:04,000', 'Ba', '```'))
+        self.assertEqual(r.status_code, 200, r.text)
+        s = self.stored()
+        self.assertEqual(s['a']['text'], 'Dòng một\nDòng hai')
+        self.assertEqual(s['c']['text'], 'Ba')
+
+    def test_orphan_text_before_first_block_422(self):
+        r = self.post(srt('Lời dẫn', '', '1', '00:00:01,000 --> 00:00:02,000', 'Một'))
+        self.assertEqual(r.status_code, 422)
+        self.assertIn('Lời dẫn', r.json()['detail'])
+
+    def test_non_utf8_file_422_vietnamese(self):
+        r = self.post('1\n00:00:01,000 --> 00:00:02,000\nXin chào\n'.encode('utf-16'))
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()['detail'], 'File phải mã hóa UTF-8.')
+        r = self.post(b'\xff\xfe\x00bad\x80')
+        self.assertEqual(r.json()['detail'], 'File phải mã hóa UTF-8.')
+
+    def test_non_ascii_digit_index_422(self):
+        r = self.post(srt('²', '00:00:01,000 --> 00:00:02,000', 'Một'))
+        self.assertEqual(r.status_code, 422)
+        self.assertIn('chữ số 0-9', r.json()['detail'])
+
     def test_import_skips_filtered_lyrics(self):
         r = self.post(srt('1', '00:00:01,000 --> 00:00:02,000', 'Một', '',
                           '2', '00:00:02,000 --> 00:00:03,000', 'Hai', '',

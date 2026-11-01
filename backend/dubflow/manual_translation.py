@@ -27,7 +27,7 @@ def prompt_text(mode: str, cps, terminology: str = '') -> str:
         '- Giữ nguyên số thứ tự và dòng thời gian, chỉ thay phần chữ Trung bằng tiếng Việt.\n'
         '- Mỗi khối 1-2 dòng chữ.\n'
         '- Không gộp hay tách khối; số khối trả về phải bằng số khối đã gửi.\n'
-        '- Trả về đúng định dạng SRT, không ghi chú, không giải thích, không phiên âm pinyin, không để chữ Hán.',
+        '- Trả về đúng định dạng SRT, không bọc kết quả trong khối code, không ghi chú, không giải thích, không phiên âm pinyin, không để chữ Hán.',
         'YÊU CẦU THEO CHẾ ĐỘ:\n' + _MODE_RULES[mode].format(cps=float(cps)),
         'XƯNG HÔ: suy ra quan hệ giữa các nhân vật từ lời thoại rồi chọn đại từ tự nhiên, và dùng nhất quán xuyên suốt; '
         'tên người Trung Quốc dùng âm Hán-Việt trừ khi bảng thuật ngữ nói khác.',
@@ -39,16 +39,28 @@ def prompt_text(mode: str, cps, terminology: str = '') -> str:
 
 def parse_indexed_srt(text: str) -> list[dict]:
     """Tách các khối SRT, giữ số thứ tự (None nếu thiếu). Chịu BOM, CRLF, CR và chữ nhiều dòng."""
-    text = text.lstrip('﻿').replace('\r\n', '\n').replace('\r', '\n').strip()
+    text = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
+    text = '\n'.join(ln for ln in text.split('\n') if not ln.strip().startswith('```')).strip()
     blocks = []
     for raw in re.split(r'\n\s*\n', text):
         lines = [ln.strip() for ln in raw.strip().split('\n')]
         stamp = next((i for i, ln in enumerate(lines) if TIME.search(ln)), None)
         if stamp is None:
+            # Dòng trống nằm giữa chữ: nối đoạn này vào khối trước.
+            body = '\n'.join(ln for ln in lines if ln)
+            if not body:
+                continue
+            if not blocks:
+                raise ValueError(f'Không hiểu dòng "{lines[0][:60]}": chưa có số thứ tự và dòng thời gian trước nó.')
+            blocks[-1]['text'] = (blocks[-1]['text'] + '\n' + body).strip('\n')
             continue
         number = None
-        if stamp > 0 and lines[stamp - 1].lstrip('﻿').isdigit():
-            number = int(lines[stamp - 1].lstrip('﻿'))
+        if stamp > 0:
+            prev = lines[stamp - 1].lstrip('\ufeff')
+            if re.fullmatch(r'[0-9]+', prev):
+                number = int(prev)
+            elif prev.isdigit():
+                raise ValueError(f'Số thứ tự "{prev}" không hợp lệ, chỉ dùng chữ số 0-9.')
         body = '\n'.join(ln for ln in lines[stamp + 1:] if ln)
         blocks.append(dict(number=number, text=body))
     if not blocks:

@@ -340,7 +340,11 @@ def create_app(settings: Settings | None = None, start_worker=True):
             raise HTTPException(409, 'Chưa có lời gốc. Phân tích video trước khi nhập bản dịch.')
         review.load_state(folder)
         try:
-            blocks = parse_indexed_srt(data.decode('utf-8-sig'))
+            try:
+                content = data.decode('utf-8-sig')
+            except UnicodeError:
+                raise ValueError('File phải mã hóa UTF-8.')
+            blocks = parse_indexed_srt(content)
             dialogue = dialogue_source_cues(sorted(stored, key=lambda c: (c['start'], c['end'])))
             texts = match_by_index(blocks, [c['id'] for c in dialogue])
         except (ValueError, UnicodeError) as e:
