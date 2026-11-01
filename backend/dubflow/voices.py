@@ -6,6 +6,10 @@ from pathlib import Path
 from .media import atomic_json, read_json, run
 
 
+# OmniVoice generation settings a voice file may carry; absent keys fall back to the engine defaults in the pipeline.
+OMNI_KEYS = ('num_step', 'guidance_scale', 'speed', 'denoise', 'preprocess_prompt', 'postprocess_output')
+
+
 def all_voices(settings):
     result = []
     if settings.system_voices.exists():
@@ -16,9 +20,15 @@ def all_voices(settings):
                 if not audio.is_file():
                     continue
                 name = v.get('name') or path.stem
-                result.append(dict(id='system-' + path.stem, name=name, gender='female' if any(x in path.stem for x in ('thuy-trang', 'nu', 'series')) else 'male',
-                                   style=['review phim' if 'review' in path.stem or '-rv' in path.stem else 'kể chuyện'], source='system',
-                                   commercialOk=v.get('commercialOk'), ref_text=v.get('ref_text', ''), ref_audio=str(audio), status='available', quality=None))
+                voice = dict(id='system-' + path.stem, name=name, gender='female' if any(x in path.stem for x in ('thuy-trang', 'nu', 'series')) else 'male',
+                             style=['review phim' if 'review' in path.stem or '-rv' in path.stem else 'kể chuyện'], source='system',
+                             commercialOk=v.get('commercialOk'), ref_text=v.get('ref_text', ''), ref_audio=str(audio), status='available', quality=None)
+                omni = {k: v[k] for k in OMNI_KEYS if k in v}
+                if omni:
+                    voice['omni'] = omni
+                if isinstance(v.get('pronounce'), dict) and v['pronounce']:
+                    voice['pronounce'] = {str(k): str(x) for k, x in v['pronounce'].items()}
+                result.append(voice)
             except (OSError, ValueError, TypeError):
                 continue
     for path in (settings.data_dir / 'voices').glob('*/voice.json'):
@@ -44,7 +54,13 @@ def public_voice(v):
 def voice_ref(v):
     path = Path(v['ref_audio'])
     sha = hashlib.sha256(path.read_bytes() + v['ref_text'].encode()).hexdigest()
-    return dict(path=str(path), text=v['ref_text'], hash=sha)
+    ref = dict(path=str(path), text=v['ref_text'], hash=sha)
+    # Extra fields only when the voice defines them, so older voices keep their exact record.
+    if v.get('omni'):
+        ref['omni'] = dict(v['omni'])
+    if v.get('pronounce'):
+        ref['pronounce'] = dict(v['pronounce'])
+    return ref
 
 
 def check_audio(path, settings):

@@ -67,7 +67,7 @@ class PipelineTests(unittest.TestCase):
             with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage):
                 p.synthesize(directory,settings,lambda *a:None)
                 p.synthesize(directory,settings,lambda *a:None)
-            self.assertEqual(calls,['gen','pick'])
+            self.assertEqual(calls,['gen_omni','pick'])  # TM: OmniVoice is the primary engine
             self.assertEqual(p.read(directory/'cues.json')[0]['asr_edits'],0)
             self.assertFalse(p.read(directory/'manifest.json')['speed_change'])
 

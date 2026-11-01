@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-from pipeline import translate_message, ROOT, cache_key, file_hash, read, write, run, tokens, reference_spans
+from pipeline import translate_message, ROOT, cache_key, file_hash, read, write, run, tokens, reference_spans, apply_pronounce
 
 
 def decode(path, ffmpeg, sr=16000, channels=1):
@@ -155,6 +155,53 @@ def gen(directory, request):
             print('generated',task['i'],seed,flush=True)
 
 
+def gen_omni(directory, request):
+    """OmniVoice takes (zero-shot clone of the reference clip + transcript). Runs in the OmniVoice venv, one GPU model at a time."""
+    import numpy as np
+    import soundfile as sf
+    import torch
+    tasks = request['tasks']
+    name = tasks[0]['params']['model']
+    cache = request.get('asr_cache')
+    if cache:  # OmniVoice resolves its model and tokenizers through the env; an inherited HF_HUB_CACHE must not redirect it
+        hub = Path(cache)/'hub'
+        os.environ.update(HF_HOME=str(cache), HF_HUB_CACHE=str(hub if hub.is_dir() else cache))
+    try:  # fail fast and clearly when the cached model is missing; never reach for the network
+        snapshot(name, request.get('asr_cache'))
+    except Exception as exc:  # noqa: BLE001 - any hub error means the local copy is unusable
+        raise RuntimeError(translate_message(f'OmniVoice model {name} is not in the local cache: {exc}')) from None
+    from omnivoice import OmniVoice
+    model = OmniVoice.from_pretrained(name, device_map='cuda:0', dtype=torch.float16)
+    rate = model.sampling_rate
+    for task in tasks:
+        for seed in range(1000, 1000+request['count']):
+            params = dict(task['params'], seed=seed)
+            path = directory/'lines'/f'{cache_key(params)}.wav'
+            if path.exists():
+                continue
+            torch.manual_seed(seed); np.random.seed(seed)
+            ref = task['ref']
+            audio = model.generate(text=params['text'], language=params['language'], ref_audio=ref['path'], ref_text=ref['text'],
+                                   num_step=params['num_step'], guidance_scale=params['guidance_scale'], speed=params['speed'],
+                                   denoise=params['denoise'], preprocess_prompt=params['preprocess_prompt'], postprocess_output=params['postprocess_output'])[0]
+            wave = np.nan_to_num(np.asarray(audio, np.float32).reshape(-1))
+            if rate != 48000 and wave.size:
+                import torchaudio
+                wave = torchaudio.functional.resample(torch.from_numpy(wave), rate, 48000).numpy()
+            peak = float(abs(wave).max()) if wave.size else 0.
+            wave = wave * min(1., .9/max(peak, 1e-9)) if peak else np.zeros(4800, np.float32)  # silent output is kept as a failing take
+            tmp = path.with_suffix('.tmp.wav')
+            sf.write(tmp, wave, 48000, subtype='FLOAT'); tmp.replace(path)
+            print('generated', task['i'], seed, flush=True)
+
+
+def text_match(task, heard):
+    """(passed, short_rule_used) for one heard take. The pronounce map is applied to both sides, so the abbreviation
+    the engine was given as spoken words is judged against the same spoken words."""
+    mapping = task['params'].get('pronounce')
+    return tokens(apply_pronounce(heard, mapping)) == tokens(apply_pronounce(task['cue']['text'], mapping)), False
+
+
 def pick(directory, request):
     import soundfile as sf
     asr = load_asr(request)
@@ -168,9 +215,10 @@ def pick(directory, request):
                 continue
             trimmed = directory/'lines'/f'{name}-trim.wav'
             run([request['ffmpeg'],'-v','error','-y','-i',str(path),'-af','silenceremove=start_periods=1:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,adelay=20,apad=pad_dur=0.04','-ac','1','-ar','48000',str(trimmed)])
-            heard = asr({'raw':decode(trimmed,request['ffmpeg']),'sampling_rate':16000},generate_kwargs={'language':'vi','task':'transcribe','num_beams':1})['text'].strip()
             info = sf.info(trimmed)
-            st['takes'][str(seed)] = dict(path=str(trimmed.relative_to(directory)),duration=info.frames/info.samplerate,asr=heard,exact=tokens(heard)==tokens(task['cue']['text']),seed=seed)
+            heard = asr({'raw':decode(trimmed,request['ffmpeg']),'sampling_rate':16000},generate_kwargs={'language':'vi','task':'transcribe','num_beams':1})['text'].strip() if info.frames else ''  # all-silent take
+            passed, short_rule = text_match(task, heard)
+            st['takes'][str(seed)] = dict(path=str(trimmed.relative_to(directory)),duration=info.frames/info.samplerate,asr=heard,exact=passed,short_rule=short_rule,seed=seed,engine=task['params'].get('engine','voxcpm2'))
             # Persist every scored candidate; cancellation can safely resume.
             good = [v for v in st['takes'].values() if v['exact'] and (directory/v['path']).exists()]
             if good:
@@ -828,7 +876,7 @@ def main():
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)
+    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers

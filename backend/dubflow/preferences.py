@@ -33,6 +33,7 @@ class Preferences(BaseModel):
     blur_original: bool = True
     original_gain: FiniteFloat = Field(default=.32, ge=0, le=1)
     max_takes: int = Field(default=24, ge=4, le=24)
+    fallback_takes: int = Field(default=8, ge=0, le=24)  # extra takes of the second engine, only for lines the first engine could not pass
     toast_success_ms: int = Field(default=3000, ge=500, le=60000)
     toast_error_ms: int = Field(default=5000, ge=500, le=60000)
 

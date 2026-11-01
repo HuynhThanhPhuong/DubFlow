@@ -181,10 +181,15 @@ def engine(stage, directory, settings, payload=None, emit=None):
         if value is not None:
             payload[name] = str(value)
     request = directory/'engine-request.json'
+    # gen_omni runs in the OmniVoice environment (asr_python, read-only); every other unlisted stage does too.
     python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase','logos') else 'speaker_python' if stage=='speakers' else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
+    if stage == 'gen_omni':  # never write temp files into the read-only OmniVoice tree
+        scratch = directory/'tmp'
+        scratch.mkdir(exist_ok=True)
+        env.update(TMP=str(scratch), TEMP=str(scratch), TMPDIR=str(scratch))
     check_cancel(directory)
     try:
         write(request, payload)
@@ -472,7 +477,7 @@ def prepare(job_dir, settings, emit):
     cues = read(directory/'cues.json', [])
     speaker_signature=cache_key([{k:c.get(k) for k in ('id','start','end','original')} for c in cues])
     speaker_marker=read(directory/'speaker-candidates.json',{})
-    if cues and getattr(settings,'speaker_python',None) and (speaker_marker.get('source_signature')!=speaker_signature or not speaker_marker.get('status')):
+    if cues and job.get('mode') != 'tm' and getattr(settings,'speaker_python',None) and (speaker_marker.get('source_signature')!=speaker_signature or not speaker_marker.get('status')):
         emit('speakers','Đang tự phân nhóm giọng; nhãn chưa chắc chắn sẽ được đánh dấu',40)
         try:
             engine('speakers',directory,settings,{'source':str(directory/'vocals.wav') if (directory/'vocals.wav').exists() else str(source)},emit=emit)
@@ -523,6 +528,36 @@ def model_identity(model, cache):
 def cue_inputs(cues):
     return [{k:c.get(k) for k in ('id','start','end','speaker','original','text')} for c in cues]
 
+OMNI_MODEL = 'k2-fsa/OmniVoice'
+VI_PROMPT = ROOT/'bench/runs/20261027/refs-origreview/vi-prompt.json'
+GEN_STAGE = dict(voxcpm2='gen', omnivoice='gen_omni')
+OMNI_DEFAULTS = dict(num_step=32, guidance_scale=2., speed=1., denoise=True, preprocess_prompt=True, postprocess_output=True)
+
+def omni_settings(values):
+    """OmniVoice generation settings: the voice's own values over the engine defaults (dub has no voice file)."""
+    values = values or {}
+    return {k:values.get(k,default) for k,default in OMNI_DEFAULTS.items()}
+
+def apply_pronounce(text, mapping):
+    """Whole-word, case-sensitive replacement in one pass, so a replacement is never rewritten again."""
+    mapping = {k:v for k,v in (mapping or {}).items() if k}
+    if not mapping:
+        return text
+    pattern = re.compile(r'(?<!\w)(?:'+'|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?!\w)')
+    return pattern.sub(lambda m:mapping[m.group(0)],text)
+
+def take_rounds(budget):
+    """Cumulative take counts, in rounds of 4 (4, 8, ... budget)."""
+    return list(range(4,budget,4))+[budget] if budget > 0 else []
+
+def write_voice_report(directory, mode, order, cues, by_engine, chosen, state):
+    lines = []
+    for i, cue in enumerate(cues):
+        won = chosen[i]
+        counts = {name:len(state.get(by_engine[name][i]['key'],{}).get('takes',{})) if i in by_engine[name] else 0 for name in order}
+        lines.append(dict(id=cue.get('id'), line=i+1, engine=won[0] if won else None, takes=counts, short_rule=bool(won and won[2].get('short_rule'))))
+    write(directory/'voice-report.json', dict(mode=mode, order=order, lines=lines))
+
 def synthesize(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     if job.get('mode') == 'vietsub':
@@ -544,7 +579,7 @@ def synthesize(job_dir, settings, emit):
             engine('refs', directory, settings, {'source':str(directory/'vocals.wav'), 'cues':cues}, emit=emit)
             write(directory/'reference-inputs.json',dict(signature=ref_signature))
         refs = read(directory/'speaker-refs.json', {})
-        primer_data = read(ROOT/'bench/runs/20261027/refs-origreview/vi-prompt.json')
+        primer_data = read(Path(getattr(settings,'vi_prompt',None) or VI_PROMPT))
         if not primer_data or not primer_data.get('text','').strip():
             raise NeedsReview('Thiếu đoạn mồi tiếng Việt đã kiểm chứng (vi-prompt.json). Hãy khôi phục mẫu đã cài sẵn; hệ thống không tự tải model hoặc mẫu giọng.')
         primer = ref_record(primer_data, directory)
@@ -555,34 +590,70 @@ def synthesize(job_dir, settings, emit):
             raise NeedsReview('Choose a voice with a reference audio and transcript')
         refs = {c['speaker']:job['voice_ref'] for c in cues}
         primer = None
-    tasks = []
+    mode = job.get('mode')
+    # TM: one stock voice, OmniVoice first. Dub: VoxCPM2 mix first. The second engine only gets the lines the first could not pass.
+    order = ['omnivoice','voxcpm2'] if mode == 'tm' else ['voxcpm2','omnivoice']
+    voice = (job.get('voice_ref') or {}) if mode == 'tm' else {}
+    pronounce = voice.get('pronounce') or {}
+    omni_cfg = omni_settings(voice.get('omni'))
     state = read(directory/'state.json', {})
+    model_params = dict(
+        voxcpm2=dict(model=str(getattr(settings,'tts_model','openbmb/VoxCPM2')), model_cache=str(getattr(settings,'model_cache',''))),
+        omnivoice=dict(model=OMNI_MODEL, model_cache=str(getattr(settings,'asr_cache','')), dtype='float16'))
+    for conf in model_params.values():
+        conf['model_revision'] = model_identity(conf['model'],conf['model_cache'])
+    asr_model, asr_cache = 'openai/whisper-large-v3-turbo', str(getattr(settings,'asr_cache',''))
+    asr_revision = model_identity(asr_model,asr_cache)
+    engine_code = file_hash(Path(__file__).with_name('engine_cli.py'))
+    by_engine = {name:{} for name in order}  # engine -> cue index -> task
     for i, cue in enumerate(cues):
         ref = ref_record(refs[cue['speaker']], directory)
-        params = dict(text=cue['text'], model=str(getattr(settings,'tts_model','openbmb/VoxCPM2')), model_cache=str(getattr(settings,'model_cache','')), reference=ref['hash'], reference_text=ref.get('text',''), prompt=primer, steps=10, cfg=2., mode=job.get('mode'), trim_version=1, asr_model='openai/whisper-large-v3-turbo', asr_cache=str(getattr(settings,'asr_cache','')), normalization=1)
-        params['model_revision'] = model_identity(params['model'],params['model_cache'])
-        params['asr_revision'] = model_identity(params['asr_model'],params['asr_cache'])
-        params['loader_version'] = 2
-        params['engine_code'] = file_hash(Path(__file__).with_name('engine_cli.py'))
-        tasks.append(dict(i=i, cue=cue, ref=ref, prompt=primer, params=params, key=cache_key(params)))
-        entry = state.get(tasks[-1]['key'],{})
-        if entry.get('accepted') and not (directory/entry['accepted']['path']).exists():
-            entry.pop('accepted')
-            entry['takes'] = {k:v for k,v in entry.get('takes',{}).items() if (directory/v['path']).exists()}
+        shared = dict(reference=ref['hash'], reference_text=ref.get('text',''), mode=mode, trim_version=1, asr_model=asr_model, asr_cache=asr_cache, normalization=1, asr_revision=asr_revision, loader_version=2, engine_code=engine_code)
+        # The engine reads the pronounced text; the cue (cues.json, subtitles) keeps its own wording.
+        spoken = apply_pronounce(cue['text'], pronounce)
+        extra = dict(pronounce=pronounce) if pronounce else {}
+        candidates = dict(
+            voxcpm2=dict(shared, engine='voxcpm2', text=spoken, prompt=primer, steps=10, cfg=2., **model_params['voxcpm2'], **extra))
+        # OmniVoice clones from the reference clip and its transcript; without a transcript it would load a second model to guess one.
+        if ref.get('text','').strip():
+            candidates['omnivoice'] = dict(shared, engine='omnivoice', text=spoken, language='Vietnamese', **omni_cfg, **model_params['omnivoice'], **extra)
+        for name, params in candidates.items():
+            task = dict(i=i, cue=cue, ref=ref, prompt=primer if name == 'voxcpm2' else None, params=params, key=cache_key(params))
+            by_engine[name][i] = task
+            entry = state.get(task['key'],{})
+            if entry.get('accepted') and not (directory/entry['accepted']['path']).exists():
+                entry.pop('accepted')
+                entry['takes'] = {k:v for k,v in entry.get('takes',{}).items() if (directory/v['path']).exists()}
     write(directory/'state.json',state)
     (directory/'lines').mkdir(exist_ok=True)
+
+    def winner(i):
+        """(engine, task, accepted take) of the first engine in order that passed line i, else None."""
+        for name in order:
+            task = by_engine[name].get(i)
+            take = state.get(task['key'],{}).get('accepted') if task else None
+            if take:
+                return name, task, take
+        return None
+
     limit = getattr(settings, 'max_takes', 24)
-    for count in list(range(4,limit,4))+[limit]:
-        pending = [t for t in tasks if not state.get(t['key'],{}).get('accepted')]
-        if not pending:
-            break
-        emit('synthesizing', f'Generating candidates 1–{count} of {limit}', 50+count)
-        engine('gen', directory, settings, {'tasks':pending,'count':count}, emit=emit)
-        engine('pick', directory, settings, {'tasks':pending,'count':count}, emit=emit)
-        state = read(directory/'state.json', {})
-    accepted = [state.get(t['key'],{}).get('accepted') for t in tasks]
-    if not all(accepted):
-        raise NeedsReview('Some cues failed exact Vietnamese ASR after 24 seeds; rewrite and retry')
+    budgets = [limit, getattr(settings, 'fallback_takes', 8)]
+    for name, budget in zip(order, budgets):
+        for count in take_rounds(budget):
+            pending = [t for i,t in by_engine[name].items() if not winner(i)]
+            if not pending:
+                break
+            emit('synthesizing', f'Generating {name} candidates 1–{count} of {budget}', 50+count)
+            engine(GEN_STAGE[name], directory, settings, {'tasks':pending,'count':count}, emit=emit)
+            engine('pick', directory, settings, {'tasks':pending,'count':count}, emit=emit)
+            state = read(directory/'state.json', {})
+    chosen = [winner(i) for i in range(len(cues))]
+    write_voice_report(directory, mode, order, cues, by_engine, chosen, state)
+    failed = [i+1 for i,w in enumerate(chosen) if not w]
+    if failed:
+        raise NeedsReview(f'Không tạo được giọng khớp lời cho dòng {", ".join(map(str,failed))} bằng cả hai bộ giọng ({" rồi ".join(order)}). Hãy sửa lời Việt của các dòng này rồi tạo lại giọng.')
+    accepted = [w[2] for w in chosen]
+    tasks = [w[1] for w in chosen]
     try:
         rows = place(cues, [a['duration'] for a in accepted], meta['duration'])
     except NeedsReview:
@@ -591,8 +662,8 @@ def synthesize(job_dir, settings, emit):
         write(directory/'timing-review.json',dict(cues=cue_inputs(cues),takes=accepted,duration=meta['duration']))
         raise
     warnings = []
-    for row, take in zip(rows, accepted):
-        row.update(path=take['path'], asr_edits=0, seed=take.get('seed'), source_duration=take['duration'])
+    for row, take, task in zip(rows, accepted, tasks):
+        row.update(path=take['path'], asr_edits=0, seed=take.get('seed'), source_duration=take['duration'], engine=take.get('engine') or task['params']['engine'])
         if row['delay'] > .5 or row['overrun'] > .3:
             warning = translate_message(f"Cue {row['i']}: delay {row['delay']:.3f}s, overrun {row['overrun']:.3f}s")
             warnings.append(warning)

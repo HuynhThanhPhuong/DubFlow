@@ -21,6 +21,8 @@ class Settings:
     cuda_dll_dir: str = field(default_factory=lambda: os.getenv('DUBFLOW_CUDA_DLL_DIR', 'D:/OmniVoice/venv/Lib/site-packages/torch/lib'))
     asr_cache: str = field(default_factory=lambda: os.getenv('DUBFLOW_ASR_CACHE', 'D:/OmniVoice/cache/hf'))
     system_voices: Path = field(default_factory=lambda: Path(os.getenv('DUBFLOW_SYSTEM_VOICES', 'D:/OmniVoice/voices')))
+    # verified Vietnamese primer (audio + transcript) that VoxCPM2 mixes with the speaker timbre in dub mode
+    vi_prompt: str = field(default_factory=lambda: os.getenv('DUBFLOW_VI_PROMPT', str(ROOT / 'bench/runs/20261027/refs-origreview/vi-prompt.json')))
     redis_url: str = field(default_factory=lambda: os.getenv('DUBFLOW_REDIS_URL', ''))
     max_upload_bytes: int = 2 * 1024 ** 3
     max_duration: float = 3600
