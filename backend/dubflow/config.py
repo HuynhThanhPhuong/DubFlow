@@ -17,6 +17,7 @@ class Settings:
     ocr_python: str = field(default_factory=lambda: os.getenv('DUBFLOW_OCR_PYTHON', str(ROOT / 'repo-tests/ocr/Scripts/python.exe')))
     speaker_python: str = field(default_factory=lambda: os.getenv('DUBFLOW_SPEAKER_PYTHON', str(ROOT / 'repo-tests/speaker-runtime/Scripts/python.exe')))
     model_cache: str = field(default_factory=lambda: os.getenv('DUBFLOW_MODEL_CACHE', str(ROOT / 'repo-tests/runtime/hf-cache')))
+    lama_model: str = field(default_factory=lambda: os.getenv('DUBFLOW_LAMA_MODEL', str(ROOT / 'models/lama/lama_fp32.onnx')))
     asr_cache: str = field(default_factory=lambda: os.getenv('DUBFLOW_ASR_CACHE', 'D:/OmniVoice/cache/hf'))
     system_voices: Path = field(default_factory=lambda: Path(os.getenv('DUBFLOW_SYSTEM_VOICES', 'D:/OmniVoice/voices')))
     translation_mode: str = field(default_factory=lambda: os.getenv('DUBFLOW_TRANSLATION_MODE', 'manual'))

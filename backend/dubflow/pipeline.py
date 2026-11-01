@@ -174,7 +174,7 @@ def context(job_dir, settings):
 
 def engine(stage, directory, settings, payload=None, emit=None):
     payload = dict(payload or {})
-    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','translation_model','translation_api_url','translation_api_key','translation_api_model','translation_context','translation_num_ctx'):
+    for name in ('ffmpeg','ffprobe','model_cache','asr_cache','translation_model','translation_api_url','translation_api_key','translation_api_model','translation_context','translation_num_ctx','lama_model'):
         value = getattr(settings, name, None)
         if value is not None:
             payload[name] = str(value)
@@ -290,7 +290,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
 
-ERASE_VERSION = 3
+ERASE_VERSION = 4
 
 def erase_current(directory, source, meta=None, full=True):
     """True when clean.mp4 matches the current source and subtrack.json (cheap size+mtime check unless full)."""
@@ -336,6 +336,8 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings):
         clean.unlink(missing_ok=True); stamp.unlink(missing_ok=True)
         (directory/'clean.tmp.mp4').unlink(missing_ok=True)
         warnings.append('Chưa xóa được sub gốc trên hình: '+str(exc))
+        return
+    warnings.extend((read(stamp, {}) or {}).get('warnings') or [])
 
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)

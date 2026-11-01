@@ -69,3 +69,23 @@ Thời gian `erase`: 129,5 s cho 106 s video (lần 1: 116,5 s; giới hạn 233
 Test: backend `unittest discover -s tests` 220 test OK (17 skipped); `tests.test_subtitle_erase` 17 test OK trong venv OCR (mới: mặt nạ mỏng, khe giữa chữ, nền sáng trơn, ước lượng bóng, không bóng ma, ref tĩnh/ref lệch).
 
 Điều còn thiếu để đạt 10/10: nội dung dưới chữ ở khung 01, 02, 04 là cạnh của vật thể chuyển động (tay, cánh tay), không có khung tham chiếu cùng vị trí. Cách khả thi tiếp theo là bù chuyển động theo cục bộ từ các khung gần (trước/sau 0,2-0,4 s) kết hợp kiểm tra phần dư từng pixel; cần đệm nhiều khung và ước lượng chuyển động chịu được chữ cố định trên màn hình. Đây là thay đổi kiến trúc của stage `erase`, chưa làm.
+
+## Lần 3 (Task 7): LaMa inpainting
+
+Kết luận: KHÔNG ĐẠT. Khung sạch 8/10 (cần 10/10); thời gian `erase` 777 s trên CPU (giới hạn 600 s).
+
+Ảnh: `p2-evidence/v3/clean-band-NN.jpg` (dải y 1380-1640, phóng 2x) và `clean-full-NN.jpg`, cùng 10 mốc như lần 2. Đã xem từng ảnh.
+
+| Khung | Kết quả |
+|---|---|
+| 00, 01, 02, 03, 06, 07, 08, 09 | đạt (01 hết vệt xám; 02 còn vài chấm tối trên cánh tay là nốt có sẵn trong video gốc) |
+| 04 (47,0 s) | KHÔNG (sát): hết chữ, nhưng cạnh cánh tay phía trên-trái có chỗ gãy nhỏ, thấy khi phóng 2x |
+| 05 (60,55 s) | KHÔNG (sát): vài đốm sáng mờ trên đùi, giống hệt lần 2; do nhánh `ref` tĩnh (không qua LaMa), không thấy ở khung đủ |
+
+Mô hình: `Carve/LaMa-ONNX` `lama_fp32.onnx`, 208 044 816 byte, sha256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`, URL `https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx`. Lưu ở `models/lama/` (đã ignore trong git); đường dẫn là setting `lama_model` (env `DUBFLOW_LAMA_MODEL`).
+
+Thiết kế: `ref` tĩnh (như cũ) -> kết quả LaMa gần đây dùng lại làm tham chiếu (`lamaref`, ring diff <= 4,5, giữ 6 kết quả) -> gọi LaMa. Vùng lỗ = nét chữ + vùng bóng đổ, đưa vào LaMa trên khung gốc (đo: chia bóng rồi chỉ che nét mỏng còn vệt xám ở cạnh vật, bỏ). Lát cắt 512 px gốc, xếp chồng vào một canvas 512x512 (một dòng chữ = một lần gọi), ghép lại chỉ ở pixel lỗ, nhòe mép ~1 px. Thiếu model: dùng push-pull cũ và cảnh báo (stderr, `erase.json.warnings`, chuyển vào cảnh báo job). `ERASE_VERSION` 4.
+
+Số đo (CPU, ORT 1.31.1, 12 luồng): 2,5-2,8 s mỗi lần gọi 512x512, batch không nhanh hơn (batch 4: 2,9-3,8 s/ảnh). Lần chạy cuối: 234 lần LaMa, 884 `lamaref`, 1086 `ref`, 61 `none`, tổng 777 s. Dùng lại với ngưỡng 3,0: 336 lần (ước ~1000 s); ngưỡng 6,0: 176 lần (~600 s, rủi ro vá cũ). GPU: venv OCR chỉ có CPU/Azure provider. `onnxruntime-directml` (thử ở thư mục riêng, không cài vào venv) lỗi ở node MatMul của FFC (80070057), nên cần CUDA (`onnxruntime-gpu` + CUDA/cuDNN) hoặc model xuất lại; chưa đo. Hai phiên chạy song song (6 luồng/phiên) đạt 1,8 s/lần (nhanh 1,5x), chưa tích hợp.
+
+Test: backend `unittest discover -s tests` (venv backend) 226 test OK (22 skipped); `tests.test_subtitle_erase` 22 test OK trong venv OCR (mới: LaMa giả, ghép lát, dùng lại, cảnh báo thiếu model).

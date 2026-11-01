@@ -151,14 +151,78 @@ def estimate_shadow(gray: np.ndarray, T: np.ndarray, excl: np.ndarray, scale: fl
     return float(np.clip(np.median(ratios), 0.0, 1.3))
 
 
+LAMA_SIZE, LAMA_CTX, LAMA_OVERLAP = 512, 48, 64  # model input side; context rows/cols around the mask; tile overlap
+LAMA_REUSE_TOL = 4.5  # ring diff (gray levels) under which an earlier LaMa result is reused as a reference
+LAMA_KEEP = 6  # number of recent LaMa-filled band crops kept as references
+
+
+def _tile_spans(lo: int, hi: int, limit: int):
+    """Overlapping [a, b) spans of width <= LAMA_SIZE covering [lo, hi), clipped to [0, limit)."""
+    lo, hi = max(0, lo), min(limit, hi)
+    if hi - lo <= LAMA_SIZE:
+        return [(lo, hi)]
+    n = -(-(hi - lo - LAMA_OVERLAP) // (LAMA_SIZE - LAMA_OVERLAP))
+    step = (hi - lo - LAMA_SIZE) / (n - 1)
+    return [(int(round(lo + i * step)), int(round(lo + i * step)) + LAMA_SIZE) for i in range(n)]
+
+
+def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0, feather: float = 1.2) -> np.ndarray:
+    """Inpaint the True pixels of mask (same HxW as img, BGR uint8) with a LaMa ONNX session (fixed 512x512 input).
+
+    The mask bounding box plus context is cut into horizontal tiles (<= 512 px wide, overlapping) and the tiles are
+    stacked into 512x512 canvases at native scale, so one model call normally covers a whole subtitle line. Only masked
+    pixels change (feathered ~1 px); the rest of img is returned untouched."""
+    ys, xs = np.nonzero(mask)
+    if not len(ys):
+        return img
+    H, W = mask.shape
+    ctx = int(round(LAMA_CTX * scale))
+    y_lo, y_hi = max(0, int(ys.min()) - ctx), min(H, int(ys.max()) + 1 + ctx)
+    th = min(y_hi - y_lo, LAMA_SIZE)
+    spans = [s for s in _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W) if mask[y_lo:y_lo + th, s[0]:s[1]].any()]
+    per = max(1, LAMA_SIZE // th)  # tiles stacked per canvas
+    names = [i.name for i in session.get_inputs()]
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    acc = np.zeros((H, W, 3), np.float32)
+    wsum = np.zeros((H, W), np.float32)
+    for c0 in range(0, len(spans), per):
+        group = spans[c0:c0 + per]
+        canvas = np.zeros((LAMA_SIZE, LAMA_SIZE, 3), np.float32)
+        cmask = np.zeros((LAMA_SIZE, LAMA_SIZE), np.float32)
+        for j, (a, b) in enumerate(group):
+            canvas[j * th:(j + 1) * th, :b - a] = rgb[y_lo:y_lo + th, a:b]
+            cmask[j * th:(j + 1) * th, :b - a] = mask[y_lo:y_lo + th, a:b]
+        # pad the unused canvas area with the nearest content so it does not look like a huge black hole edge
+        used = len(group) * th
+        if used < LAMA_SIZE:
+            canvas[used:] = canvas[used - 1:used]
+        feeds = {names[0]: (canvas / 255.0).transpose(2, 0, 1)[None].astype(np.float32), names[1]: cmask[None, None]}
+        res = np.asarray(session.run(None, feeds)[0])[0].transpose(1, 2, 0)
+        for j, (a, b) in enumerate(group):
+            w = np.ones(b - a, np.float32)
+            ramp = min(LAMA_OVERLAP, b - a)
+            w[:ramp] = np.minimum(w[:ramp], np.linspace(0.05, 1, ramp, dtype=np.float32)) if a > 0 else 1
+            w[-ramp:] = np.minimum(w[-ramp:], np.linspace(1, 0.05, ramp, dtype=np.float32)) if b < W else w[-ramp:]
+            acc[y_lo:y_lo + th, a:b] += res[j * th:(j + 1) * th, :b - a] * w[None, :, None]
+            wsum[y_lo:y_lo + th, a:b] += w[None, :]
+    got = wsum > 0
+    filled = np.where(got[..., None], acc / np.maximum(wsum, 1e-6)[..., None], rgb.astype(np.float32))
+    alpha = np.maximum(mask.astype(np.float32), cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(0.8, feather * scale)))
+    alpha = np.minimum(alpha, 1.0) * got
+    out = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
+    return cv2.cvtColor(np.clip(out + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+
+
 def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, band: tuple,
-                scale: float = 1.0, static_tol: float = 6.0, style: dict | None = None):
+                scale: float = 1.0, static_tol: float = 6.0, style: dict | None = None, lama=None):
     """Erase glyphs (mask = glyph_mask output, full-frame, limited to box) and their drop shadow.
 
     refs: band-sized BGR crops (frame[y0b:y1b]). A motion-aligned reference is used when its ring diff <= static_tol
     (the glyph and shadow zone is copied from it); otherwise the shadow is divided out of the frame and only the
-    glyph strokes are rebuilt with smooth_fill. style: dict shared across frames; keeps the shadow strength.
-    Returns (out, how, ring_diff) with how in {'none','ref','smooth'}."""
+    glyph strokes are rebuilt. With lama (an onnxruntime session) they are inpainted by LaMa, and a recent LaMa result
+    whose ring diff <= LAMA_REUSE_TOL is reused instead of a new model call; without it they use smooth_fill.
+    style: dict shared across frames; keeps the shadow strength and the recent LaMa results.
+    Returns (out, how, ring_diff) with how in {'none','ref','lamaref','lama','smooth'}."""
     x0, y0, x1, y1 = (int(v) for v in box)
     H, W = frame.shape[:2]
     b0, b1 = max(0, int(band[0])), min(H, int(band[1]))
@@ -201,6 +265,29 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         mixed = fb.astype(np.float32) * (1 - alpha[..., None]) + best.astype(np.float32) * alpha[..., None]
         out[b0:b1] = np.clip(mixed + .5, 0, 255).astype(np.uint8)
         return out, 'ref', best_diff
+    if lama is not None:
+        keys = style.setdefault('lama_keys', [])
+        kbest, kdiff = None, None
+        for key in keys:
+            if key.shape != fb.shape:
+                continue
+            warped, diff = align_ref(fb, key, zone, ring)
+            if kdiff is None or diff < kdiff:
+                kbest, kdiff = warped, diff
+        if kbest is not None and kdiff <= LAMA_REUSE_TOL:
+            alpha = np.maximum(zone.astype(np.float32), cv2.GaussianBlur(zone.astype(np.float32), (0, 0), max(1.0, 2 * scale)))
+            mixed = fb.astype(np.float32) * (1 - alpha[..., None]) + kbest.astype(np.float32) * alpha[..., None]
+            out[b0:b1] = np.clip(mixed + .5, 0, 255).astype(np.uint8)
+            return out, 'lamaref', kdiff
+        # LaMa rebuilds glyphs and the shadow zone from the untouched frame (measured cleaner than dividing the shadow
+        # out and inpainting only the strokes, which left grey smudges at object edges)
+        hole = np.zeros((H, W), bool)
+        hole[b0:b1] = zone
+        src = frame
+        out = lama_inpaint(lama, src, hole, scale)
+        keys.append(np.ascontiguousarray(out[b0:b1]))
+        del keys[:-LAMA_KEEP]
+        return out, 'lama', best_diff
     corr = np.clip(fb.astype(np.float32) / (1.0 - a)[..., None] + .5, 0, 255).astype(np.uint8)
     # a wide rebuilt area hides the shadow remnants on smooth backgrounds, but smears picture edges that run under the
     # text, so near edges only the thin mask is rebuilt (textured/edged content hides the small shadow error)

@@ -468,6 +468,14 @@ def erase(directory, request):
     import numpy as np
     from subtitle_erase import erase_frame, glyph_mask
     directory = Path(directory)
+    lama, lama_warning = None, None
+    model = request.get('lama_model')
+    if model and Path(model).is_file():
+        import onnxruntime as ort
+        lama = ort.InferenceSession(str(model), providers=['CPUExecutionProvider'])
+    else:
+        lama_warning = f'LaMa model missing ({model or "not configured"}): subtitles erased with the smooth fallback'
+        print('WARNING: ' + lama_warning, file=sys.stderr, flush=True)
     ff, source = request['ffmpeg'], request['source']
     width, height = int(request['width']), int(request['height'])
     from fractions import Fraction
@@ -569,9 +577,9 @@ def erase(directory, request):
                     continue
                 mask = np.zeros((height, width), bool)
                 mask[y0:y1, x0:x1] = part
-                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, style=style)
+                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, style=style, lama=lama)
                 fills[how] = fills.get(how, 0) + 1
-                if how == 'ref':
+                if how in ('ref', 'lamaref'):
                     ref_diffs.append(rd)
                 done = True
             if done:
@@ -601,7 +609,7 @@ def erase(directory, request):
         reader.wait()
         shutil.rmtree(refs_dir, ignore_errors=True)
     os.replace(out, directory/'clean.mp4')
-    write(directory/'erase.json', dict(version=3, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
+    write(directory/'erase.json', dict(version=4, lama=lama is not None, warnings=[lama_warning] if lama_warning else [], source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
                                        frames_touched=touched, seconds=round(time.monotonic() - started, 3),
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

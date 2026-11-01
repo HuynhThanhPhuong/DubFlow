@@ -6,8 +6,8 @@ try:
 except ImportError:  # backend venv has no cv2
     cv2 = None
 if cv2 is not None:
-    from dubflow.subtitle_erase import (SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow, glyph_mask,
-                                        shadow_field)
+    from dubflow.subtitle_erase import (LAMA_SIZE, SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow,
+                                        glyph_mask, lama_inpaint, shadow_field)
 
 
 def _bg(h=120, w=360):
@@ -178,6 +178,78 @@ class TemporalFillTest(unittest.TestCase):
         self.assertTrue(np.array_equal(out[far], frame[far]))
 
 
+
+class _FakeLama:
+    """Stands in for the onnxruntime session: copies the image, paints the hole mid grey (value 100/255)."""
+    def __init__(self):
+        self.calls = []
+
+    def get_inputs(self):
+        class _I:
+            def __init__(self, name):
+                self.name = name
+        return [_I('image'), _I('mask')]
+
+    def run(self, _outputs, feeds):
+        image, mask = feeds['image'], feeds['mask']
+        assert image.shape == (1, 3, LAMA_SIZE, LAMA_SIZE) and mask.shape == (1, 1, LAMA_SIZE, LAMA_SIZE)
+        self.calls.append(float(mask.sum()))
+        out = image * 255.0 * (1 - mask) + 100.0 * mask
+        return [out.astype(np.float32)]
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class LamaFillTest(unittest.TestCase):
+    def test_only_masked_pixels_change_and_they_take_the_model_output(self):
+        img = np.full((200, 300, 3), 180, np.uint8)
+        mask = np.zeros((200, 300), bool)
+        mask[90:110, 100:200] = True
+        fake = _FakeLama()
+        out = lama_inpaint(fake, img, mask)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertTrue((out[mask] == 100).all())
+        self.assertTrue((out[~cv2.dilate(mask.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)] == 180).all())
+
+    def test_wide_mask_is_tiled_and_stays_seamless(self):
+        img = np.full((300, 1500, 3), 180, np.uint8)
+        mask = np.zeros((300, 1500), bool)
+        mask[20:280, 50:1450] = True
+        fake = _FakeLama()
+        out = lama_inpaint(fake, img, mask)
+        self.assertGreaterEqual(len(fake.calls), 2)
+        self.assertTrue((out[mask] == 100).all())  # overlap blending of identical tile outputs keeps the value
+        self.assertTrue((out[:15] == 180).all() and (out[285:] == 180).all())
+
+    def test_empty_mask_returns_input(self):
+        img = np.full((50, 60, 3), 7, np.uint8)
+        fake = _FakeLama()
+        self.assertIs(lama_inpaint(fake, img, np.zeros((50, 60), bool)), img)
+        self.assertEqual(fake.calls, [])
+
+    def test_erase_frame_uses_lama_then_reuses_result_for_a_similar_frame(self):
+        frame, _clean, _text = _shadowed(_bg())
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        fake, style = _FakeLama(), {}
+        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        self.assertEqual((how, len(fake.calls)), ('lama', 1))
+        self.assertFalse(((out == 255).all(axis=2) & mask).any())  # no white glyph pixel left
+        out2, how2, diff = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        self.assertEqual((how2, len(fake.calls)), ('lamaref', 1))
+        self.assertLessEqual(diff, 4.5)
+
+    def test_changed_content_triggers_a_new_model_call(self):
+        frame, _clean, _text = _shadowed(_bg())
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        fake, style = _FakeLama(), {}
+        erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        moved = np.clip(frame.astype(np.int16) + 40, 0, 255).astype(np.uint8)
+        moved[np.repeat(mask[..., None], 3, axis=2)] = 255
+        _, how, _ = erase_frame(moved, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake)
+        self.assertEqual((how, len(fake.calls)), ('lama', 2))
+
+
 @unittest.skipUnless(cv2 is not None, "cv2 not available")
 class EraseStageTest(unittest.TestCase):
     def _run(self, duration, tmp, audio=2, expected=None):
@@ -213,10 +285,14 @@ class EraseStageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
+            done = json.loads((d / 'erase.json').read_text())
+            self.assertEqual(done['version'], 4)
+            self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
+            self.assertTrue(any('LaMa' in w for w in done['warnings']))
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (3, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (4, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile

@@ -208,6 +208,19 @@ class PipelineTests(unittest.TestCase):
             p.write(Path(d)/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
             self.assertIn('erase',self._erase_prepare(Path(d),seg,self._stamp(Path(d),fps='30000/1001')))
 
+    def test_erase_warnings_from_engine_reach_the_job(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            def stage(name,directory,settings,payload,**kwargs):
+                p.write(directory/'erase.json',dict(version=p.ERASE_VERSION,warnings=['LaMa model missing (x)']))
+            warnings=[]
+            with patch.object(p,'engine',side_effect=stage):
+                p.erase_subtitles(d,d/'source.mp4',dict(duration=5,fps=25),SimpleNamespace(ocr_python=sys.executable),lambda *a:None,warnings)
+            self.assertEqual(warnings,['LaMa model missing (x)'])
+
     def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None):
         (directory/'source.mp4').write_bytes(b'src')
         (directory/'dry.wav').write_bytes(b'x')
