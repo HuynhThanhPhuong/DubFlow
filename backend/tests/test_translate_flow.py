@@ -319,6 +319,27 @@ class RunTests(Base):
         self.assertEqual(r.status_code, 409)
         self.assertEqual(p.read(self.folder / 'translate-request.json')['scope'], 'all')
 
+    def test_refused_dispatch_keeps_request_file(self):
+        self.configure()
+        self.make_job()
+        self.assertEqual(self.client.post(self.base + '/translate', json={'scope': 'missing', 'allow_over_cap': True}).status_code, 200)
+        before = (self.folder / 'translate-request.json').read_bytes()
+        # bypass the status/active-task pre-checks to hit the store's own refusal
+        self.store.update_job(self.jid, status='awaiting_review')
+        r = self.client.post(self.base + '/translate', json={'scope': 'all'})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual((self.folder / 'translate-request.json').read_bytes(), before)
+
+    def test_refused_dispatch_during_render_keeps_request_file(self):
+        self.configure()
+        self.make_job()
+        (self.folder / 'translate-request.json').write_text('{"scope": "missing"}', encoding='utf-8')
+        self.store.enqueue(self.jid, 'render')
+        self.store.update_job(self.jid, status='awaiting_review')
+        r = self.client.post(self.base + '/translate', json={'scope': 'all'})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual((self.folder / 'translate-request.json').read_text(encoding='utf-8'), '{"scope": "missing"}')
+
     def test_legacy_key_purged_on_first_load(self):
         self.store.put_record('settings', 'main', dict(output_dir=str(self.root / 'out'), translation_api_key='legacy-secret', translation_mode='api'))
         self.client.get('/api/settings')

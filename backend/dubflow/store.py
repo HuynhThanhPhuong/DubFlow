@@ -85,7 +85,7 @@ class Store:
             rows = db.execute('SELECT * FROM events WHERE job_id=? AND id>? ORDER BY id', (job_id, after)).fetchall()
         return [dict(r) for r in rows]
 
-    def enqueue(self, job_id, action):
+    def enqueue(self, job_id, action, before_commit=None):
         if action not in ('analyze', 'render', 'translate'):
             raise ValueError('Tác vụ không hợp lệ.')
         with self.connect() as db:
@@ -102,6 +102,8 @@ class Store:
             job = json.loads(row['body'])
             job.update(status='queued', stage='queued', error=None, action=action, updated_at=now())
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
+            if before_commit:  # runs only after the insert succeeded; an exception rolls the task back
+                before_commit()
         return task_id
 
     def active_tasks(self):

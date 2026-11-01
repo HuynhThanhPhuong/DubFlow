@@ -158,10 +158,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         optional = ('source', 'asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'ocr_empty', 'box')
         return [{k: v for k, v in c.model_dump().items() if k not in optional or v is not None} for c in cues]
 
-    def dispatch(job_id, action):
+    def dispatch(job_id, action, before_commit=None):
         (job_dir(job_id) / 'cancel.request').unlink(missing_ok=True)
         try:
-            task_id = store.enqueue(job_id, action)
+            task_id = store.enqueue(job_id, action, before_commit)
         except ValueError as e:
             raise HTTPException(409, str(e))
         if settings.redis_url:
@@ -526,11 +526,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if not translate_run.collect_items(folder, body.scope):
             raise HTTPException(409, 'Không có câu nào cần dịch.')
         request = folder / translate_run.REQUEST_FILE
-        atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap))
+        # The file is written inside the enqueue transaction, only once this call owns the task.
+        write_request = lambda: atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap))
         try:
-            return dispatch(job_id, 'translate')
+            return dispatch(job_id, 'translate', write_request)
         except HTTPException as exc:
-            if exc.status_code != 409:  # 409 means another dispatch owns the request file
+            if exc.status_code == 503:  # Redis refused: nobody will read this request
                 request.unlink(missing_ok=True)
             raise
 
