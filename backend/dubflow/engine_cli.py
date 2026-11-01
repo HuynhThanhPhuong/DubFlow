@@ -538,27 +538,49 @@ def active_segments(segs, first, t, margin):
 
 
 def static_clusters(boxes, margin):
-    """Group boxes (x0, y0, x1, y1) whose margin-grown rectangles touch -> list of lists of indices (stable order)."""
-    groups = [[i] for i in range(len(boxes))]
-    def grown(g):
-        return (min(boxes[i][0] for i in g) - margin, min(boxes[i][1] for i in g) - margin,
-                max(boxes[i][2] for i in g) + margin, max(boxes[i][3] for i in g) + margin)
-    merged = True
-    while merged:
-        merged = False
-        for a in range(len(groups)):
-            for b in range(a + 1, len(groups)):
-                ga, gb = grown(groups[a]), grown(groups[b])
-                if ga[0] < gb[2] and gb[0] < ga[2] and ga[1] < gb[3] and gb[1] < ga[3]:
-                    groups[a] = sorted(groups[a] + groups.pop(b))
-                    merged = True
-                    break
-            if merged:
+    """Group boxes (x0, y0, x1, y1) whose margin-grown rectangles touch, transitively, also through the bounding box of
+    a group that already formed -> sorted list of sorted index lists.
+
+    Union-find over pairs, then bounding boxes of the groups are compared again until nothing merges (a few passes at
+    most); no restart from scratch after each merge."""
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def touch(a, b):
+        return a[0] - margin < b[2] + margin and b[0] - margin < a[2] + margin and a[1] - margin < b[3] + margin and b[1] - margin < a[3] + margin
+
+    order = sorted(range(n), key=lambda i: boxes[i][0])  # x sweep: stop at the first box that starts beyond the reach
+    for x, i in enumerate(order):
+        for j in order[x + 1:]:
+            if boxes[j][0] - margin >= boxes[i][2] + margin:
                 break
-    return sorted(groups)
+            if touch(boxes[i], boxes[j]):
+                parent[find(j)] = find(i)
+    while True:
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+        boxes_of = {r: (min(boxes[i][0] for i in m), min(boxes[i][1] for i in m), max(boxes[i][2] for i in m), max(boxes[i][3] for i in m))
+                    for r, m in groups.items()}
+        roots, joined = sorted(groups, key=lambda r: boxes_of[r][0]), False
+        for x, ra in enumerate(roots):
+            for rb in roots[x + 1:]:
+                if boxes_of[rb][0] - margin >= boxes_of[ra][2] + margin:
+                    break
+                if find(ra) != find(rb) and touch(boxes_of[ra], boxes_of[rb]):
+                    parent[find(rb)] = find(ra)
+                    joined = True
+        if not joined:
+            return sorted(sorted(m) for m in groups.values())
 
 
-def erase_static_boxes(frame, boxes, k, lama, static_tol, reuse_tol, styles):
+def erase_static_boxes(frame, boxes, k, lama, static_tol, reuse_tol, styles, cache=None):
     """Erase solid rectangles (logos, fixed text) from one BGR frame with the subtitle eraser -> (frame, fills used).
 
     Touching boxes share one call on a crop that carries the LaMa context around them (same result as on the full
@@ -568,7 +590,13 @@ def erase_static_boxes(frame, boxes, k, lama, static_tol, reuse_tol, styles):
     H, W = frame.shape[:2]
     ctx = int(round(LAMA_CTX * k)) + 4
     used = {}
-    for group in static_clusters(boxes, ctx):
+    key = tuple(boxes)  # the live set changes only at region starts/ends: its grouping is computed once, not per frame
+    groups = cache.get(key) if cache is not None else None
+    if groups is None:
+        groups = static_clusters(boxes, ctx)
+        if cache is not None:
+            cache[key] = groups
+    for group in groups:
         members = [boxes[i] for i in group]
         cx0, cy0 = max(0, min(b[0] for b in members) - ctx), max(0, min(b[1] for b in members) - ctx)
         cx1, cy1 = min(W, max(b[2] for b in members) + ctx), min(H, max(b[3] for b in members) + ctx)
@@ -683,7 +711,7 @@ def erase(directory, request):
         raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
     loaded, style = (None, None), {}
-    static_styles, static_fills, static_frames = {}, {}, 0
+    static_styles, static_groups, static_fills, static_frames = {}, {}, {}, 0
     try:
         while True:
             # cancel.request is normally handled by the pipeline's wait_owned (kills this process and raises Cancelled);
@@ -728,7 +756,7 @@ def erase(directory, request):
             live = [r for r in statics if r['start'] - 1e-6 <= t < r['end'] - 1e-6]
             if live:  # after the glyph pass, so the solid boxes also cover subtitle strokes that cross them
                 frame, used = erase_static_boxes(frame, [(r['x0'], r['y0'], r['x1'], r['y1']) for r in live], k, lama,
-                                                 static_tol, reuse_tol, static_styles)
+                                                 static_tol, reuse_tol, static_styles, static_groups)
                 for how, count in used.items():
                     static_fills[how] = static_fills.get(how, 0) + count
                 static_frames += 1

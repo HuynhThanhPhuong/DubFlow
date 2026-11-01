@@ -412,10 +412,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
         invalidate(job_id)
         return values
 
-    @app.get('/api/jobs/{job_id}/regions')
-    def get_regions(job_id: str):
-        j=job_or_404(job_id)
-        rows=read_json(job_dir(job_id) / 'regions.json',[])
+    def decorate_regions(job_id, j, rows):
+        """Response-only fields (never stored): erased flag of static regions and preview mask urls."""
         folder=job_dir(job_id)
         if j.get('source_path') and (folder / 'clean.mp4').is_file() and erase_current(folder, j['source_path'], full=False):
             erased=set(read_json(folder / 'erase.json',{}).get('static_ids') or [])
@@ -427,6 +425,23 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 if box.get('mask_path') and box.get('mask_crop'):
                     box['preview_mask_url']=f"/api/jobs/{job_id}/text-mask/{row['id']}?box={index}"
         return rows
+
+    def only_decision_changed(previous, values):
+        """True when the new regions differ from the stored ones in confirmed/label only (ticking or relabelling a box)."""
+        decision=('confirmed','label')
+        try:
+            old=[Region(**r).model_dump() for r in previous]
+        except Exception:  # noqa: BLE001 - legacy rows that no longer validate: treat as a real change
+            return False
+        if len(old)!=len(values):
+            return False
+        strip=lambda row:{k:v for k,v in row.items() if k not in decision}
+        return all(strip(a)==strip(b) for a,b in zip(old,values)) and any(any(a[k]!=b[k] for k in decision) for a,b in zip(old,values))
+
+    @app.get('/api/jobs/{job_id}/regions')
+    def get_regions(job_id: str):
+        j=job_or_404(job_id)
+        return decorate_regions(job_id,j,read_json(job_dir(job_id) / 'regions.json',[]))
 
     @app.get('/api/jobs/{job_id}/text-mask/{region_id}')
     def preview_text_mask(job_id: str,region_id: str,box: int=0):
@@ -460,8 +475,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 raise HTTPException(422, 'Vùng chữ phải nằm trong khung hình và thời lượng video.')
         # Masks are server-generated assets. Retain them when users only edit
         # text/translation/enabled, but never accept arbitrary paths from clients.
-        previous = {r['id']: r for r in read_json(job_dir(job_id)/'regions.json',[])}
+        stored = read_json(job_dir(job_id)/'regions.json',[])
+        previous = {r['id']: r for r in stored}
         values = [r.model_dump() for r in regions]
+        decision_only = only_decision_changed(stored, values)
         for value in values:
             old = previous.get(value['id'],{})
             if all(old.get(k)==value.get(k) for k in ('x','y','width','height','start','end','kind')):
@@ -469,8 +486,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
                     if key in old:
                         value[key] = old[key]
         atomic_json(job_dir(job_id) / 'regions.json', values)
-        invalidate(job_id)
-        return values
+        if not decision_only:  # ticking or relabelling a box changes neither what is erased nor drawn: keep status and output
+            invalidate(job_id)
+        return decorate_regions(job_id,j,[dict(v) for v in values])
 
     @app.get('/api/jobs/{job_id}/parts')
     def get_parts(job_id: str):

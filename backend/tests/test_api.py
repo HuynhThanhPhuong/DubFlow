@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 import tempfile
 import unittest
@@ -61,6 +62,58 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([k for k,r in rows.items() if r.get('erased')],['a'])
         atomic_json(folder/'regions.json',[box('a',x=11),box('b',enabled=False)])  # box moved since the erase: stale
         self.assertFalse(any(r.get('erased') for r in self.client.get(f"/api/jobs/{j['id']}/regions").json()))
+
+    def _region_job(self, status='done'):
+        from dubflow.media import atomic_json
+        j=self.app.state.store.create_job({'title':'r','mode':'vietsub','duration':5,'width':320,'height':240,'status':status})
+        folder=self.settings.jobs_dir/j['id']; folder.mkdir(exist_ok=True)
+        box=lambda rid,**o:dict({'id':rid,'x':10,'y':10,'width':40,'height':20,'start':0,'end':5,'kind':'static','enabled':True,'auto':True,'confirmed':False,'label':'Logo'},**o)
+        atomic_json(folder/'regions.json',[box('a'),box('b',x=100)])
+        return j,folder,box
+
+    def test_put_regions_response_is_decorated_like_get(self):
+        from dubflow.media import atomic_json
+        from dubflow.pipeline import ERASE_VERSION, file_hash, static_hash
+        j,folder,box=self._region_job()
+        source=folder/'source.mp4'; source.write_bytes(b'src')
+        self.app.state.store.update_job(j['id'],source_path=str(source))
+        (folder/'mask.png').write_bytes(b'x')
+        sub=dict(box('s',kind='subtitle',auto=False,confirmed=False,label=''),mask_path='mask.png',mask_crop=[10,10,40,20])
+        atomic_json(folder/'regions.json',[box('a'),sub])
+        atomic_json(folder/'subtrack.json',{'segments':[]}); (folder/'clean.mp4').write_bytes(b'0123456789')
+        st=source.stat()
+        atomic_json(folder/'erase.json',{'version':ERASE_VERSION,'source_size':st.st_size,'source_mtime_ns':st.st_mtime_ns,
+                    'subtrack_hash':file_hash(folder/'subtrack.json'),'static_hash':static_hash(folder),'static_ids':['a']})
+        body=[{k:v for k,v in r.items() if k not in ('mask_path','mask_crop')} for r in self.client.get(f"/api/jobs/{j['id']}/regions").json()]
+        got=self.client.get(f"/api/jobs/{j['id']}/regions").json()
+        put=self.client.put(f"/api/jobs/{j['id']}/regions",json=body)
+        self.assertEqual(put.status_code,200)
+        by_id=lambda rows:{r['id']:r for r in rows}
+        self.assertTrue(by_id(put.json())['a'].get('erased'))
+        self.assertIn('preview_mask_url',by_id(put.json())['s'])
+        self.assertEqual(by_id(put.json())['a'].get('erased'),by_id(got)['a'].get('erased'))
+        stored=json.loads((folder/'regions.json').read_text(encoding='utf-8'))
+        self.assertFalse(any('erased' in r or 'preview_mask_url' in r for r in stored))  # response-only fields are never stored
+
+    def test_put_regions_keeps_the_job_when_only_confirmed_or_label_changes(self):
+        j,folder,box=self._region_job('done')
+        url=f"/api/jobs/{j['id']}/regions"
+        status=lambda:self.app.state.store.get_job(j['id'])['status']
+        tick=[box('a',confirmed=True,label='Chữ cố định'),box('b',x=100)]
+        self.assertEqual(self.client.put(url,json=tick).status_code,200)
+        self.assertEqual(status(),'done')   # a tick or relabel changes neither what is erased nor drawn
+        cross=[box('a',confirmed=True,enabled=False),box('b',x=100)]
+        self.assertEqual(self.client.put(url,json=cross).status_code,200)
+        self.assertEqual(status(),'awaiting_review')  # switching a box off does
+        self.app.state.store.update_job(j['id'],status='done')
+        self.assertEqual(self.client.put(url,json=[box('a',confirmed=True,enabled=False,x=11),box('b',x=100)]).status_code,200)
+        self.assertEqual(status(),'awaiting_review')  # so does moving it
+        self.app.state.store.update_job(j['id'],status='done')
+        self.assertEqual(self.client.put(url,json=[box('a',confirmed=True,enabled=False,x=11)]).status_code,200)
+        self.assertEqual(status(),'awaiting_review')  # and removing one
+        self.app.state.store.update_job(j['id'],status='done')
+        self.assertEqual(self.client.put(url,json=[box('a',confirmed=True,enabled=False,x=11,text='t')]).status_code,200)
+        self.assertEqual(status(),'awaiting_review')  # text edits too
 
     def test_zip_excludes_parts_from_an_older_render(self):
         from dubflow.media import atomic_json

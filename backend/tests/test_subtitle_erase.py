@@ -544,6 +544,33 @@ class StaticEraseStageTest(unittest.TestCase):
             frames = self._frames(ff, d / 'clean.mp4')
             self.assertLess(float(frames[20][60:100, 100:160, 2].mean() - frames[20][60:100, 100:160, 1].mean()), 12)
 
+    def test_clusters_are_transitive_fast_and_computed_once_per_live_set(self):
+        import sys, time
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        from engine_cli import erase_static_boxes, static_clusters
+        # a chain that only touches pairwise, and a box that joins two groups only through their bounding boxes
+        self.assertEqual(static_clusters([(0, 0, 10, 10), (12, 0, 22, 10), (24, 0, 34, 10)], 2), [[0, 1, 2]])
+        self.assertEqual(static_clusters([(0, 0, 100, 10), (0, 40, 100, 50), (40, 20, 60, 30)], 6), [[0, 1, 2]])
+        boxes = [(i * 3, (i % 7) * 40, i * 3 + 40, (i % 7) * 40 + 20) for i in range(600)]
+        started = time.monotonic()
+        groups = static_clusters(boxes, 10)
+        self.assertLess(time.monotonic() - started, 2.0)  # the restart-from-scratch version was cubic
+        self.assertEqual(sorted(i for g in groups for i in g), list(range(600)))
+        import numpy as np
+        frame = np.full((240, 320, 3), 128, np.uint8)
+        calls, real = [], engine_cli.static_clusters
+        engine_cli.static_clusters = lambda b, m: (calls.append(1), real(b, m))[1]
+        try:
+            cache, styles = {}, {}
+            for _ in range(5):
+                erase_static_boxes(frame, [(10, 10, 50, 30)], 1.0, None, 6.0, 2.5, styles, cache)
+            erase_static_boxes(frame, [(10, 10, 50, 30), (200, 100, 240, 130)], 1.0, None, 6.0, 2.5, styles, cache)
+            erase_static_boxes(frame, [(10, 10, 50, 30)], 1.0, None, 6.0, 2.5, styles, cache)
+        finally:
+            engine_cli.static_clusters = real
+        self.assertEqual(len(calls), 2)  # one per distinct live set
+
     def test_box_group_helpers(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))

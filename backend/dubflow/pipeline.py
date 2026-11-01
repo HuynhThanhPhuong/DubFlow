@@ -309,6 +309,23 @@ def detect_logos(directory, source, meta, settings, emit, warnings=None, force=F
             raise
         warnings.append('Chưa tìm được logo và chữ cố định: '+str(exc))
 
+def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
+    """Before an erase: a job from before P4 still holds the raw OCR "static" fragments (hundreds of them) as enabled
+    static regions. Merge them into a few candidates first (detect_logos); a failure is only a warning. True when it ran."""
+    directory = Path(directory)
+    if not getattr(settings, 'ocr_python', None):
+        return False
+    if not any(r.get('kind') == 'static' and r.get('enabled') and not r.get('auto') and not r.get('confirmed')
+               for r in read(directory/'regions.json', []) or []):
+        return False
+    try:
+        if (read(directory/'logo-candidates.json', {}) or {}).get('source_hash') == file_hash(source):
+            return False
+    except OSError:
+        return False
+    detect_logos(directory, source, meta, settings, emit, warnings)
+    return True
+
 ERASE_VERSION = 6
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
@@ -710,6 +727,8 @@ def render(job_dir, settings, emit):
     if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip() for r in regions):
         raise NeedsReview('Có chữ xuất hiện thoáng qua chưa được dịch. Mở Tuỳ chỉnh vùng chữ để nhập lời Việt trước khi xuất.')
     render_warnings = []
+    if getattr(settings,'blur_original',True) and getattr(settings,'ocr_python',None)             and ensure_logo_candidates(directory, source, meta, settings, lambda stage, message, progress: emit(stage, message, 85), render_warnings):
+        regions = read(directory/'regions.json', [])  # legacy OCR fragments were merged into candidates
     if getattr(settings,'blur_original',True) and erase_wanted(directory) and getattr(settings,'ocr_python',None):
         # a stale clean.mp4 (subtitles or logo boxes changed since) is rebuilt now rather than quietly replaced by ffmpeg blur
         # erase-failed.json remembers a failed attempt for these exact inputs, so every later render does not pay for it again

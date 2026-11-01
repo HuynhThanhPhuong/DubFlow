@@ -458,6 +458,83 @@ class PipelineTests(unittest.TestCase):
             p.write(d/'erase.json',self._stamp(d))
             self.assertTrue(p.erase_current(d,d/'source.mp4',dict(fps=25)))
 
+    def _legacy_fragments(self, n=300):
+        """Raw OCR static fragments of a pre-P4 job: overlapping slices of two fixed texts."""
+        rows=[]
+        for i in range(n):
+            top=i%2==0
+            rows.append(dict(id=f'ocr-{i}',kind='static',enabled=True,x=10+(i//2)%100,y=10 if top else 150,width=40,height=20,start=0,end=3,
+                             text='Logo' if top else 'Web',translation='',auto=False,confirmed=False))
+        return rows
+
+    def _fake_stages(self, calls):
+        """engine stand-in: logos merges the fragments with the real merge code, erase writes a clean.mp4 stamp."""
+        from dubflow.logo_detect import apply_candidates, merge_candidates, user_owned
+        def stage(name,directory,settings,payload,**kwargs):
+            calls.append((name,payload))
+            if name=='logos':
+                regions=p.read(directory/'regions.json',[])
+                frags=[r for r in regions if r.get('kind')=='static' and not r.get('auto') and not r.get('confirmed') and not user_owned(r)]
+                cands=merge_candidates([],frags,payload['duration'])
+                p.write(directory/'logo-candidates.json',dict(version=1,source_hash=payload['source_hash'],candidates=cands))
+                p.write(directory/'regions.json',apply_candidates(regions,cands))
+            elif name=='erase':
+                (directory/'clean.mp4').write_bytes(b'new')
+                p.write(directory/'erase.json',dict(self._stamp(directory),static_ids=[r['id'] for r in payload['static_regions']],static_hash=payload['static_hash']))
+        return stage
+
+    def test_render_of_a_legacy_job_merges_ocr_fragments_before_the_erase(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,False)  # fixtures, no clean.mp4
+            p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))
+            p.write(directory/'regions.json',self._legacy_fragments()+[dict(id='t',kind='transient',enabled=True,x=0,y=100,width=60,height=20,start=1,end=2,text='x',translation='y')])
+            self.assertFalse((directory/'logo-candidates.json').exists())
+            calls=[]
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=self._fake_stages(calls)),patch.object(p,'run'):
+                p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:None)
+            self.assertEqual([c[0] for c in calls],['logos','erase'])
+            sent=calls[1][1]['static_regions']
+            self.assertLessEqual(len(sent),3)
+            self.assertGreaterEqual(len(sent),1)
+            self.assertIn('cleanv',(directory/'render-filter.txt').read_text())
+
+    def test_prepare_of_a_legacy_job_merges_ocr_fragments_before_the_erase(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            (directory/'source.mp4').write_bytes(b'src')
+            p.write(directory/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+            p.write(directory/'regions.json',self._legacy_fragments())
+            p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))
+            p.write(directory/'cues.json',[dict(id='u',start=0,end=1,speaker='s',original='x',text='y')])
+            p.write(directory/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            calls=[]
+            with patch.object(p,'probe',return_value=dict(duration=5,width=320,height=240)),patch.object(p,'engine',side_effect=self._fake_stages(calls)):
+                try:
+                    p.prepare(directory,SimpleNamespace(ocr_python=sys.executable),lambda *a:None)
+                except p.NeedsReview:
+                    pass
+            names=[c[0] for c in calls]
+            self.assertLess(names.index('logos'),names.index('erase'))
+            self.assertLessEqual(len(calls[names.index('erase')][1]['static_regions']),3)
+
+    def test_legacy_logo_detection_failure_is_a_warning_and_the_render_continues(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,False)
+            p.write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))
+            p.write(directory/'regions.json',self._legacy_fragments(6))
+            def stage(name,directory,settings,payload,**kwargs):
+                if name=='logos':
+                    raise p.NeedsReview('logos unavailable or failed (exit 1)')
+                (directory/'clean.mp4').write_bytes(b'new')
+                p.write(directory/'erase.json',dict(self._stamp(directory),static_ids=[r['id'] for r in payload['static_regions']],static_hash=payload['static_hash']))
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'engine',side_effect=stage),patch.object(p,'run'):
+                result=p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:None)
+            self.assertTrue(any('logo' in w.lower() for w in result['warnings']))
+            self.assertTrue((directory/'clean.mp4').exists())
+
     def test_render_with_current_clean_drops_erased_static_but_keeps_transient(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory=Path(d)
@@ -478,7 +555,7 @@ class PipelineTests(unittest.TestCase):
         p.write(directory/'subtrack.json',dict(version=1,segments=[dict(s=0,e=1,x0=1,y0=1,x1=5,y1=5,text='a')]))
         p.write(directory/'regions.json',[
             dict(id='s',kind='subtitle',enabled=True,x=10,y=200,width=100,height=20,start=0,end=3),
-            dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3),
+            dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3,auto=True,confirmed=False),
             dict(id='t',kind='transient',enabled=True,x=0,y=100,width=60,height=20,start=1,end=2,text='x',translation='y')])
         if mode=='tm':
             p.write(directory/'manifest.json',dict(mode='tm',input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))
