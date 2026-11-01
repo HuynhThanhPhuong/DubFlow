@@ -113,6 +113,17 @@ class MergeTest(unittest.TestCase):
         self.assertEqual((out[0]['label'], out[0]['text']), ('Chữ cố định', '予你心动'))
         self.assertEqual(len(out[0]['merged_ids']), 50)
 
+    def test_user_owned_fragments_are_not_merged(self):
+        rng = random.Random(4)
+        frags = [_frag(i, rng, '予你心动') for i in range(20)]
+        frags[3]['translation'] = 'Dư tâm động'
+        frags[5]['enabled'] = False
+        out = merge_candidates([], frags, 100.)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(out[0]['merged_ids']), 18)
+        self.assertNotIn('r3', out[0]['merged_ids'])
+        self.assertNotIn('r5', out[0]['merged_ids'])
+
     def test_separate_places_stay_separate(self):
         rng = random.Random(2)
         frags = [_frag(i, rng, 'A') for i in range(10)] + [_frag(100 + i, rng, 'B', x=700, y=400) for i in range(10)]
@@ -151,6 +162,14 @@ class ApplyTest(unittest.TestCase):
         self.assertNotIn('merged_ids', new)
         self.assertNotIn('presence', new)
         self.assertEqual((new['x'], new['auto'], new['confirmed'], new['enabled']), (10, True, False, True))
+
+    def test_translated_or_disabled_fragments_survive_even_if_listed_as_merged(self):
+        translated = self.reg('r1', translation='Bản dịch')
+        disabled = self.reg('r2', enabled=False)
+        plain = self.reg('r3')
+        out = apply_candidates([translated, disabled, plain], [self.cand(x=10, y=10, width=40, height=20, merged_ids=['r1', 'r2', 'r3'])])
+        self.assertEqual([r['id'] for r in out], ['r1', 'r2', 'logo-1'])
+        self.assertEqual(out[0]['translation'], 'Bản dịch')
 
     def test_new_ids_do_not_collide(self):
         kept = self.reg('logo-1', auto=True, confirmed=True, x=500, y=300)
@@ -287,6 +306,40 @@ class PipelineHookTest(unittest.TestCase):
         self.source.write_bytes(b'other video')
         self.assertTrue(self.run_hook().called)
 
+    def test_ocr_rerun_invalidates_candidates_so_prepare_detects_again(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from dubflow import pipeline as p
+        p.write(self.dir / 'job.json', dict(source_path='source.mp4', mode='vietsub'))
+        p.write(self.dir / 'ocr-complete.json', {})
+        p.write(self.dir / 'logo-candidates.json', dict(source_hash=p.file_hash(self.source)))
+        calls = []
+
+        def stage(name, directory, settings, payload, **kwargs):
+            calls.append(name)
+            if name == 'subtrack':
+                p.write(directory / 'subtrack.json', dict(version=1, segments=[]))
+            elif name == 'ocr':
+                p.write(directory / 'regions.json', [])
+        # regions.json is missing: OCR runs; the old candidates file (same source) must not stop the logo stage
+        with patch.object(p, 'probe', return_value=dict(duration=3, width=320, height=240)), patch.object(p, 'engine', side_effect=stage):
+            try:
+                p.prepare(self.dir, SimpleNamespace(ocr_python='python'), lambda *a: None)
+            except p.NeedsReview:
+                pass
+        self.assertIn('ocr', calls)
+        self.assertEqual(calls[calls.index('ocr') + 1], 'logos')
+        # without an OCR rewrite the same marker does skip the stage
+        p.write(self.dir / 'logo-candidates.json', dict(source_hash=p.file_hash(self.source)))
+        p.write(self.dir / 'regions.json', [dict(id='r1', kind='static', x=0, y=0, width=5, height=5, start=0, end=1, enabled=False)])
+        calls.clear()
+        with patch.object(p, 'probe', return_value=dict(duration=3, width=320, height=240)), patch.object(p, 'engine', side_effect=stage):
+            try:
+                p.prepare(self.dir, SimpleNamespace(ocr_python='python'), lambda *a: None)
+            except p.NeedsReview:
+                pass
+        self.assertNotIn('logos', calls)
+
     def test_without_ocr_python_nothing_runs(self):
         self.settings.ocr_python = None
         self.assertFalse(self.run_hook().called)
@@ -328,7 +381,7 @@ class DetectLogosApiTest(unittest.TestCase):
         self.app = create_app(self.cfg, start_worker=False)
         self.client = TestClient(self.app)
         self.store = self.app.state.store
-        job = self.store.create_job(dict(title='t', mode='vietsub', status='awaiting_review', duration=100, width=1280, height=720))
+        job = self.store.create_job(dict(title='t', mode='vietsub', status='done', stage='done', progress=100, duration=100, width=1280, height=720))
         self.jid = job['id']
         self.store.update_job(self.jid, source_path=str(root / 'source.mp4'))
         self.folder = self.cfg.jobs_dir / self.jid
@@ -358,7 +411,7 @@ class DetectLogosApiTest(unittest.TestCase):
     def test_unknown_job_is_404(self):
         self.assertEqual(self.client.post('/api/jobs/nope/detect-logos', json={}).status_code, 404)
 
-    def test_worker_runs_detection_and_returns_to_review(self):
+    def test_worker_runs_detection_and_restores_previous_status(self):
         from unittest.mock import patch
         from dubflow.worker import run_task
         with patch('dubflow.pipeline.context', return_value=(self.folder, {}, 'src.mp4', {'duration': 100})), \
@@ -367,7 +420,23 @@ class DetectLogosApiTest(unittest.TestCase):
             run_task(self.store.claim_next(), self.cfg, self.store)
         self.assertEqual(detect.call_args.kwargs.get('force'), True)
         job = self.store.get_job(self.jid)
-        self.assertEqual((job['status'], job['stage']), ('awaiting_review', 'awaiting_review'))
+        self.assertEqual((job['status'], job['stage'], job['progress']), ('done', 'done', 100))
+        self.assertEqual(self.store.active_tasks(), [])
+        self.assertFalse((self.folder / 'detect-logos-request.json').exists())
+        (self.folder / 'output.mp4').write_bytes(b'x')
+        self.assertTrue(self.client.get(f'/api/jobs/{self.jid}').json()['output_url'])
+
+    def test_worker_failure_warns_and_keeps_previous_status(self):
+        from unittest.mock import patch
+        from dubflow import pipeline
+        from dubflow.worker import run_task
+        with patch('dubflow.pipeline.context', return_value=(self.folder, {}, 'src.mp4', {'duration': 100})),                 patch('dubflow.pipeline.detect_logos', side_effect=pipeline.NeedsReview('logos failed (exit 1)')):
+            self.assertEqual(self.client.post(self.url, json={}).status_code, 200)
+            run_task(self.store.claim_next(), self.cfg, self.store)
+        job = self.store.get_job(self.jid)
+        self.assertEqual((job['status'], job['stage'], job['progress']), ('done', 'done', 100))
+        self.assertIsNone(job['error'])
+        self.assertTrue(any('logos failed' in w for w in job['warnings']), job['warnings'])
         self.assertEqual(self.store.active_tasks(), [])
 
     def test_region_flags_round_trip(self):

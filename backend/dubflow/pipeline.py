@@ -221,6 +221,7 @@ def refine_text_regions(directory, source, meta, settings, emit):
     if any(r.get('enabled') and r.get('kind')=='subtitle' and not r.get('boxes') and not r.get('mask_path') for r in merged):
         raise NeedsReview('Chưa xác định được phạm vi phụ đề gốc. Mở Tuỳ chỉnh để kiểm tra vùng chữ trước khi xuất, tránh làm mờ dư.')
     write(directory/'regions.json',merged)
+    (directory/'logo-candidates.json').unlink(missing_ok=True)  # fresh fragments: detect logos again
     write(directory/'ocr-complete.json',dict(mask_version=2,warnings=[]))
     return merged
 
@@ -409,6 +410,7 @@ def prepare(job_dir, settings, emit):
         except NeedsReview as exc:
             warnings.append(str(exc))
             write(directory/'regions.json', [])
+        (directory/'logo-candidates.json').unlink(missing_ok=True)  # OCR rewrote regions.json: detect logos again
         write(directory/'ocr-complete.json',read(directory/'ocr-complete.json',{}) | dict(warnings=warnings))
     elif getattr(settings,'blur_original',True):
         refine_text_regions(directory,source,meta,settings,emit)

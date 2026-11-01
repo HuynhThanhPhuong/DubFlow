@@ -487,7 +487,7 @@ def sample_frames(ffmpeg, source, width, height, duration, target_width=640, ste
 
 def logos(directory, request):
     """Logo / fixed-text candidates -> logo-candidates.json, merged into regions.json (user decisions are kept)."""
-    from logo_detect import apply_candidates, detect_static, merge_candidates
+    from logo_detect import apply_candidates, detect_static, merge_candidates, user_owned
     directory = Path(directory)
     width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
     frames, times, scale = sample_frames(request['ffmpeg'], request['source'], width, height, duration)
@@ -502,8 +502,8 @@ def logos(directory, request):
         exclude.append((left, int(track['band'][0]), right - left, int(track['band'][1] - track['band'][0])))
     detected = detect_static(frames, times, duration, exclude, scale)
     regions = read(directory/'regions.json', []) or []
-    # OCR "static" fragments; anything the user touched (confirmed, disabled) or the detector made is not input
-    fragments = [r for r in regions if r.get('kind') == 'static' and not r.get('auto') and not r.get('confirmed') and r.get('enabled', True)]
+    # OCR "static" fragments; anything the user touched (confirmed, disabled, translated) or the detector made is not input
+    fragments = [r for r in regions if r.get('kind') == 'static' and not r.get('auto') and not r.get('confirmed') and not user_owned(r)]
     candidates = merge_candidates(detected, fragments, duration)
     write(directory/'logo-candidates.json', dict(version=1, source_hash=request.get('source_hash'), samples=len(frames),
                                                   scale=scale, excluded=len(exclude), detected=detected, candidates=candidates))

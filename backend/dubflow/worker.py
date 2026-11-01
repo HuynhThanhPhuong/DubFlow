@@ -114,10 +114,28 @@ def run_task(task, settings, store):
                              warnings=[translate_message(w) for w in result.get('warnings', job.get('warnings', []))]+summaries)
             store.event(jid, 'awaiting_review', 'Nội dung đã sẵn sàng để duyệt.', 45)
         elif task['action'] == 'detect_logos':
-            _, _, source, meta = pipeline.context(folder, settings)
-            pipeline.detect_logos(folder, source, meta, settings, emit, force=True)
-            update_active(status='awaiting_review', stage='awaiting_review', progress=45)
-            store.event(jid, 'awaiting_review', 'Đã tìm logo và chữ cố định; hãy xem các khung gợi ý.', 45)
+            # the job goes back to where it was (a finished job keeps its output); detection never fails the job
+            request = folder / 'detect-logos-request.json'
+            before = read_json(request, {}) or {}
+            restore = dict(status=before.get('status') or 'awaiting_review', stage=before.get('stage') or 'awaiting_review',
+                           progress=before.get('progress', 45), error=before.get('error'))
+            try:
+                _, _, source, meta = pipeline.context(folder, settings)
+                pipeline.detect_logos(folder, source, meta, settings, emit, force=True)
+                message = 'Đã tìm logo và chữ cố định; hãy xem các khung gợi ý.'
+                update_active(**restore)
+            except (JobCancelled, KeyboardInterrupt, pipeline.Cancelled):
+                raise
+            except Exception as exc:  # noqa: BLE001 - warn like translate does, keep the job's status and output
+                if not isinstance(exc, pipeline.NeedsReview):
+                    (folder / 'last-error.log').write_text(traceback.format_exc(), encoding='utf-8')
+                message = translate_message(str(exc))
+                if not isinstance(exc, pipeline.NeedsReview) and message == str(exc) and not any(ord(c) > 127 for c in message):
+                    message = 'Không tìm được logo và chữ cố định. Kiểm tra detect-logos trong logs và thử lại.'
+                update_active(**restore, warnings=list(store.get_job(jid).get('warnings', [])) + [message])
+            finally:
+                request.unlink(missing_ok=True)
+            store.event(jid, restore['stage'], message, restore['progress'])
         else:
             from .review import require_export
             try:

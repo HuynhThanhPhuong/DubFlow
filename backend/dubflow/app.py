@@ -543,7 +543,15 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = writable(job_id)
         if not job.get('source_path'):
             raise HTTPException(409, 'Chưa có video nguồn.')
-        return dispatch(job_id, 'detect_logos')
+        request = job_dir(job_id) / 'detect-logos-request.json'
+        # where the job was, so the worker can put it back (written only once this call owns the task)
+        write_request = lambda: atomic_json(request, {k: job.get(k) for k in ('status', 'stage', 'progress', 'error')})
+        try:
+            return dispatch(job_id, 'detect_logos', write_request)
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                request.unlink(missing_ok=True)
+            raise
 
     @app.get('/api/jobs/{job_id}/review')
     def get_review(job_id: str):

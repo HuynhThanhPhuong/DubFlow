@@ -27,6 +27,11 @@ BLOCK_IOU = .5
 LABEL_TEXT, LABEL_LOGO = 'Chữ cố định', 'Logo'
 
 
+def user_owned(r):
+    """A region the user touched (translation typed, or switched off) is never merged away or replaced."""
+    return bool((r.get('translation') or '').strip()) or r.get('enabled', True) is False
+
+
 def _box(r):
     return r['x'], r['y'], r['x'] + r['width'], r['y'] + r['height']
 
@@ -162,7 +167,7 @@ def merge_candidates(detected, ocr_static, duration):
     Output regions: kind static, auto, not confirmed, enabled; label "Chữ cố định" when OCR text is present else "Logo".
     `merged_ids` lists the OCR fragments folded in (apply_candidates removes them) and is not stored in regions.json.
     """
-    clusters = _clusters([f for f in ocr_static if f.get('width', 0) > 0 and f.get('height', 0) > 0])
+    clusters = _clusters([f for f in ocr_static if f.get('width', 0) > 0 and f.get('height', 0) > 0 and not user_owned(f)])
     used = set()
     rows = []
     for d in detected:
@@ -196,8 +201,8 @@ def merge_candidates(detected, ocr_static, duration):
 def apply_candidates(existing, candidates):
     """regions.json content after a detection run.
 
-    Kept: every non-static region, every confirmed region and every non-auto static region that was not merged into a
-    candidate. Dropped: merged OCR fragments and old unconfirmed auto candidates. A candidate overlapping (IoU > .5)
+    Kept: every non-static region, every confirmed region, every user-owned region (translation typed or disabled) and
+    every non-auto static region that was not merged into a candidate. Dropped: merged OCR fragments and old unconfirmed auto candidates. A candidate overlapping (IoU > .5)
     a confirmed or rejected (disabled) static region is not added, so a re-run never resurrects a decision.
     """
     merged = {i for c in candidates for i in c.get('merged_ids', ())}
@@ -205,9 +210,9 @@ def apply_candidates(existing, candidates):
     for r in existing:
         if r.get('kind') != 'static' or r.get('confirmed'):
             kept.append(r)
-        elif not r.get('auto') and r.get('id') not in merged:
+        elif user_owned(r) or (not r.get('auto') and r.get('id') not in merged):
             kept.append(r)
-    blockers = [_box(r) for r in kept if r.get('kind') == 'static' and (r.get('confirmed') or not r.get('enabled', True))]
+    blockers = [_box(r) for r in kept if r.get('kind') == 'static' and (r.get('confirmed') or user_owned(r))]
     taken = {r.get('id') for r in kept}
     out = list(kept)
     n = 0
