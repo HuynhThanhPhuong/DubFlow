@@ -485,6 +485,23 @@ def sample_frames(ffmpeg, source, width, height, duration, target_width=640, ste
     return frames, [i / fps for i in range(len(frames))], scale
 
 
+def exclude_boxes(track, regions):
+    """(x, y, w, h) boxes the logo detector must skip: subtrack segments + band, subtitle regions + their union."""
+    exclude = [(int(s['x0']), int(s['y0']), int(s['x1'] - s['x0']), int(s['y1'] - s['y0'])) for s in (track or {}).get('segments', [])
+               if s.get('x1', 0) > s.get('x0', 0) and s.get('y1', 0) > s.get('y0', 0)]
+    if exclude and (track or {}).get('band'):
+        # glyph strokes at the centre of a line are persistent edges too: also skip the band over the lines' x range
+        left, right = min(e[0] for e in exclude), max(e[0] + e[2] for e in exclude)
+        exclude.append((left, int(track['band'][0]), right - left, int(track['band'][1] - track['band'][0])))
+    subs = [(int(r['x']), int(r['y']), int(r['width']), int(r['height'])) for r in regions or []
+            if r.get('kind') == 'subtitle' and r.get('width', 0) > 0 and r.get('height', 0) > 0]
+    if subs:
+        exclude.extend(subs)
+        x0, y0 = min(b[0] for b in subs), min(b[1] for b in subs)
+        exclude.append((x0, y0, max(b[0] + b[2] for b in subs) - x0, max(b[1] + b[3] for b in subs) - y0))
+    return exclude
+
+
 def logos(directory, request):
     """Logo / fixed-text candidates -> logo-candidates.json, merged into regions.json (user decisions are kept)."""
     from logo_detect import apply_candidates, detect_static, merge_candidates, user_owned
@@ -494,14 +511,9 @@ def logos(directory, request):
     if not frames:
         raise RuntimeError(translate_message('Could not read frames for logo detection'))
     track = read(directory/'subtrack.json', {}) or {}
-    exclude = [(int(s['x0']), int(s['y0']), int(s['x1'] - s['x0']), int(s['y1'] - s['y0'])) for s in track.get('segments', [])
-               if s.get('x1', 0) > s.get('x0', 0) and s.get('y1', 0) > s.get('y0', 0)]
-    if exclude and track.get('band'):
-        # glyph strokes at the centre of a line are persistent edges too: also skip the band over the lines' x range
-        left, right = min(e[0] for e in exclude), max(e[0] + e[2] for e in exclude)
-        exclude.append((left, int(track['band'][0]), right - left, int(track['band'][1] - track['band'][0])))
-    detected = detect_static(frames, times, duration, exclude, scale)
     regions = read(directory/'regions.json', []) or []
+    exclude = exclude_boxes(track, regions)
+    detected = detect_static(frames, times, duration, exclude, scale)
     # OCR "static" fragments; anything the user touched (confirmed, disabled, translated) or the detector made is not input
     fragments = [r for r in regions if r.get('kind') == 'static' and not r.get('auto') and not r.get('confirmed') and not user_owned(r)]
     candidates = merge_candidates(detected, fragments, duration)

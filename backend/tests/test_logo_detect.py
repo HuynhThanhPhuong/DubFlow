@@ -60,6 +60,15 @@ class DetectStaticTest(unittest.TestCase):
         self.assertAlmostEqual(r['end'], 61., delta=2.1)
         self.assertLess(r['presence'], .8)
 
+    def test_intermittent_pattern_is_one_candidate(self):
+        frames, times = _sequence(n=60, logo=lambda i: 2 <= i <= 22 or 30 <= i <= 50)
+        found = detect_static(frames, times, 120., [], SCALE)
+        self.assertEqual(len(found), 1, found)
+        r = found[0]
+        self.assertAlmostEqual(r['start'], 3., delta=2.1)
+        self.assertAlmostEqual(r['end'], 101., delta=2.1)
+        self.assertLess(r['presence'], .8)
+
     def test_still_shot_is_not_a_logo(self):
         frames, times = _sequence(still=True)
         self.assertEqual(detect_static(frames, times, 80., [], SCALE), [])
@@ -267,6 +276,38 @@ class LogosStageTest(unittest.TestCase):
             (d / 'subtrack.json').write_text(json.dumps(dict(version=1, segments=[dict(s=0, e=30, x0=40, y0=30, x1=260, y1=100, text='x')])))
             engine_cli.logos(d, dict(ffmpeg=ff, source=str(src), width=640, height=360, duration=30., source_hash='abc'))
             self.assertEqual(json.loads((d / 'regions.json').read_text(encoding='utf-8')), [])
+
+
+class ExcludeBoxesTest(unittest.TestCase):
+    def setUp(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+
+    def test_subtitle_regions_and_their_union_are_excluded(self):
+        import engine_cli
+        regions = [dict(kind='subtitle', x=100, y=300, width=50, height=20), dict(kind='subtitle', x=400, y=310, width=60, height=40),
+                   dict(kind='static', x=0, y=0, width=10, height=10)]
+        got = engine_cli.exclude_boxes({}, regions)
+        self.assertEqual(got, [(100, 300, 50, 20), (400, 310, 60, 40), (100, 300, 360, 50)])
+
+    def test_track_segments_and_band(self):
+        import engine_cli
+        track = dict(segments=[dict(x0=10, y0=20, x1=60, y1=40), dict(x0=0, y0=0, x1=0, y1=0)], band=[15, 45])
+        self.assertEqual(engine_cli.exclude_boxes(track, []), [(10, 20, 50, 20), (10, 15, 50, 30)])
+        self.assertEqual(engine_cli.exclude_boxes(None, None), [])
+
+
+@unittest.skipUnless(cv2 is not None, 'cv2 not available')
+class SubtitleExcludedDetectTest(unittest.TestCase):
+    def test_pattern_inside_subtitle_region_is_not_detected(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        frames, times = _sequence()
+        ex = engine_cli.exclude_boxes({}, [dict(kind='subtitle', x=40, y=30, width=220, height=60)])
+        self.assertEqual(detect_static(frames, times, 80., ex, SCALE), [])
 
 
 class PipelineHookTest(unittest.TestCase):

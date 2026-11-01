@@ -121,10 +121,10 @@ def detect_static(frames, times, duration, exclude, scale):
             else:
                 run = [int(i), int(i)]
                 runs.append(run)
-        for a, b in runs:
-            start, end = max(0., float(times[a]) - WIDEN), min(float(duration), float(times[b]) + WIDEN)
-            if end > start:
-                out.append(dict(box, start=round(start, 3), end=round(end, 3)))
+        # one candidate per component: first run's start to last run's end, presence is the total fraction
+        start, end = max(0., float(times[runs[0][0]]) - WIDEN), min(float(duration), float(times[runs[-1][1]]) + WIDEN)
+        if end > start:
+            out.append(dict(box, start=round(start, 3), end=round(end, 3)))
     return sorted(out, key=lambda r: (r['x'], r['y'], r['start']))
 
 
