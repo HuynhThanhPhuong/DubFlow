@@ -2,6 +2,7 @@
 
 Gemini được làm và thử thật trước. OpenAI và Anthropic hiện chỉ được kiểm thử
 bằng HTTP giả (httpx.MockTransport), chưa chạy với key thật.
+Tham số `thinking` chỉ có tác dụng với Gemini; openai và anthropic bỏ qua.
 """
 from __future__ import annotations
 
@@ -56,12 +57,34 @@ class Provider(Protocol):
     def list_models(self) -> list[str]: ...
 
 
-def _parse_json(text: str) -> dict | None:
+def _loads_dict(text: str) -> dict | None:
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _parse_json(text: str) -> dict | None:
+    """Parse JSON; chịu được rào ```json và chữ thừa quanh object."""
+    text = (text or '').strip()
+    data = _loads_dict(text)
+    if data is not None:
+        return data
+    m = re.match(r'^```[a-zA-Z]*\s*(.*?)\s*```$', text, re.S)
+    if m:
+        data = _loads_dict(m.group(1))
+        if data is not None:
+            return data
+    a, b = text.find('{'), text.rfind('}')
+    return _loads_dict(text[a:b + 1]) if 0 <= a < b else None
+
+
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _seconds(value) -> float | None:
@@ -88,8 +111,20 @@ class _Base:
                  client: httpx.Client | None, default_base: str):
         self.key, self.model, self.thinking = key, model, thinking
         self.base = (base_url or default_base).rstrip('/')
+        self._owns_client = client is None
         self.client = client or httpx.Client(timeout=TIMEOUT)
         self.label = LABELS[self.name]
+
+    def close(self) -> None:
+        """Đóng client do provider tự tạo (client truyền vào thì giữ nguyên)."""
+        if self._owns_client:
+            self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def _headers(self) -> dict:
         raise NotImplementedError
@@ -97,7 +132,7 @@ class _Base:
     def _send(self, method: str, path: str, **kw) -> httpx.Response:
         try:
             resp = self.client.request(method, self.base + path, headers=self._headers(), **kw)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
             raise ProviderError(f'Không kết nối được tới {self.label}. Kiểm tra mạng rồi thử lại.') from None
         if resp.status_code >= 400:
             self._raise(resp)
@@ -144,7 +179,7 @@ class GeminiProvider(_Base):
                 daily = daily or any('PerDay' in str(v.get('quotaId', '')) for v in d.get('violations', []) or [])
         if daily:
             raise QuotaExhausted('Đã hết hạn mức Gemini trong ngày. Thử lại vào ngày mai hoặc đổi key/model.')
-        raise RateLimited('Gemini đang giới hạn tốc độ (429).', retry)
+        raise RateLimited('Gemini đang giới hạn tốc độ (429).', retry if retry is not None else _header_seconds(resp))
 
     def generate(self, system, user, schema, max_output_tokens):
         cfg = {'responseMimeType': 'application/json', 'responseJsonSchema': schema,
@@ -157,18 +192,24 @@ class GeminiProvider(_Base):
                 'generationConfig': cfg}
         out = self._send('POST', f'/v1beta/models/{self.model}:generateContent', json=body)
         js = _json_or_empty(out)
+        block = (js.get('promptFeedback') or {}).get('blockReason')
+        if block:
+            raise ProviderError(f'Gemini từ chối nội dung: {block}')
         cand = (js.get('candidates') or [{}])[0]
+        if cand.get('finishReason') in ('SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION'):
+            raise ProviderError(f"Gemini từ chối nội dung: {cand['finishReason']}")
         parts = (cand.get('content') or {}).get('parts') or []
-        text = ''.join(p.get('text', '') for p in parts if not p.get('thought'))
+        text = ''.join(p.get('text') or '' for p in parts if isinstance(p, dict) and not p.get('thought'))
         u = js.get('usageMetadata') or {}
-        usage = Usage(int(u.get('promptTokenCount', 0)), int(u.get('candidatesTokenCount', 0)),
-                      int(u.get('thoughtsTokenCount', 0)))
+        usage = Usage(_int(u.get('promptTokenCount')), _int(u.get('candidatesTokenCount')),
+                      _int(u.get('thoughtsTokenCount')))
         return Reply(_parse_json(text), text, cand.get('finishReason') == 'MAX_TOKENS', usage)
 
     def list_models(self):
         js = _json_or_empty(self._send('GET', '/v1beta/models', params={'pageSize': 1000}))
-        return [m['name'].removeprefix('models/') for m in js.get('models', [])
-                if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        return [m['name'].removeprefix('models/') for m in js.get('models') or []
+                if isinstance(m, dict) and isinstance(m.get('name'), str)
+                and 'generateContent' in (m.get('supportedGenerationMethods') or [])]
 
 
 class OpenAIProvider(_Base):
@@ -196,12 +237,12 @@ class OpenAIProvider(_Base):
         choice = (js.get('choices') or [{}])[0]
         text = (choice.get('message') or {}).get('content') or ''
         u = js.get('usage') or {}
-        usage = Usage(int(u.get('prompt_tokens', 0)), int(u.get('completion_tokens', 0)))
+        usage = Usage(_int(u.get('prompt_tokens')), _int(u.get('completion_tokens')))
         return Reply(_parse_json(text), text, choice.get('finish_reason') == 'length', usage)
 
     def list_models(self):
         js = _json_or_empty(self._send('GET', '/v1/models'))
-        return [m['id'] for m in js.get('data', []) if 'id' in m]
+        return [m['id'] for m in js.get('data') or [] if isinstance(m, dict) and isinstance(m.get('id'), str)]
 
 
 class AnthropicProvider(_Base):
@@ -220,17 +261,18 @@ class AnthropicProvider(_Base):
                            'input_schema': schema}],
                 'tool_choice': {'type': 'tool', 'name': 'submit_translation'}}
         js = _json_or_empty(self._send('POST', '/v1/messages', json=body))
-        block = next((b for b in js.get('content', []) if b.get('type') == 'tool_use'), None)
+        blocks = [b for b in js.get('content') or [] if isinstance(b, dict)]
+        block = next((b for b in blocks if b.get('type') == 'tool_use'), None)
         data = block.get('input') if block and isinstance(block.get('input'), dict) else None
         text = json.dumps(data, ensure_ascii=False) if data is not None else ''.join(
-            b.get('text', '') for b in js.get('content', []) if b.get('type') == 'text')
+            b.get('text') or '' for b in blocks if b.get('type') == 'text')
         u = js.get('usage') or {}
-        usage = Usage(int(u.get('input_tokens', 0)), int(u.get('output_tokens', 0)))
+        usage = Usage(_int(u.get('input_tokens')), _int(u.get('output_tokens')))
         return Reply(data, text, js.get('stop_reason') == 'max_tokens', usage)
 
     def list_models(self):
         js = _json_or_empty(self._send('GET', '/v1/models', params={'limit': 1000}))
-        return [m['id'] for m in js.get('data', []) if 'id' in m]
+        return [m['id'] for m in js.get('data') or [] if isinstance(m, dict) and isinstance(m.get('id'), str)]
 
 
 def make_provider(name: str, key: str, model: str, *, thinking: str = 'default',

@@ -6,12 +6,13 @@ import httpx
 from dubflow.translate_api import (ProviderError, QuotaExhausted, RateLimited, Usage,
                                    make_provider)
 
+KEY = 'SECRET-xyz-123'
 SCHEMA = {'type': 'object', 'properties': {'a': {'type': 'string'}}}
 
 
 def gem(handler, model='m1', **kw):
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return make_provider('gemini', 'K', model, client=client, **kw)
+    return make_provider('gemini', KEY, model, client=client, **kw)
 
 
 def ok_body(parts, finish='STOP'):
@@ -29,9 +30,8 @@ class TranslateApiTest(unittest.TestCase):
             return httpx.Response(200, json=ok_body([{'text': '{"a":"x"}'}]))
         gem(h).generate('SYS', 'USR', SCHEMA, 500)
         self.assertIn('/v1beta/models/m1:generateContent', seen['url'])
-        self.assertEqual(seen['key'], 'K')
-        self.assertNotIn('K=', seen['url'])
-        self.assertNotIn('key', seen['url'].lower())
+        self.assertEqual(seen['key'], KEY)
+        self.assertNotIn(KEY, seen['url'])
         cfg = seen['body']['generationConfig']
         self.assertEqual(cfg['responseJsonSchema'], SCHEMA)
         self.assertEqual(cfg['maxOutputTokens'], 500)
@@ -62,18 +62,69 @@ class TranslateApiTest(unittest.TestCase):
         with self.assertRaises(QuotaExhausted):
             self._err429('GenerateRequestsPerDayPerProjectPerModel').generate('s', 'u', SCHEMA, 10)
 
-    def test_gemini_401_message_has_no_key(self):
-        with self.assertRaises(ProviderError) as c:
-            gem(lambda req: httpx.Response(401, json={})).generate('s', 'u', SCHEMA, 10)
-        self.assertNotIn('K', str(c.exception).replace('Key', ''))
+    def test_errors_never_leak_key(self):
+        def boom(req):
+            raise httpx.ConnectError('boom ' + KEY)
+        cases = [lambda r: httpx.Response(401, json={}), boom,
+                 lambda r: httpx.Response(429, json={'error': {'message': KEY}}),
+                 lambda r: httpx.Response(500, text=KEY)]
+        for handler in cases:
+            urls = []
+
+            def h(req, handler=handler):
+                urls.append(str(req.url))
+                return handler(req)
+            p = gem(h)
+            with self.assertRaises(ProviderError) as c:
+                p.generate('s', 'u', SCHEMA, 10)
+            self.assertNotIn(KEY, str(c.exception))
+            self.assertNotIn(KEY, repr(c.exception))
+            self.assertNotIn(KEY, repr(p))
+            self.assertFalse(any(KEY in u for u in urls))
 
     def test_network_error_message(self):
         def h(req):
-            raise httpx.ConnectError('boom K')
+            raise httpx.ConnectError('boom')
         with self.assertRaises(ProviderError) as c:
             gem(h).generate('s', 'u', SCHEMA, 10)
         self.assertIn('Không kết nối được tới', str(c.exception))
-        self.assertNotIn('boom', str(c.exception))
+
+    def test_invalid_url_is_provider_error(self):
+        p = make_provider('gemini', KEY, 'm1', base_url='http://bad host', client=httpx.Client())
+        with self.assertRaises(ProviderError):
+            p.generate('s', 'u', SCHEMA, 10)
+
+    def test_gemini_429_falls_back_to_retry_after_header(self):
+        p = gem(lambda r: httpx.Response(429, headers={'retry-after': '9'}, json={}))
+        with self.assertRaises(RateLimited) as c:
+            p.generate('s', 'u', SCHEMA, 10)
+        self.assertEqual(c.exception.retry_after, 9.0)
+
+    def test_gemini_block_reason_raises(self):
+        p = gem(lambda r: httpx.Response(200, json={'promptFeedback': {'blockReason': 'SAFETY'}}))
+        with self.assertRaises(ProviderError) as c:
+            p.generate('s', 'u', SCHEMA, 10)
+        self.assertIn('Gemini từ chối nội dung: SAFETY', str(c.exception))
+
+    def test_null_usage_and_malformed_models(self):
+        body = ok_body([{'text': '{}'}])
+        body['usageMetadata'] = {'promptTokenCount': None, 'candidatesTokenCount': 2}
+        self.assertEqual(gem(lambda r: httpx.Response(200, json=body)).generate('s', 'u', SCHEMA, 1).usage, Usage(0, 2, 0))
+        js = {'models': ['x', {'name': None}, {'name': 'models/a', 'supportedGenerationMethods': ['generateContent']}]}
+        self.assertEqual(gem(lambda r: httpx.Response(200, json=js)).list_models(), ['a'])
+
+    def test_fenced_and_prose_json_is_parsed(self):
+        for text in ('```json\n{"a":"x"}\n```', 'Đây là kết quả: {"a":"x"} xong.'):
+            r = gem(lambda req, t=text: httpx.Response(200, json=ok_body([{'text': t}]))).generate('s', 'u', SCHEMA, 1)
+            self.assertEqual(r.data, {'a': 'x'})
+
+    def test_close_only_owned_client(self):
+        shared = httpx.Client()
+        make_provider('gemini', KEY, 'm', client=shared).close()
+        self.assertFalse(shared.is_closed)
+        with make_provider('gemini', KEY, 'm') as p:
+            pass
+        self.assertTrue(p.client.is_closed)
 
     def test_gemini_thinking_config_by_model(self):
         def cfg(model, thinking):
@@ -108,9 +159,9 @@ class TranslateApiTest(unittest.TestCase):
             seen['auth'], seen['body'], seen['url'] = req.headers['authorization'], json.loads(req.content), str(req.url)
             return httpx.Response(200, json={'choices': [{'message': {'content': '{"a":"x"}'}, 'finish_reason': 'length'}],
                                              'usage': {'prompt_tokens': 5, 'completion_tokens': 6}})
-        p = make_provider('openai', 'K', 'gpt', client=httpx.Client(transport=httpx.MockTransport(h)))
+        p = make_provider('openai', KEY, 'gpt', client=httpx.Client(transport=httpx.MockTransport(h)))
         r = p.generate('s', 'u', SCHEMA, 99)
-        self.assertEqual(seen['auth'], 'Bearer K')
+        self.assertEqual(seen['auth'], 'Bearer ' + KEY)
         self.assertTrue(seen['url'].endswith('/v1/chat/completions'))
         self.assertEqual(seen['body']['max_completion_tokens'], 99)
         self.assertEqual(seen['body']['response_format']['json_schema']['name'], 'dubflow_translation')
@@ -120,7 +171,7 @@ class TranslateApiTest(unittest.TestCase):
 
     def test_openai_quota_and_retry_after(self):
         def mk(code, hdr=None):
-            return make_provider('openai', 'K', 'gpt', client=httpx.Client(transport=httpx.MockTransport(
+            return make_provider('openai', KEY, 'gpt', client=httpx.Client(transport=httpx.MockTransport(
                 lambda req: httpx.Response(429, headers=hdr or {}, json={'error': {'code': code}}))))
         with self.assertRaises(QuotaExhausted):
             mk('insufficient_quota').generate('s', 'u', SCHEMA, 1)
@@ -135,9 +186,9 @@ class TranslateApiTest(unittest.TestCase):
             seen['h'], seen['body'] = req.headers, json.loads(req.content)
             return httpx.Response(200, json={'content': [{'type': 'tool_use', 'input': {'a': 'x'}}],
                                              'stop_reason': 'max_tokens', 'usage': {'input_tokens': 3, 'output_tokens': 4}})
-        p = make_provider('anthropic', 'K', 'claude', client=httpx.Client(transport=httpx.MockTransport(h)))
+        p = make_provider('anthropic', KEY, 'claude', client=httpx.Client(transport=httpx.MockTransport(h)))
         r = p.generate('s', 'u', SCHEMA, 77)
-        self.assertEqual(seen['h']['x-api-key'], 'K')
+        self.assertEqual(seen['h']['x-api-key'], KEY)
         self.assertEqual(seen['h']['anthropic-version'], '2023-06-01')
         self.assertEqual(seen['body']['tool_choice'], {'type': 'tool', 'name': 'submit_translation'})
         self.assertEqual(seen['body']['tools'][0]['input_schema'], SCHEMA)
