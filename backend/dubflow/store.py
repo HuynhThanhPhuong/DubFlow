@@ -104,6 +104,11 @@ class Store:
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
         return task_id
 
+    def active_tasks(self):
+        with self.connect() as db:
+            rows = db.execute("SELECT job_id,action,state FROM tasks WHERE state IN ('pending','running')").fetchall()
+        return [dict(r) for r in rows]
+
     def claim_next(self):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')

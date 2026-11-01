@@ -65,7 +65,10 @@ LEGACY_FIELDS = ('translation_mode', 'translation_num_ctx', 'translation_model',
 
 def preferences(store, settings):
     defaults = Preferences(output_dir=str(settings.root / 'outputs')).model_dump()
-    stored = {k: v for k, v in (store.get_record('settings','main') or {}).items() if k not in LEGACY_FIELDS}
+    record = store.get_record('settings','main') or {}
+    stored = {k: v for k, v in record.items() if k not in LEGACY_FIELDS}
+    if len(stored) != len(record):  # purge the old plaintext key and fields at first load
+        store.put_record('settings','main',stored)
     defaults.update(stored)
     return Preferences(**defaults).model_dump()
 

@@ -189,8 +189,9 @@ class TranslateJobTest(unittest.TestCase):
     def test_rate_limited_backoff_and_give_up(self):
         waits = []
         f = Fake(script=[RateLimited('429')] * 4)
-        with self.assertRaises(RateLimited):
-            run(self.d, make_items(3), fake=f, sleep=waits.append)
+        out = run(self.d, make_items(3), fake=f, sleep=waits.append)
+        self.assertEqual(out.error, '429')
+        self.assertEqual(out.texts, {})
         self.assertEqual(waits, [10, 30, 60])
 
     def test_cost_cap_pauses_before_exceeding(self):

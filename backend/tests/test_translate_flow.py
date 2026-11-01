@@ -298,6 +298,32 @@ class RunTests(Base):
         codes = [f['code'] for f in self.client.get(self.base + '/quality').json()['flags']]
         self.assertNotIn('READ_TOO_FAST', codes)
 
+    def test_provider_error_midrun_keeps_paid_chunks(self):
+        self.configure(max_output_tokens=256)
+        cues = [dict(id=f'c{i}', start=i * 3, end=i * 3 + 2, speaker='A', original=LONG, text='') for i in range(6)]
+        self.make_job(cues=cues, regions=[])
+        fake = Fake(error=ProviderError('Key Gemini không hợp lệ hoặc không có quyền dùng model gemini-x.'), fail_on_call=2)
+        job = self.run_translate(fake)
+        done = [i for i, t in self.cue_texts().items() if t]
+        self.assertTrue(0 < len(done) < 6, done)
+        self.assertEqual(job['status'], 'awaiting_review')
+        self.assertTrue(any('Key Gemini không hợp lệ' in w for w in job['warnings']))
+        self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)
+        self.assertNotIn(KEY, json.dumps(job))
+
+    def test_second_translate_while_queued_is_409_and_keeps_request(self):
+        self.configure()
+        self.make_job()
+        self.assertEqual(self.client.post(self.base + '/translate', json={'scope': 'all'}).status_code, 200)
+        r = self.client.post(self.base + '/translate', json={'scope': 'missing'})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(p.read(self.folder / 'translate-request.json')['scope'], 'all')
+
+    def test_legacy_key_purged_on_first_load(self):
+        self.store.put_record('settings', 'main', dict(output_dir=str(self.root / 'out'), translation_api_key='legacy-secret', translation_mode='api'))
+        self.client.get('/api/settings')
+        self.assertNotIn('legacy-secret', json.dumps(self.store.get_record('settings', 'main')))
+
     def test_prepare_never_calls_api(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory = Path(d)

@@ -477,6 +477,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
     @app.post('/api/jobs/{job_id}/translate')
     def translate_job(job_id: str, body: TranslateRequest | None = None):
         job = writable(job_id)
+        if any(t['job_id'] == job_id and t['action'] == 'translate' and t['state'] in ('pending', 'running') for t in store.active_tasks()):
+            raise HTTPException(409, 'Đang dịch video này.')
         body = body or TranslateRequest()
         prefs, folder = translate_preflight(job, body.scope)
         if not translate_run.collect_items(folder, body.scope):
@@ -485,8 +487,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
         atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap))
         try:
             return dispatch(job_id, 'translate')
-        except HTTPException:
-            request.unlink(missing_ok=True)
+        except HTTPException as exc:
+            if exc.status_code != 409:  # 409 means another dispatch owns the request file
+                request.unlink(missing_ok=True)
             raise
 
     @app.get('/api/jobs/{job_id}/review')

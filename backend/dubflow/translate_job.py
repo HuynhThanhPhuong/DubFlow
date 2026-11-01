@@ -111,6 +111,7 @@ class Outcome:
     usage: Usage
     cost_usd: float | None
     paused: str | None  # None | 'quota' | 'cost_cap'
+    error: str | None = None  # lỗi provider giữa chừng; phần đã dịch vẫn nằm trong texts
 
 
 def _payload_item(it: Item, mode: str, prefs) -> dict:
@@ -391,12 +392,11 @@ def run_translation(directory: Path, items: list[Item], mode: str, prefs, provid
         run.execute()
     except ProviderError as e:
         error = str(e)
-        raise
     finally:
         _atomic_json(run.dir / CONTEXT_FILE, run.context)
         run.log(error)
     return Outcome(run.texts, run.failed, run.context, run.requests, run.usage,
-                   run.spent if run.paid else None, run.paused)
+                   run.spent if run.paid else None, run.paused, error)
 
 
 class RateLimiter:

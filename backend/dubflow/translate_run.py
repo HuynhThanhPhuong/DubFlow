@@ -133,15 +133,18 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
         limiter = RateLimiter(Path(settings.data_dir) / RATE_FILE, prefs.rate_rpm, prefs.rate_rpd, scope=f'{name}/{model}')
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow)
-    except ProviderError as exc:
+    except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
         return dict(warnings=[scrub(str(exc), key)])
     finally:
         if provider is not None:
             provider.close()
-    check_cancel()
-    _add_usage(folder, name, model, mode, outcome)
+    # Kết quả đã trả tiền luôn được lưu, kể cả khi người dùng vừa hủy.
     apply_outcome(folder, items, outcome, scope, terminology)
+    _add_usage(folder, name, model, mode, outcome)
+    check_cancel()
     warnings = []
+    if outcome.error:
+        warnings.append(scrub(outcome.error, key))
     if outcome.paused == 'quota':
         warnings.append(f'Tạm dừng – hết hạn mức ngày của {label}. Đã dịch {len(outcome.texts)}/{len(items)} câu; '
                         'bấm "Dịch tiếp" khi hạn mức được làm mới.')
