@@ -27,19 +27,30 @@ def silent_wav(path, seconds=.5):
         audio.writeframes(b'\0\0' * int(48000 * seconds))
 
 
+def tone_wav(path, seconds=3., amplitude=8000):
+    import array
+    import math
+    samples = array.array('h', (int(amplitude * math.sin(2 * math.pi * 220 * n / 48000)) for n in range(int(48000 * seconds))))
+    with wave.open(str(path), 'wb') as audio:
+        audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(48000)
+        audio.writeframes(samples.tobytes())
+
+
 class Rig:
     """A job directory plus a stub for pipeline.engine that passes lines according to `policy(engine, cue_index)`."""
 
-    def __init__(self, test, mode='tm', texts=('Xin chào', 'Tạm biệt'), voice_ref=None, policy=lambda engine, i: False):
+    def __init__(self, test, mode='tm', texts=('Xin chào', 'Tạm biệt'), voice_ref=None, policy=lambda engine, i: False, crash=(),
+                 ref_seconds=3., ref_amplitude=8000):
         self.test = test
         self.policy = policy
+        self.crash = set(crash)  # stages whose engine() call fails like a crashed subprocess
         self.calls = []        # (stage, cue indexes, count)
         self.payloads = []     # (stage, deep-copied payload)
         tmp = tempfile.TemporaryDirectory(dir=p.ROOT)
         test.addCleanup(tmp.cleanup)
         self.dir = d = Path(tmp.name)
-        silent_wav(d / 'ref.wav')
-        silent_wav(d / 'primer.wav')
+        tone_wav(d / 'ref.wav', ref_seconds, ref_amplitude)
+        tone_wav(d / 'primer.wav')
         cues = [dict(id=str(i + 1), start=i * 1., end=i * 1. + 1., speaker='A', original='原文', text=t) for i, t in enumerate(texts)]
         job = dict(source_path='source.mp4', mode=mode)
         if mode == 'tm':
@@ -56,6 +67,8 @@ class Rig:
         tasks = payload.get('tasks')
         self.calls.append((name, [t['i'] for t in tasks] if tasks else None, payload.get('count')))
         self.payloads.append((name, copy.deepcopy(payload)))
+        if name in self.crash:
+            raise p.NeedsReview(f'{name} unavailable or failed (exit 1); see {name}.log (no model downloads attempted)')
         if name == 'refs':
             p.write(directory / 'speaker-refs.json', dict(A=dict(path=str(directory / 'ref.wav'), text='lời gốc của người nói', hash='x')))
         if name == 'pick':
@@ -162,6 +175,150 @@ class FailureTests(unittest.TestCase):
         report = p.read(rig.dir / 'voice-report.json')  # the report is kept for the failed run too
         self.assertEqual([line['engine'] for line in report['lines']], [None, 'omnivoice', None])
         self.assertFalse((rig.dir / 'manifest.json').exists())
+
+
+class CrashIsolationTests(unittest.TestCase):
+    def test_a_crashed_primary_does_not_stop_the_fallback(self):
+        rig = Rig(self, crash={'gen_omni'}, policy=lambda engine, i: engine == 'voxcpm2')
+        rig.run()
+        self.assertEqual(rig.calls, [('gen_omni', [0, 1], 4), ('gen', [0, 1], 4), ('pick', [0, 1], 4)])  # the crashed engine is not retried
+        report = p.read(rig.dir / 'voice-report.json')
+        self.assertEqual([line['engine'] for line in report['lines']], ['voxcpm2', 'voxcpm2'])
+        self.assertIn('gen_omni', report['errors']['omnivoice'])
+        self.assertEqual([row['engine'] for row in p.read(rig.dir / 'manifest.json')['lines']], ['voxcpm2', 'voxcpm2'])
+
+    def test_a_crashed_fallback_keeps_the_primary_takes(self):
+        rig = Rig(self, mode='dub', crash={'gen_omni'}, policy=lambda engine, i: engine == 'voxcpm2' and i == 0)
+        with self.assertRaises(p.NeedsReview) as caught:
+            rig.run()
+        self.assertIn('dòng 2', str(caught.exception))
+        self.assertEqual([line['engine'] for line in p.read(rig.dir / 'voice-report.json')['lines']], ['voxcpm2', None])
+
+    def test_both_crashing_names_both_causes_in_vietnamese(self):
+        rig = Rig(self, crash={'gen_omni', 'gen'})
+        with self.assertRaises(p.NeedsReview) as caught:
+            rig.run()
+        message = str(caught.exception)
+        self.assertIn('dòng 1, 2', message)
+        self.assertIn('omnivoice: Bước gen_omni không khả dụng', message)
+        self.assertIn('voxcpm2: Bước gen không khả dụng', message)
+        self.assertIn('Đã thử: omnivoice rồi voxcpm2', message)
+
+    def test_message_names_only_the_engines_that_ran(self):
+        rig = Rig(self, texts=('Xin chào',))
+        rig.settings.fallback_takes = 0
+        with self.assertRaises(p.NeedsReview) as caught:
+            rig.run()
+        message = str(caught.exception)
+        self.assertIn('Đã thử: omnivoice.', message)
+        self.assertNotIn('voxcpm2', message)
+        self.assertNotIn('Lỗi', message)
+
+    def test_cancellation_is_not_swallowed_as_an_engine_failure(self):
+        rig = Rig(self)
+        def cancel(name, *a, **k):
+            raise p.Cancelled('Pipeline cancelled')
+        with patch.object(p, 'probe', return_value=dict(duration=4, width=320, height=240)), patch.object(p, 'engine', side_effect=cancel):
+            with self.assertRaises(p.Cancelled):
+                p.synthesize(rig.dir, rig.settings, lambda *a: None)
+
+
+class DubReferenceTests(unittest.TestCase):
+    def test_short_or_quiet_speaker_reference_skips_omnivoice_and_says_so(self):
+        for label, kwargs, reason in (('short', dict(ref_seconds=1.2), 'chỉ dài'), ('quiet', dict(ref_amplitude=100), 'quá nhỏ')):
+            with self.subTest(label):
+                rig = Rig(self, mode='dub', texts=('Xin chào',), **kwargs)
+                with self.assertRaises(p.NeedsReview) as caught:
+                    rig.run()
+                self.assertNotIn('gen_omni', [c[0] for c in rig.calls])
+                self.assertIn('Đã thử: voxcpm2.', str(caught.exception))
+                line = p.read(rig.dir / 'voice-report.json')['lines'][0]
+                self.assertIn(reason, line['skipped']['omnivoice'])
+                self.assertEqual(line['takes']['omnivoice'], 0)
+
+    def test_usable_reference_keeps_omnivoice_and_reports_no_skip(self):
+        rig = Rig(self, mode='dub', texts=('Xin chào',), policy=lambda engine, i: engine == 'omnivoice')
+        rig.run()
+        line = p.read(rig.dir / 'voice-report.json')['lines'][0]
+        self.assertNotIn('skipped', line)
+        self.assertEqual(line['engine'], 'omnivoice')
+
+    def test_missing_transcript_is_reported_as_skipped(self):
+        rig = Rig(self, mode='dub', texts=('Xin chào',))
+        original = rig.stage
+        def no_text(name, directory, *a, **k):
+            original(name, directory, *a, **k)
+            if name == 'refs':
+                p.write(directory / 'speaker-refs.json', dict(A=dict(path=str(directory / 'ref.wav'), text='', hash='x')))
+        with patch.object(p, 'probe', return_value=dict(duration=4, width=320, height=240)), patch.object(p, 'engine', side_effect=no_text):
+            with self.assertRaises(p.NeedsReview):
+                p.synthesize(rig.dir, rig.settings, lambda *a: None)
+        self.assertIn('lời gốc', p.read(rig.dir / 'voice-report.json')['lines'][0]['skipped']['omnivoice'])
+
+
+class SettingsWiringTests(unittest.TestCase):
+    def test_saved_take_budgets_reach_the_settings_synthesize_reads(self):
+        from dubflow.config import Settings
+        from dubflow.preferences import effective_settings, Preferences
+        class Store:
+            def get_record(self, kind, name): return dict(max_takes=12, fallback_takes=0)
+            def put_record(self, *a): pass
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            cfg = effective_settings(Store(), Settings(data_dir=Path(d)))
+            self.assertEqual((cfg.max_takes, cfg.fallback_takes), (12, 0))
+            self.assertEqual(Preferences(output_dir=str(Path(d).resolve())).fallback_takes, 8)  # default
+
+    def test_budget_of_zero_disables_the_fallback(self):
+        rig = Rig(self, texts=('Xin chào',))
+        rig.settings.max_takes, rig.settings.fallback_takes = 4, 0
+        with self.assertRaises(p.NeedsReview):
+            rig.run()
+        self.assertEqual({c[0] for c in rig.calls}, {'gen_omni', 'pick'})
+
+    def test_preferences_validate_the_range(self):
+        from dubflow.preferences import Preferences
+        for bad in (-1, 25):
+            with self.assertRaises(ValueError):
+                Preferences(output_dir=str(p.ROOT), fallback_takes=bad)
+        self.assertEqual(Preferences(output_dir=str(p.ROOT), fallback_takes=0).fallback_takes, 0)
+
+
+class VoiceRefreshTests(unittest.TestCase):
+    def rig(self):
+        import json
+        rig = Rig(self, voice_ref=dict(path='ref.wav', text='reference', hash='stale'), policy=lambda engine, i: True)
+        voices = rig.dir / 'voices'
+        voices.mkdir()
+        tone_wav(voices / 'v.wav')
+        (voices / 'v.json').write_text(json.dumps(dict(ref_audio=str(voices / 'v.wav'), ref_text='lời mẫu', num_step=64, pronounce={'KOC': 'cây ô ci'})), encoding='utf-8')
+        p.write(rig.dir / 'job.json', dict(p.read(rig.dir / 'job.json'), voice_id='system-v'))
+        rig.settings.system_voices, rig.settings.data_dir = voices, rig.dir / 'data'
+        return rig
+
+    def test_tm_rereads_the_voice_and_keeps_job_and_manifest_in_step(self):
+        rig = self.rig()
+        p.write(rig.dir / 'cues.json', [dict(id='1', start=0, end=1, speaker='A', original='x', text='Anh KOC')])
+        rig.run()
+        omni = rig.tasks('gen_omni')[0]['params']
+        self.assertEqual((omni['num_step'], omni['text']), (64, 'Anh cây ô ci'))
+        job = p.read(rig.dir / 'job.json')
+        self.assertEqual(job['voice_ref']['omni'], dict(num_step=64))
+        self.assertEqual(job['voice_ref']['text'], 'lời mẫu')
+        manifest = p.read(rig.dir / 'manifest.json')
+        self.assertEqual(manifest['voice_ref'], job['voice_ref'])
+        # the worker rewrites job.json from the store (stale record) before each task; context() still hands render the fresh one
+        p.write(rig.dir / 'job.json', dict(job, voice_ref=dict(path='ref.wav', text='reference', hash='stale')))
+        with patch.object(p, 'probe', return_value=dict(duration=4, width=320, height=240)):
+            self.assertEqual(p.context(rig.dir, rig.settings)[1]['voice_ref'], manifest['voice_ref'])
+
+    def test_without_voice_id_or_a_found_voice_the_stored_record_is_used(self):
+        rig = Rig(self, policy=lambda engine, i: True)  # SimpleNamespace settings, no voice_id
+        rig.run()
+        self.assertEqual(p.read(rig.dir / 'job.json')['voice_ref'], dict(path='ref.wav', text='reference', hash='ignored'))
+        rig = self.rig()
+        rig.settings.system_voices = rig.dir / 'nowhere'  # voice not found: keep the stored record
+        rig.run()
+        self.assertEqual(p.read(rig.dir / 'job.json')['voice_ref']['hash'], 'stale')
 
 
 class ReportTests(unittest.TestCase):
@@ -320,10 +477,18 @@ class PickTests(unittest.TestCase):
             self.assertEqual((take['engine'], take['exact'], take['short_rule']), ('omnivoice', True, False))
             self.assertEqual(p.read(directory / 'state.json')['k']['accepted']['engine'], 'omnivoice')
 
-    def test_gen_omni_is_a_registered_stage(self):
+    def test_main_dispatches_gen_omni_through_the_stage_map(self):
         import engine_cli
-        self.assertTrue(callable(engine_cli.gen_omni))
-        self.assertIn("gen_omni=gen_omni", Path(engine_cli.__file__).read_text(encoding='utf-8'))
+        self.assertIs(engine_cli.STAGES['gen_omni'], engine_cli.gen_omni)
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory = Path(d)
+            p.write(directory / 'req.json', dict(tasks=[], count=4))
+            seen = []
+            stub = lambda folder, request: seen.append((folder, request))
+            with patch.dict(engine_cli.STAGES, gen_omni=stub), patch.object(sys, 'argv', ['engine_cli.py', 'gen_omni', str(directory), str(directory / 'req.json')]):
+                engine_cli.main()
+            self.assertEqual(seen, [(directory, dict(tasks=[], count=4))])
+            self.assertEqual(p.read(directory / 'runtime-metrics.json')[0]['stage'], 'gen_omni')
 
 
 if __name__ == '__main__':

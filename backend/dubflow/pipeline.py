@@ -165,10 +165,29 @@ def probe(source, settings):
             pass
     return info
 
+def refresh_voice(directory, job, settings):
+    """TM: re-read the voice so its OmniVoice settings and pronounce map are current (jobs saved before they existed
+    carry a bare reference). The fresh record is written back to job.json; synthesize and render both get it through
+    context(), so the manifest's voice_ref and the render's stale check always see the same record."""
+    if job.get('mode') != 'tm' or not job.get('voice_id') or not __package__:
+        return job
+    if getattr(settings, 'system_voices', None) is None or getattr(settings, 'data_dir', None) is None:
+        return job
+    from .voices import get_voice, voice_ref
+    try:
+        voice = get_voice(settings, job['voice_id'])
+        fresh = voice_ref(voice) if voice else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return job  # the stored record keeps working when the voice file cannot be read now
+    if fresh and fresh != job.get('voice_ref'):
+        job = dict(job, voice_ref=fresh)
+        write(directory/'job.json', job)
+    return job
+
 def context(job_dir, settings):
     directory = Path(job_dir).resolve()
     check_cancel(directory)
-    job = read(directory/'job.json', {})
+    job = refresh_voice(directory, read(directory/'job.json', {}), settings)
     source = Path(job['source_path'])
     if not source.is_absolute():
         source = directory/source
@@ -550,13 +569,42 @@ def take_rounds(budget):
     """Cumulative take counts, in rounds of 4 (4, 8, ... budget)."""
     return list(range(4,budget,4))+[budget] if budget > 0 else []
 
-def write_voice_report(directory, mode, order, cues, by_engine, chosen, state):
+def omni_reference_problem(path, ffmpeg='ffmpeg'):
+    """Why a dub speaker clip is unusable as an OmniVoice reference (under 2 s or RMS under 0.005), else None."""
+    import numpy as np
+    try:
+        rms, hop = audio_rms(path, ffmpeg)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return 'không đọc được mẫu giọng của người nói'
+    seconds = len(rms)*hop
+    if seconds < 2:
+        return f'mẫu giọng của người nói chỉ dài {seconds:.1f} giây (cần từ 2 giây)'
+    if float(np.sqrt((np.asarray(rms)**2).mean())) < .005:
+        return 'mẫu giọng của người nói quá nhỏ (RMS dưới 0.005)'
+    return None
+
+def write_voice_report(directory, mode, order, cues, by_engine, chosen, state, skipped=None, errors=None):
+    skipped = skipped or {}
     lines = []
     for i, cue in enumerate(cues):
         won = chosen[i]
         counts = {name:len(state.get(by_engine[name][i]['key'],{}).get('takes',{})) if i in by_engine[name] else 0 for name in order}
-        lines.append(dict(id=cue.get('id'), line=i+1, engine=won[0] if won else None, takes=counts, short_rule=bool(won and won[2].get('short_rule'))))
-    write(directory/'voice-report.json', dict(mode=mode, order=order, lines=lines))
+        line = dict(id=cue.get('id'), line=i+1, engine=won[0] if won else None, takes=counts, short_rule=bool(won and won[2].get('short_rule')))
+        if skipped.get(i):
+            line['skipped'] = skipped[i]  # engine -> why it was not used for this line
+        lines.append(line)
+    report = dict(mode=mode, order=order, lines=lines)
+    if errors:
+        report['errors'] = errors  # engine -> stage failure that ended its run
+    write(directory/'voice-report.json', report)
+
+def failure_message(failed, ran, errors):
+    """Vietnamese NeedsReview text: the lines, the engines that actually ran, and the cause when a stage crashed."""
+    text = f'Không tạo được giọng khớp lời cho dòng {", ".join(map(str,failed))}. '
+    text += 'Đã thử: '+' rồi '.join(ran)+'. ' if ran else 'Chưa chạy bộ giọng nào (kiểm tra số lần tạo trong Cài đặt). '
+    if errors:
+        text += 'Lỗi: '+'; '.join(f'{name}: {message}' for name,message in errors.items())+' '
+    return text+('Hãy kiểm tra nhật ký bước bị lỗi rồi tạo lại giọng.' if errors else 'Hãy sửa lời Việt của các dòng này rồi tạo lại giọng.')
 
 def synthesize(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
@@ -606,6 +654,8 @@ def synthesize(job_dir, settings, emit):
     asr_revision = model_identity(asr_model,asr_cache)
     engine_code = file_hash(Path(__file__).with_name('engine_cli.py'))
     by_engine = {name:{} for name in order}  # engine -> cue index -> task
+    skipped = {}  # cue index -> {engine: reason it is not used for that line}
+    checked = {}  # reference path -> problem (dub speaker clips are checked once)
     for i, cue in enumerate(cues):
         ref = ref_record(refs[cue['speaker']], directory)
         shared = dict(reference=ref['hash'], reference_text=ref.get('text',''), mode=mode, trim_version=1, asr_model=asr_model, asr_cache=asr_cache, normalization=1, asr_revision=asr_revision, loader_version=2, engine_code=engine_code)
@@ -615,7 +665,14 @@ def synthesize(job_dir, settings, emit):
         candidates = dict(
             voxcpm2=dict(shared, engine='voxcpm2', text=spoken, prompt=primer, steps=10, cfg=2., **model_params['voxcpm2'], **extra))
         # OmniVoice clones from the reference clip and its transcript; without a transcript it would load a second model to guess one.
-        if ref.get('text','').strip():
+        problem = None if ref.get('text','').strip() else 'thiếu lời gốc của mẫu giọng'
+        if problem is None and mode == 'dub':
+            if ref['path'] not in checked:
+                checked[ref['path']] = omni_reference_problem(ref['path'], getattr(settings,'ffmpeg','ffmpeg'))
+            problem = checked[ref['path']]
+        if problem:
+            skipped[i] = dict(omnivoice=problem)
+        else:
             candidates['omnivoice'] = dict(shared, engine='omnivoice', text=spoken, language='Vietnamese', **omni_cfg, **model_params['omnivoice'], **extra)
         for name, params in candidates.items():
             task = dict(i=i, cue=cue, ref=ref, prompt=primer if name == 'voxcpm2' else None, params=params, key=cache_key(params))
@@ -638,20 +695,31 @@ def synthesize(job_dir, settings, emit):
 
     limit = getattr(settings, 'max_takes', 24)
     budgets = [limit, getattr(settings, 'fallback_takes', 8)]
+    ran, errors = [], {}
     for name, budget in zip(order, budgets):
         for count in take_rounds(budget):
             pending = [t for i,t in by_engine[name].items() if not winner(i)]
             if not pending:
                 break
+            if name not in ran:
+                ran.append(name)
             emit('synthesizing', f'Generating {name} candidates 1–{count} of {budget}', 50+count)
-            engine(GEN_STAGE[name], directory, settings, {'tasks':pending,'count':count}, emit=emit)
-            engine('pick', directory, settings, {'tasks':pending,'count':count}, emit=emit)
-            state = read(directory/'state.json', {})
+            try:
+                engine(GEN_STAGE[name], directory, settings, {'tasks':pending,'count':count}, emit=emit)
+                engine('pick', directory, settings, {'tasks':pending,'count':count}, emit=emit)
+            except Cancelled:
+                raise
+            except NeedsReview as exc:  # a crashed engine must not stop the other one
+                errors[name] = str(exc)
+                emit('synthesizing', f'{name} lỗi, chuyển sang bộ giọng còn lại nếu còn dòng chưa đạt', 50+count)
+            state = read(directory/'state.json', {})  # pick saves every scored take, even when a later stage failed
+            if name in errors:
+                break
     chosen = [winner(i) for i in range(len(cues))]
-    write_voice_report(directory, mode, order, cues, by_engine, chosen, state)
+    write_voice_report(directory, mode, order, cues, by_engine, chosen, state, skipped, errors)
     failed = [i+1 for i,w in enumerate(chosen) if not w]
     if failed:
-        raise NeedsReview(f'Không tạo được giọng khớp lời cho dòng {", ".join(map(str,failed))} bằng cả hai bộ giọng ({" rồi ".join(order)}). Hãy sửa lời Việt của các dòng này rồi tạo lại giọng.')
+        raise NeedsReview(failure_message(failed, ran, errors))
     accepted = [w[2] for w in chosen]
     tasks = [w[1] for w in chosen]
     try:

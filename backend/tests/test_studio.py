@@ -142,14 +142,14 @@ class StudioTests(unittest.TestCase):
     def test_worker_uses_saved_settings_and_publishes_without_gpu(self):
         from dubflow.worker import run_task
         from dubflow.media import atomic_json
-        self.client.put('/api/settings',json={'resolution':'720p','max_takes':8,'original_gain':.15,'blur_original':False})
+        self.client.put('/api/settings',json={'resolution':'720p','max_takes':8,'fallback_takes':0,'original_gain':.15,'blur_original':False})
         j,f=self.job()
         atomic_json(f/'regions.json',[])
         atomic_json(f/'cues.json',[dict(id='a',start=0,end=1,speaker='m',original='你好',text='Xin chào')])
         self.app.state.store.update_job(j['id'],duration=3)
         def render(folder,cfg,emit):
             self.assertEqual(cfg.resolution,'720p')
-            self.assertEqual(cfg.max_takes,8)
+            self.assertEqual((cfg.max_takes,cfg.fallback_takes),(8,0))
             self.assertEqual(cfg.original_gain,.15)
             self.assertFalse(cfg.blur_original)
             (folder/'output.mp4').write_bytes(b'new render')

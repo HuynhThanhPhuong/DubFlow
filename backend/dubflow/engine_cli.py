@@ -870,13 +870,16 @@ def erase(directory, request):
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 
+STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)  # 'speakers' is added lazily by main
+
+
 def main():
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')
     stage,directory,request=sys.argv[1:4]
     request=read(request)
     if request.get('asr_cache'):
         os.environ['HF_HOME']=request['asr_cache']
-    stages=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)
+    stages=dict(STAGES)
     if stage=='speakers':
         from speakers import speakers
         stages['speakers']=speakers
