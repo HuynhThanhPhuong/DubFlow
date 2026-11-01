@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { PointerEvent as RPointerEvent } from "react";
 import { Check, Trash2, X } from "lucide-react";
 import type { Region } from "./types";
@@ -25,6 +25,8 @@ export function RegionOverlay({
   drawing,
   onChange,
   onDrawEnd,
+  selectedId,
+  onSelect,
 }: {
   regions: Region[];
   rect: VideoRect;
@@ -36,9 +38,16 @@ export function RegionOverlay({
   drawing: boolean;
   onChange: (regions: Region[]) => void;
   onDrawEnd: () => void;
+  selectedId?: string | null;
+  onSelect?: (id: string | null) => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [own, setOwn] = useState<string | null>(null);
+  const selected = selectedId !== undefined ? selectedId : own;
+  const setSelected = (id: string | null) => {
+    setOwn(id);
+    onSelect?.(id);
+  };
   // Live box while dragging (source px); committed through onChange on pointer-up.
   const [draft, setDraft] = useState<{ id: string | null; box: Box } | null>(
     null,
@@ -70,7 +79,6 @@ export function RegionOverlay({
     onChange(regions.map((r) => (r.id === id ? { ...r, ...change } : r)));
 
   const statics = regions.filter((r) => r.kind === "static" && r.enabled);
-  const current = regions.find((r) => r.id === selected && r.kind === "static");
 
   const drawDown = (e: RPointerEvent<HTMLDivElement>) => {
     if (!ready) return;
@@ -155,9 +163,18 @@ export function RegionOverlay({
           const d = toDisplay(box, rect, videoWidth, videoHeight);
           const pending = !!r.auto && !r.confirmed;
           const isSel = selected === r.id;
+          const frameBottom = rect.top + rect.height;
+          const lower = d.top + d.height - rect.top > rect.height * 0.7;
+          const ax = Math.max(
+            rect.left,
+            Math.min(d.left + d.width - 46, rect.left + rect.width - 46),
+          );
+          const below = Math.min(d.top + d.height + 3, frameBottom - 22);
+          const above = Math.max(rect.top, d.top - 18 - 24);
+          const ay = lower ? above : below;
           return (
+            <Fragment key={r.id}>
             <div
-              key={r.id}
               className={`region-box ${pending ? "pending" : "confirmed"}${isSel ? " selected" : ""}`}
               data-testid={`region-box-${r.id}`}
               style={{
@@ -173,7 +190,7 @@ export function RegionOverlay({
               }}
             >
               <span
-                className="region-label"
+                className={`region-label${d.top - rect.top < 16 ? " inside" : ""}`}
                 onPointerDown={(e) => {
                   if (drawing) return;
                   e.stopPropagation();
@@ -182,8 +199,25 @@ export function RegionOverlay({
               >
                 {r.label || "Vùng che"}
               </span>
+              {isSel &&
+                !drawing &&
+                CORNERS.map((c) => (
+                  <i
+                    key={c}
+                    className={`region-handle ${c}`}
+                    data-testid={`handle-${c}`}
+                    onPointerDown={(e) => cornerDown(e, r, c)}
+                    onPointerMove={cornerMove}
+                    onPointerUp={cornerUp}
+                    onPointerCancel={cornerUp}
+                  />
+                ))}
+            </div>
               {pending && !drawing && (
-                <span className="region-actions">
+                <span
+                  className="region-actions"
+                  style={{ left: ax, top: ay }}
+                >
                   <button
                     type="button"
                     className="region-btn ok"
@@ -209,20 +243,7 @@ export function RegionOverlay({
                   </button>
                 </span>
               )}
-              {isSel &&
-                !drawing &&
-                CORNERS.map((c) => (
-                  <i
-                    key={c}
-                    className={`region-handle ${c}`}
-                    data-testid={`handle-${c}`}
-                    onPointerDown={(e) => cornerDown(e, r, c)}
-                    onPointerMove={cornerMove}
-                    onPointerUp={cornerUp}
-                    onPointerCancel={cornerUp}
-                  />
-                ))}
-            </div>
+            </Fragment>
           );
         })}
       {drawing && ready && (
@@ -245,27 +266,37 @@ export function RegionOverlay({
           )}
         </div>
       )}
-      {current && !drawing && (
-        <div className="region-editor" onPointerDown={(e) => e.stopPropagation()}>
-          <TimeEditor
-            key={current.id}
-            region={current}
-            duration={duration}
-            onCommit={(change) => patch(current.id, change)}
-          />
-          <button
-            type="button"
-            className="region-btn no"
-            aria-label="Xoá vùng đã chọn"
-            onClick={() => {
-              onChange(regions.filter((r) => r.id !== current.id));
-              setSelected(null);
-            }}
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-      )}
+    </div>
+  );
+}
+
+export function RegionEditor({
+  region,
+  duration,
+  onChange,
+  onDelete,
+}: {
+  region: Region;
+  duration: number;
+  onChange: (change: { start: number; end: number }) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="region-editor">
+      <TimeEditor
+        key={region.id}
+        region={region}
+        duration={duration}
+        onCommit={onChange}
+      />
+      <button
+        type="button"
+        className="region-btn no"
+        aria-label="Xoá vùng đã chọn"
+        onClick={onDelete}
+      >
+        <Trash2 size={14} />
+      </button>
     </div>
   );
 }

@@ -11,7 +11,7 @@ import {
 import WaveSurfer from "wavesurfer.js";
 import type { Cue, Job, Region } from "./types";
 import { api, ApiError, mediaUrl } from "./api";
-import { RegionOverlay } from "./RegionOverlay";
+import { RegionEditor, RegionOverlay } from "./RegionOverlay";
 import { isBusy, playerSource, time } from "./helpers";
 import { Button, Empty } from "./ui";
 import { SubtitlePreview, fitVideoRect } from "./SubtitlePreview";
@@ -43,6 +43,7 @@ export function Player({
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [drawing, setDrawing] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const togglePlay = async () => {
     if (!video.current) return;
@@ -86,6 +87,9 @@ export function Player({
   const videoW = job.width || video.current?.videoWidth || 0;
   const videoH = job.height || video.current?.videoHeight || 0;
   const regionDuration = job.duration || video.current?.duration || 0;
+  const selectedRegion = regions.find(
+    (r) => r.id === selectedId && r.kind === "static" && r.enabled,
+  );
   const saveSeq = useRef(0);
   const saveRegions = (rows: Region[]) => {
     setRegions(rows);
@@ -235,6 +239,8 @@ export function Player({
             currentTime={now}
             playing={playing}
             drawing={drawing}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
             onChange={saveRegions}
             onDrawEnd={() => setDrawing(false)}
           />
@@ -269,6 +275,23 @@ export function Player({
         >
           {drawing ? "Xong vẽ" : "Vẽ vùng che"}
         </Button>
+        {!drawing && selectedRegion && (
+          <RegionEditor
+            region={selectedRegion}
+            duration={regionDuration}
+            onChange={(change) =>
+              saveRegions(
+                regions.map((r) =>
+                  r.id === selectedRegion.id ? { ...r, ...change } : r,
+                ),
+              )
+            }
+            onDelete={() => {
+              saveRegions(regions.filter((r) => r.id !== selectedRegion.id));
+              setSelectedId(null);
+            }}
+          />
+        )}
       </div>
       <div className="play-controls system-controls">
         <Button

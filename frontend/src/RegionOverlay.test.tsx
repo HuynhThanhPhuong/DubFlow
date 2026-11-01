@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RegionOverlay } from "./RegionOverlay";
+import { useState } from "react";
+import { RegionEditor, RegionOverlay } from "./RegionOverlay";
 import { SettingsDialog } from "./Dialogs";
 import { normalizeBox, toDisplay, toSource } from "./regionGeometry";
 import type { Job, Region } from "./types";
@@ -101,6 +102,24 @@ describe("RegionOverlay", () => {
   });
 });
 
+function Harness(p: React.ComponentProps<typeof RegionOverlay>) {
+  const [sel, setSel] = useState<string | null>(null);
+  const cur = p.regions.find((r) => r.id === sel);
+  return (
+    <>
+      <RegionOverlay {...p} selectedId={sel} onSelect={setSel} />
+      {cur && (
+        <RegionEditor
+          region={cur}
+          duration={p.duration}
+          onChange={(c) => p.onChange(p.regions.map((r) => (r.id === cur.id ? { ...r, ...c } : r)))}
+          onDelete={() => p.onChange(p.regions.filter((r) => r.id !== cur.id))}
+        />
+      )}
+    </>
+  );
+}
+
 describe("RegionOverlay review fixes", () => {
   const confirmed: Region = { ...auto, id: "c1", auto: false, confirmed: true, label: "Tay" };
   it("filters boxes by current time, keeping pending candidates when paused", () => {
@@ -113,11 +132,22 @@ describe("RegionOverlay review fixes", () => {
     expect(screen.getByText("Tay")).toBeTruthy();
   });
   it("clears the selection when the selected box is rejected", () => {
-    render(<RegionOverlay {...props} regions={[auto]} onChange={vi.fn()} />);
+    render(<Harness {...props} regions={[auto]} onChange={vi.fn()} />);
     fireEvent.pointerDown(screen.getByText("Logo"));
     expect(screen.getByText("Từ (s)")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Bỏ vùng/ }));
     expect(screen.queryByText("Từ (s)")).toBeNull();
+  });
+  it("renders the action buttons outside a small box, flipping above in the lower frame", () => {
+    const small = { ...auto, x: 100, y: 100, width: 40, height: 20 };
+    const { rerender } = render(<RegionOverlay {...props} regions={[small]} onChange={vi.fn()} />);
+    const btn = () => screen.getByRole("button", { name: /Giữ vùng/ }).parentElement as HTMLElement;
+    const box = screen.getByTestId("region-box-a1");
+    expect(box.contains(btn())).toBe(false);
+    // box bottom at display y = 60 + 120*0.5 = 120; actions top = 123 (below)
+    expect(parseFloat(btn().style.top)).toBeCloseTo(123, 0);
+    rerender(<RegionOverlay {...props} regions={[{ ...small, y: 1000 }]} onChange={vi.fn()} />);
+    expect(parseFloat(btn().style.top)).toBeLessThan(60 + 1000 * 0.5);
   });
   it("creates nothing when duration is 0", () => {
     const onChange = vi.fn();
@@ -129,7 +159,7 @@ describe("RegionOverlay review fixes", () => {
   });
   it("resizes by a corner handle and clamps to the frame", () => {
     const onChange = vi.fn();
-    render(<RegionOverlay {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
+    render(<Harness {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
     fireEvent.pointerDown(screen.getByText("Tay"));
     const se = screen.getByTestId("handle-se");
     fireEvent.pointerDown(se, { clientX: 0, clientY: 0, pointerId: 1 });
@@ -139,7 +169,7 @@ describe("RegionOverlay review fixes", () => {
   });
   it("commits time on blur and shows an error for invalid ranges", () => {
     const onChange = vi.fn();
-    render(<RegionOverlay {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
+    render(<Harness {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
     fireEvent.pointerDown(screen.getByText("Tay"));
     const to = screen.getByLabelText("Đến (s)");
     fireEvent.change(to, { target: { value: "3" } });
