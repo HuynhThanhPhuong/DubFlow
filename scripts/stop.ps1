@@ -2,7 +2,8 @@
 $dubRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $stateFile = Join-Path $dubRoot 'data\servers.json'
 if (-not (Test-Path -LiteralPath $stateFile)) { Write-Host 'Chưa có tiến trình do start.ps1 lưu lại.'; return }
-foreach ($saved in @(Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json)) {
+# PowerShell 5.1 emits a JSON array as one object; unroll it and skip malformed rows.
+foreach ($saved in @((Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json) | ForEach-Object { $_ } | Where-Object { $null -ne $_.id })) {
     $process = Get-Process -Id $saved.id -ErrorAction SilentlyContinue
     if (-not $process) { continue }
     $expected = if ($null -ne $saved.started_epoch) { [long]$saved.started_epoch } elseif ($saved.started -is [datetime]) { ([DateTimeOffset]$saved.started).ToUnixTimeSeconds() } else { ([DateTimeOffset]::Parse($saved.started)).ToUnixTimeSeconds() }

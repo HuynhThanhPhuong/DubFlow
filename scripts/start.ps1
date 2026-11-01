@@ -45,7 +45,7 @@ if ($Development) {
     $url = 'http://127.0.0.1:5173'
 }
 $stateFile = Join-Path $dubRoot 'data\servers.json'
-if (Test-Path -LiteralPath $stateFile) { $processes += @(Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json) }
+if (Test-Path -LiteralPath $stateFile) { $processes += @((Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json) | ForEach-Object { $_ } | Where-Object { $null -ne $_.id }) }
 ConvertTo-Json -InputObject @($processes) | Set-Content -LiteralPath $stateFile -Encoding utf8
 Write-Host "DubFlow: $url"
 Write-Host "Log: $logDir"
