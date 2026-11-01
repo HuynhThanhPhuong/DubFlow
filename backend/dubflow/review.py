@@ -11,9 +11,11 @@ _SAVE_LOCK=threading.RLock()
 if __package__:
     from .pipeline import read, write, cache_key, file_hash
     from .subtitle_style import overflows
+    from .textcheck import needs_translation
 else:
     from pipeline import read, write, cache_key, file_hash
     from subtitle_style import overflows
+    from textcheck import needs_translation
 
 STATE_FIELDS = ('characters', 'assignments', 'address_rules', 'scene_context', 'omissions')
 VOLATILE = {'status','asr_edits','take_url','take_path','path','delay','overrun'}
@@ -216,7 +218,7 @@ def quality_report(folder, job, state=None):
         if norm(c.get('original','')) not in texts:
             flag('ASR_OCR_CONFLICT',[c['id']], 'ASR và OCR có khác biệt; kiểm cả âm thanh và chữ, không tự chọn nguồn.')
     for r in regions:
-        if r.get('enabled') and r.get('kind')=='transient' and r.get('text','').strip() and not r.get('translation','').strip():
+        if r.get('enabled') and r.get('kind')=='transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip():
             flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} chưa có bản dịch.",'error')
     technical=not any(f['severity']=='error' for f in flags)
     unresolved=[f for f in flags if f['severity']=='review' and not f['resolved']]

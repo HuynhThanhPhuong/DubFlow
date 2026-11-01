@@ -213,6 +213,29 @@ class RunTests(Base):
         self.run_translate(Fake(), scope='all')
         self.assertEqual(self.client.get(self.base).json()['translation_usage']['requests'], 1)  # second run served from cache
 
+    def test_noise_region_not_sent_cjk_region_sent(self):
+        self.configure()
+        regions = [dict(id=i, kind='transient', enabled=True, text=t, translation='', x=0, y=0, width=10, height=10, start=0, end=3)
+                   for i, t in (('n1', '50'), ('n2', 'V'), ('k1', '小心'))]
+        self.make_job(regions=regions)
+        fake = Fake()
+        self.run_translate(fake)
+        sent = sorted(i for ids in fake.sent for i in ids)
+        self.assertIn('region:k1', sent)
+        self.assertNotIn('region:n1', sent)
+        self.assertNotIn('region:n2', sent)
+
+    def test_zero_request_run_keeps_usage_file(self):
+        self.configure()
+        self.make_job()
+        self.run_translate(Fake())
+        before = (self.folder / 'translation-usage.json').read_text(encoding='utf-8')
+        self.make_job(mode='dub')  # new job; reuse folder state below instead
+        self.folder = self.cfg.jobs_dir / self.jid
+        (self.folder / 'translation-usage.json').write_text(before, encoding='utf-8')
+        self.run_translate(Fake(error=ProviderError('hỏng')), scope='all')
+        self.assertEqual((self.folder / 'translation-usage.json').read_text(encoding='utf-8'), before)
+
     def test_no_key_never_calls_api(self):
         self.make_job()
         with patch('dubflow.translate_run.make_provider') as make:

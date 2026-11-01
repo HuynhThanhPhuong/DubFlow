@@ -15,8 +15,10 @@ import shutil
 
 if __package__:
     from .messages import translate_message
+    from .textcheck import needs_translation
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
+    from textcheck import needs_translation
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -411,7 +413,7 @@ def prepare(job_dir, settings, emit):
         load_state(directory)
         write(directory/'source-evidence.json',source_evidence(cues,read(directory/'regions.json',[])))
     # Translation never runs here: the user starts it (or types the text) after reviewing the source.
-    if any(not c.get('text','').strip() for c in cues):
+    if any(not c.get('text','').strip() and (not c.get('original','').strip() or needs_translation(c.get('original',''))) for c in cues):
         raise NeedsReview('Review source transcript and enter Vietnamese text in cues; offline manual translation is the default')
     if not cues:
         raise NeedsReview('No speech detected; add or import cues')
@@ -620,7 +622,7 @@ def render(job_dir, settings, emit):
     regions = (refine_text_regions(directory,source,meta,settings,emit)
                if getattr(settings,'blur_original',True) else read(directory/'regions.json', []))
     cues = read(directory/'cues.json', [])
-    if any(not c.get('text','').strip() for c in cues):
+    if any(not c.get('text','').strip() and (not c.get('original','').strip() or needs_translation(c.get('original',''))) for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
     mode = job.get('mode','dub')
     if job.get('export_kind'):
@@ -647,7 +649,7 @@ def render(job_dir, settings, emit):
             raise NeedsReview('Cue timing changed; synthesize placements again')
         # Captions follow source cue intervals; delayed speech placements must
         # not shift the replacement away from the original on-screen text.
-    if any(r.get('enabled') and r.get('kind') == 'transient' and r.get('text','').strip() and not r.get('translation','').strip() for r in regions):
+    if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip() for r in regions):
         raise NeedsReview('Có chữ xuất hiện thoáng qua chưa được dịch. Mở Tuỳ chỉnh vùng chữ để nhập lời Việt trước khi xuất.')
     (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height']),encoding='utf-8-sig')
     ff = getattr(settings,'ffmpeg','ffmpeg')

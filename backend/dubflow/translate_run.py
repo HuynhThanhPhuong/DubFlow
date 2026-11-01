@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .translate_api import LABELS, ProviderError, make_provider
+from .textcheck import needs_translation
 from .translate_job import Item, RateLimiter, plan_translation, run_translation
 
 REQUEST_FILE = 'translate-request.json'
@@ -58,10 +59,10 @@ def collect_items(folder: Path, scope: str) -> list[Item]:
     items: list[Item] = []
     for c in _read(folder / 'cues.json', []):
         zh = str(c.get('original') or '').strip()
-        if zh and (scope == 'all' or not str(c.get('text') or '').strip()):
+        if zh and needs_translation(zh) and (scope == 'all' or not str(c.get('text') or '').strip()):
             items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), str(c.get('speaker') or ''), 'cue'))
     for r in _read(folder / 'regions.json', []):
-        if not (r.get('enabled') and r.get('kind') == 'transient' and str(r.get('text') or '').strip()):
+        if not (r.get('enabled') and r.get('kind') == 'transient' and str(r.get('text') or '').strip() and needs_translation(r.get('text'))):
             continue
         if scope == 'all' or not str(r.get('translation') or '').strip():
             items.append(Item(f"region:{r['id']}", str(r['text']).strip(), float(r['start']), float(r['end']), '', 'onscreen'))
@@ -74,6 +75,8 @@ def read_usage(folder: Path):
 
 
 def _add_usage(folder: Path, provider: str, model: str, mode: str, outcome) -> None:
+    if outcome.requests <= 0:
+        return  # không có request thành công: giữ nguyên số liệu cộng dồn, kể cả mode
     old = read_usage(folder) or {}
     cost = None
     if outcome.cost_usd is not None or old.get('cost_usd') is not None:

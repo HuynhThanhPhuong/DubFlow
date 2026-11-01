@@ -13,7 +13,8 @@ from typing import Protocol
 
 import httpx
 
-TIMEOUT = 180.0
+READ_TIMEOUT = 600.0
+TIMEOUT = httpx.Timeout(connect=15.0, read=READ_TIMEOUT, write=60.0, pool=15.0)
 GEMINI_BASE = 'https://generativelanguage.googleapis.com'
 OPENAI_BASE = 'https://api.openai.com'
 ANTHROPIC_BASE = 'https://api.anthropic.com'
@@ -132,6 +133,9 @@ class _Base:
     def _send(self, method: str, path: str, **kw) -> httpx.Response:
         try:
             resp = self.client.request(method, self.base + path, headers=self._headers(), **kw)
+        except httpx.TimeoutException:
+            raise ProviderError(f'{self.label} trả lời quá lâu (quá {int(READ_TIMEOUT)} giây). '
+                                'Thử lại, hoặc giảm mức suy nghĩ trong Cài đặt → Dịch.') from None
         except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
             raise ProviderError(f'Không kết nối được tới {self.label}. Kiểm tra mạng rồi thử lại.') from None
         if resp.status_code >= 400:
@@ -161,6 +165,8 @@ class GeminiProvider(_Base):
 
     def _thinking_config(self) -> dict | None:
         level = self.thinking
+        if level == 'default' and self.model.startswith('gemini-3'):
+            level = 'low'
         if level not in ('low', 'high'):
             return None
         if self.model.startswith('gemini-3'):

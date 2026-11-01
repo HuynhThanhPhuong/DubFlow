@@ -195,7 +195,7 @@ export function TranslationSettings({
           value={settings.thinking}
           onChange={(e) => set("thinking", e.target.value as StudioSettings["thinking"])}
         >
-          <option value="default">Mặc định</option>
+          <option value="default">Mặc định (thấp với Gemini 3)</option>
           <option value="low">Thấp</option>
           <option value="high">Cao</option>
         </select>

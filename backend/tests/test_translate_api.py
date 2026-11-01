@@ -89,6 +89,19 @@ class TranslateApiTest(unittest.TestCase):
             gem(h).generate('s', 'u', SCHEMA, 10)
         self.assertIn('Không kết nối được tới', str(c.exception))
 
+    def test_timeout_has_own_message(self):
+        def h(req):
+            raise httpx.ReadTimeout('slow ' + KEY)
+        with self.assertRaises(ProviderError) as c:
+            gem(h).generate('s', 'u', SCHEMA, 10)
+        self.assertIn('trả lời quá lâu (quá 600 giây)', str(c.exception))
+        self.assertNotIn('Không kết nối', str(c.exception))
+        self.assertNotIn(KEY, str(c.exception))
+
+    def test_default_client_timeout_values(self):
+        t = make_provider('gemini', KEY, 'm').client.timeout
+        self.assertEqual((t.connect, t.read, t.write, t.pool), (15.0, 600.0, 60.0, 15.0))
+
     def test_invalid_url_is_provider_error(self):
         p = make_provider('gemini', KEY, 'm1', base_url='http://bad host', client=httpx.Client())
         with self.assertRaises(ProviderError):
@@ -140,6 +153,7 @@ class TranslateApiTest(unittest.TestCase):
         self.assertEqual(cfg('gemini-2.5-flash', 'low'), {'thinkingBudget': 1024})
         self.assertEqual(cfg('gemini-2.5-flash', 'high'), {'thinkingBudget': -1})
         self.assertIsNone(cfg('gemini-2.5-flash', 'default'))
+        self.assertEqual(cfg('gemini-3.1-flash', 'default'), {'thinkingLevel': 'low'})
 
     def test_gemini_list_models_filters_generate_content(self):
         js = {'models': [{'name': 'models/a', 'supportedGenerationMethods': ['generateContent']},

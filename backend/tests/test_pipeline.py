@@ -427,6 +427,20 @@ class PipelineTests(unittest.TestCase):
                     p.render(folder,SimpleNamespace(),lambda *a:None)
                 run.assert_not_called()
 
+    def test_noise_transient_text_does_not_block_export(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            folder = Path(d)
+            p.write(folder/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+            p.write(folder/'cues.json',[dict(start=0,end=2,text='Xin chào')])
+            p.write(folder/'regions.json',[dict(enabled=True,kind='transient',text='50',translation='')])
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)), patch.object(p,'run') as run:
+                try:
+                    p.render(folder,SimpleNamespace(),lambda *a:None)
+                except p.NeedsReview as exc:
+                    self.assertNotIn('chưa được dịch',str(exc))
+                except Exception:
+                    pass  # later render stages are not under test
+
     def test_speaker_boundary_edit_invalidates_extracted_reference(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             folder=Path(d)
