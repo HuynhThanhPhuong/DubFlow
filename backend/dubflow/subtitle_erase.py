@@ -177,22 +177,31 @@ class LamaSession:
     def __init__(self, session, provider, model):
         self.session, self.provider, self.model = session, provider, model
         self.cpu = None
-        self.events = []
+        self.on_cpu = False  # after one CUDA failure the rest of the run stays on CPU
+        self.events = []  # first few messages only
+        self.event_count = 0
 
     def get_inputs(self):
         return self.session.get_inputs()
 
+    def _note(self, text):
+        self.event_count += 1
+        if len(self.events) < 3:
+            self.events.append(text)
+
     def run(self, outputs, feeds):
-        try:
-            return self.session.run(outputs, feeds)
-        except Exception as exc:  # noqa: BLE001 - any runtime failure (CUDA OOM, driver reset) falls back
-            if self.provider != 'cuda':
-                raise
-            self.events.append(f'LaMa CUDA run failed, retried on CPU ({str(exc)[:120]})')
-            if self.cpu is None:
-                import onnxruntime as ort
-                self.cpu = ort.InferenceSession(str(self.model), providers=['CPUExecutionProvider'])
-            return self.cpu.run(outputs, feeds)
+        if not self.on_cpu:
+            try:
+                return self.session.run(outputs, feeds)
+            except Exception as exc:  # noqa: BLE001 - any runtime failure (CUDA OOM, driver reset) falls back
+                if self.provider != 'cuda':
+                    raise
+                self._note(f'LaMa CUDA run failed, using CPU for the rest of the run ({str(exc)[:120]})')
+                self.on_cpu = True
+        if self.cpu is None:
+            import onnxruntime as ort
+            self.cpu = ort.InferenceSession(str(self.model), providers=['CPUExecutionProvider'])
+        return self.cpu.run(outputs, feeds)
 
 
 def open_lama(model, dll_dir=None):

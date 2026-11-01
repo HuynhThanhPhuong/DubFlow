@@ -231,6 +231,28 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(current(fill='lama+smooth',provider='cuda'))               # some frames fell back to the smooth fill
             self.assertFalse(current(fill='lama',provider='cpu',cuda_dll_dir=str(dll),runtime_fallback=True))  # CUDA run failed mid-way
 
+    def test_persistent_fallback_does_not_re_erase_until_the_environment_changes(self):
+        seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            (d/'source.mp4').write_bytes(b'src')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=seg))
+            model,dll=d/'lama.onnx',d/'cuda'
+            model.write_bytes(b'm'); dll.mkdir()
+            (d/'clean.mp4').write_bytes(b'clean')
+            st=model.stat()
+            def env(**over):
+                return dict(dict(model=str(model),size=st.st_size,mtime_ns=st.st_mtime_ns,ort='1.0',cuda_dll_dir=str(dll)),**over)
+            def current(**over):
+                p.write(d/'erase.json',self._stamp(d,**over))
+                return p.erase_current(d,d/'source.mp4',dict(fps=25),settings=SimpleNamespace(lama_model=str(model),cuda_dll_dir=str(dll)))
+            self.assertTrue(current(fill='smooth',provider=None,lama_env=env()))                 # corrupt model / broken ort: no loop
+            self.assertTrue(current(fill='lama+smooth',provider='cuda',runtime_fallback=True,lama_env=env()))
+            self.assertTrue(current(fill='lama',provider='cpu',runtime_fallback=True,lama_env=env(ort='9.9')))  # ort change: unknown, keep
+            self.assertFalse(current(fill='smooth',provider=None,lama_env=env(size=st.st_size+1)))  # model replaced
+            self.assertFalse(current(fill='smooth',provider=None,lama_env=env(model=None,size=None,mtime_ns=None)))  # model appeared
+            self.assertFalse(current(fill='lama',provider='cpu',lama_env=env(cuda_dll_dir=None)))  # CUDA folder configured now
+
     def test_erase_knobs_are_compared_and_old_stamps_mean_defaults(self):
         seg=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:

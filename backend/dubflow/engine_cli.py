@@ -627,6 +627,9 @@ def erase(directory, request):
     os.replace(out, directory/'clean.mp4')
     # a LaMa run that fell back at run time is recorded so erase_current re-runs it once LaMa works again
     runtime_events = list(getattr(lama, 'events', []) or [])
+    extra = getattr(lama, 'event_count', 0) - len(runtime_events)
+    if extra > 0:
+        runtime_events.append(f'... and {extra} more LaMa fallback event(s)')
     smooth_frames = style.get('lama_failed', 0)
     if smooth_frames:
         runtime_events.append(f'LaMa failed on {smooth_frames} frame(s), smooth fill used')
@@ -634,7 +637,16 @@ def erase(directory, request):
         print('WARNING: ' + runtime_events[0], file=sys.stderr, flush=True)
     fill = 'smooth' if lama is None else ('lama+smooth' if smooth_frames else 'lama')
     warnings = ([lama_warning] if lama_warning else []) + runtime_events[:3]
-    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill=fill,
+    try:
+        import onnxruntime
+        ort_version = onnxruntime.__version__
+    except Exception:  # noqa: BLE001
+        ort_version = 'missing'
+    mstat = Path(model).stat() if model and Path(model).is_file() else None
+    lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
+                    mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
+                    cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
+    write(directory/'erase.json', dict(version=5, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],

@@ -304,6 +304,15 @@ def erase_fell_back(done, settings):
     model, dll = getattr(settings, 'lama_model', None), getattr(settings, 'cuda_dll_dir', None)
     if not model or not Path(model).is_file():
         return False
+    env = done.get('lama_env')
+    if env is not None:
+        # new stamps: a weaker run is stale only when its environment changed (model file, CUDA folder); an onnxruntime
+        # version change cannot be seen from the backend and is treated as "unknown, keep", so a persistent failure does not loop
+        if not (done.get('runtime_fallback') or done.get('fill') != 'lama' or done.get('provider') == 'cpu'):
+            return False
+        st = Path(model).stat()
+        return not (env.get('model') == str(model) and env.get('size') == st.st_size and env.get('mtime_ns') == st.st_mtime_ns
+                    and env.get('cuda_dll_dir') == (str(dll) if dll else None))
     if done.get('runtime_fallback') or done.get('fill') != 'lama':
         return True
     return done.get('provider') == 'cpu' and bool(dll) and Path(dll).is_dir() and done.get('cuda_dll_dir') != str(dll)

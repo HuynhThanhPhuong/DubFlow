@@ -342,6 +342,28 @@ class LamaFallbackTest(unittest.TestCase):
         self.assertTrue((out[mask] == 100).all())
         self.assertTrue(wrapper.events and 'out of memory' in wrapper.events[0])
 
+    def test_after_one_cuda_failure_the_rest_of_the_run_stays_on_cpu(self):
+        from unittest.mock import patch
+        import onnxruntime as ort
+        from dubflow.subtitle_erase import LamaSession
+        failing = _Failing(RuntimeError('oom'))
+        runs = []
+        original = failing.run
+        failing.run = lambda *a: (runs.append(1), original(*a))[1]
+        wrapper = LamaSession(failing, 'cuda', 'm.onnx')
+        cpu = _FakeLama()
+        feeds = {'image': np.zeros((1, 3, LAMA_SIZE, LAMA_SIZE), np.float32), 'mask': np.zeros((1, 1, LAMA_SIZE, LAMA_SIZE), np.float32)}
+        with patch.object(ort, 'InferenceSession', return_value=cpu):
+            for _ in range(20):
+                wrapper.run(None, feeds)
+        self.assertEqual(len(runs), 1)  # CUDA tried once only
+        self.assertEqual(len(cpu.calls), 20)
+        self.assertEqual((len(wrapper.events), wrapper.event_count), (1, 1))
+        wrapper.events, wrapper.event_count = [], 0
+        for i in range(10):
+            wrapper._note(str(i))
+        self.assertEqual((len(wrapper.events), wrapper.event_count), (3, 10))  # capped list plus a count
+
     def test_cpu_run_failure_gives_smooth_fill_for_that_frame(self):
         frame, _clean, _text = _shadowed(_bg())
         h, w = frame.shape[:2]
