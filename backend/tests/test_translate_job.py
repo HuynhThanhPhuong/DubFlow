@@ -106,12 +106,22 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(out.failed, ['c1', 'c2', 'c3', 'c4', 'c5'])
         self.assertEqual(out.texts, {'c0': 'a'})
 
-    def test_truncated_reply_retries_only_missing_ids(self):
+    def test_truncated_reply_retries_missing_and_last_item(self):
         items = make_items(5)
-        f = Fake(script=[reply([{'id': 'c0', 'vi': 'a'}, {'id': 'c1', 'vi': 'b'}], truncated=True)])
+        f = Fake(script=[reply([{'id': 'c0', 'vi': 'a'}, {'id': 'c1', 'vi': 'b'}, {'id': 'c2', 'vi': 'Anh đang nó'}],
+                               truncated=True)])
         out = run(self.d, items, fake=f)
         self.assertEqual([i['id'] for i in f.calls[1]['items']], ['c2', 'c3', 'c4'])
         self.assertEqual(len(out.texts), 5)
+        self.assertEqual(out.texts['c2'], 'vi c2')
+        cache = json.loads((self.d / 'translation-cache-v2.json').read_text(encoding='utf-8'))
+        self.assertNotIn('Anh đang nó', json.dumps(cache, ensure_ascii=False))
+
+    def test_unknown_mode_raises_vietnamese_error(self):
+        with self.assertRaises(ValueError):
+            plan_translation(make_items(2), 'xyz', prefs())
+        with self.assertRaises(ValueError):
+            run(self.d, make_items(2), mode='xyz')
 
     def test_cache_hit_makes_no_request(self):
         items = make_items(8)
@@ -208,7 +218,7 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         text = logs[0].read_text(encoding='utf-8')
         self.assertNotIn(KEY, text)
-        self.assertEqual(json.loads(text)['prompt_version'], 'p3-1')
+        self.assertEqual(json.loads(text)['prompt_version'], 'p3-2')
 
     def test_vietsub_items_carry_max_chars(self):
         f = Fake()

@@ -8,14 +8,16 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .translate_api import ProviderError, QuotaExhausted, RateLimited, Usage
 
-PROMPT_VERSION = 'p3-1'
+PROMPT_VERSION = 'p3-2'
 CACHE_FILE = 'translation-cache-v2.json'
 CONTEXT_FILE = 'translation-context.json'
 RUNS_DIR = 'translation-runs'
@@ -26,6 +28,7 @@ SYSTEM_CHARS_PER_TOKEN = 4  # prompt hệ thống tiếng Việt/Anh: ~4 ký t�
 OUT_TOKENS_PER_ZH_CHAR = 2.2  # bản dịch Việt dài hơn ~2,2 token mỗi chữ Hán
 OUT_MIN_TOKENS = 12         # sàn đầu ra mỗi câu
 OUT_OVERHEAD = 12           # id và cú pháp JSON mỗi câu
+CONTEXT_RESERVE = 0.15      # chừa 15% ngân sách đầu vào cho bảng context tích lũy
 OUT_BUDGET = 0.6            # chỉ dùng 60% max_output_tokens cho bản dịch
 SPLIT_WINDOW = 0.15         # tìm khoảng lặng lớn nhất trong ±15% quanh điểm chia đều
 SYLLABLES_PER_SEC = 4.5
@@ -33,19 +36,31 @@ RATE_BACKOFF = (10, 30, 60)  # giây, khi 429 không có retry_after
 PACIFIC_FALLBACK = timezone(timedelta(hours=-8))
 
 SYSTEM_COMMON = (
-    'Bạn là biên dịch viên Trung - Việt cho video. Dịch sát nghĩa, tự nhiên, đúng văn phong Việt, '
-    'không thêm chú thích hay giải thích. Giữ nhất quán tên riêng, xưng hô và thuật ngữ theo bảng '
-    '"terminology" và "context". Mục kind="onscreen" là chữ hiện trên hình: dịch ngắn gọn. '
-    'Trả về JSON đúng schema: "items" gồm mọi id đầu vào, mỗi id đúng một lần với bản dịch "vi" không rỗng; '
-    '"context" là bảng tích lũy nhân vật, cách xưng hô và thuật ngữ (kế thừa bảng đã có, bổ sung mục mới).')
+    'Bạn là biên dịch viên Trung - Việt chuyên nghiệp cho video, viết tiếng Việt tự nhiên như người bản ngữ. '
+    'Dịch sát nghĩa nhưng không dịch từng chữ; không thêm ý, không bỏ ý.\n'
+    'ĐẦU VÀO là JSON gồm:\n'
+    '- "items": danh sách câu cần dịch. Mỗi câu có "id", "zh" (nguyên văn tiếng Trung), "dur" (độ dài câu, giây), '
+    '"speaker" (nhãn người nói; cùng nhãn là cùng một người), "kind" và giới hạn độ dài theo chế độ. '
+    '"kind" là "cue" (lời thoại/lời nói) hoặc "onscreen" (chữ hiện trên hình như biển hiệu, tiêu đề: dịch thật ngắn).\n'
+    '- "terminology": bảng thuật ngữ cố định của người dùng; BẮT BUỘC tuân theo.\n'
+    '- "context": bảng nhân vật, cách xưng hô và thuật ngữ đã tích lũy từ các phần trước; giữ nhất quán với bảng này.\n'
+    'ĐẦU RA là JSON đúng schema: mỗi "id" đầu vào có đúng một "vi", chép id nguyên văn. Không gộp hay tách câu, '
+    'không bỏ sót id, không thêm id lạ. Không ghi chú, không ngoặc giải thích, không phiên âm pinyin, không để chữ Hán.\n'
+    'XƯNG HÔ: suy ra quan hệ giữa các nhân vật (tuổi tác, vai vế, mức thân thiết) từ lời thoại rồi chọn đại từ tự nhiên '
+    '(anh/em, chị/em, cô/cháu, tôi/cậu, mày/tao khi thô lỗ...). Cùng một cặp người phải dùng cùng một cặp xưng hô '
+    'xuyên suốt video. Ghi lại vào context.address (from, to, xung, ho). Ghi tên nhân vật vào context.characters '
+    'và tên riêng/thuật ngữ vào context.glossary; tên người Trung Quốc dùng âm Hán-Việt trừ khi "terminology" nói khác. '
+    '"context" trả về là bảng đầy đủ (kế thừa bảng đã có, thêm mục mới); chưa có gì thì để mảng rỗng.\n'
+    'VÍ DỤ: vào {"id":"c1","zh":"你怎么才来？","dur":1.6,"speaker":"S1","kind":"cue","max_chars":24} '
+    'thì ra {"id":"c1","vi":"Sao giờ cậu mới đến?"}.')
 SYSTEM_BY_MODE = {
-    'vietsub': SYSTEM_COMMON + ' Chế độ phụ đề: ngắn gọn, đọc kịp; bản dịch mỗi câu không vượt quá '
-                               '"max_chars" ký tự.',
-    'tm': SYSTEM_COMMON + ' Chế độ thuyết minh: lời đọc tự nhiên của một giọng, độ dài khớp thời lượng '
-                          'câu, xấp xỉ "target_syllables" âm tiết.',
-    'dub': SYSTEM_COMMON + ' Chế độ lồng tiếng: lời thoại tự nhiên, độ dài khớp thời lượng câu, xấp xỉ '
-                           '"target_syllables" âm tiết; giữ giọng điệu và cách xưng hô riêng của từng '
-                           'nhân vật theo "speaker".',
+    'vietsub': SYSTEM_COMMON + '\nCHẾ ĐỘ PHỤ ĐỀ: "max_chars" là giới hạn cứng, tuyệt đối không vượt. '
+                               'Văn phong phụ đề: ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
+    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: viết lời dẫn đọc tự nhiên, mạch lạc, như một người kể chuyện; '
+                          'số âm tiết mỗi câu sát "target_syllables" (sai lệch trong ±15%).',
+    'dub': SYSTEM_COMMON + '\nCHẾ ĐỘ LỒNG TIẾNG: viết lời thoại nói được thành tiếng cho giọng của từng nhân vật theo '
+                           '"speaker", hợp tính cách và cảm xúc của họ (khẩu ngữ, ngắt nhịp tự nhiên); số âm tiết mỗi '
+                           'câu sát "target_syllables" (sai lệch trong ±15%).',
 }
 
 _STR = {'type': 'string'}
@@ -63,7 +78,7 @@ SCHEMA = {
         'items': {'type': 'array', 'items': {'type': 'object', 'properties': {
             'id': _STR, 'vi': _STR}, 'required': ['id', 'vi']}},
     },
-    'required': ['items'],
+    'required': ['context', 'items'],
 }
 CONTEXT_KEYS = {'characters': lambda e: e.get('name'), 'address': lambda e: (e.get('from'), e.get('to')),
                 'glossary': lambda e: e.get('zh')}
@@ -132,7 +147,7 @@ def _split(items: list[Item], mode, prefs, terminology) -> list[list[Item]]:
 
     def fits(part):
         i, o = _chunk_est(part, mode, prefs, terminology)
-        return o <= OUT_BUDGET * prefs.max_output_tokens and i <= prefs.max_input_tokens
+        return o <= OUT_BUDGET * prefs.max_output_tokens and i * (1 + CONTEXT_RESERVE) <= prefs.max_input_tokens
 
     if n < 2 or fits(items):
         return [items]
@@ -141,7 +156,8 @@ def _split(items: list[Item], mode, prefs, terminology) -> list[list[Item]]:
         cum.append(cum[-1] + _est_out(it))
     total = cum[-1]
     gap = lambda b: items[b].start - items[b - 1].end
-    k = 2
+    k = max(2, math.ceil(total / (OUT_BUDGET * prefs.max_output_tokens)))
+    hopeless = any(not fits([it]) for it in items)  # có câu đơn lẻ không bao giờ vừa: không tăng k
     while True:
         cuts, prev = [], 0
         for j in range(1, k):
@@ -154,7 +170,7 @@ def _split(items: list[Item], mode, prefs, terminology) -> list[list[Item]]:
             cuts.append(prev)
         edges = [0, *cuts, n]
         parts = [items[a:b] for a, b in zip(edges, edges[1:])]
-        if k >= n or all(fits(p) for p in parts):
+        if k >= n or hopeless or all(fits(p) for p in parts):
             return parts
         k += 1
 
@@ -163,8 +179,14 @@ def _cost(prefs, in_tokens: float, out_tokens: float) -> float:
     return in_tokens * prefs.price_in_per_mtok / 1e6 + out_tokens * prefs.price_out_per_mtok / 1e6
 
 
+def _need_mode(mode: str) -> None:
+    if mode not in SYSTEM_BY_MODE:
+        raise ValueError(f'Chế độ dịch không hợp lệ: {mode}. Chọn vietsub, tm hoặc dub.')
+
+
 def plan_translation(items: list[Item], mode: str, prefs, terminology: str = '') -> Plan:
     """Chỉ ước tính và chia phần, không gọi mạng."""
+    _need_mode(mode)
     chunks = _split(list(items), mode, prefs, terminology) if items else []
     est = [_chunk_est(c, mode, prefs, terminology) for c in chunks]
     tin, tout = sum(e[0] for e in est), sum(e[1] for e in est)
@@ -200,15 +222,18 @@ def _check(reply, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
     for r in rows:
         if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'] in wanted:
             seen.setdefault(r['id'], []).append(r.get('vi'))
+    last = next((r['id'] for r in reversed(rows) if isinstance(r, dict) and r.get('id') in seen), None)
     good = {}
     for i, vals in seen.items():
+        if reply.truncated and i == last:  # câu cuối của bản trả bị cắt có thể dở dang
+            continue
         if len(vals) == 1 and isinstance(vals[0], str) and vals[0].strip():
             good[i] = vals[0].strip()
     return good, [i for i in wanted if i not in good]
 
 
 def _atomic_json(path: Path, data) -> None:
-    tmp = path.with_name(path.name + '.tmp')
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
     tmp.replace(path)
 
@@ -228,6 +253,7 @@ class _Pause(Exception):
 
 class _Run:
     def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep):
+        _need_mode(mode)
         self.dir, self.mode, self.prefs, self.provider = Path(directory), mode, prefs, provider
         self.limiter, self.terminology, self.allow, self.sleep = limiter, terminology, allow_over_cap, sleep
         self.items = list(items)
