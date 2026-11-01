@@ -9,6 +9,7 @@ const genderName = (value: string) => ({male:"Nam",female:"Nữ",unknown:"Chưa 
 import type { Job, Voice } from "./types";
 import { Button, Empty, Modal } from "./ui";
 import { workspaceApi } from "./workspaceApi";
+import { TranslationSettings } from "./TranslationSettings";
 import type {
   Collection,
   CollectionInput,
@@ -969,9 +970,34 @@ export function VoicesPage({
   );
 }
 
+const KEY_PROVIDERS = ["gemini", "openai", "anthropic"] as const;
+function cleanKeys(value: StudioSettings): StudioSettings {
+  return {
+    ...value,
+    gemini_api_key: "",
+    openai_api_key: "",
+    anthropic_api_key: "",
+    clear_gemini_key: false,
+    clear_openai_key: false,
+    clear_anthropic_key: false,
+  };
+}
+// Chỉ gửi key khi người dùng đã nhập; không bao giờ gửi chuỗi rỗng.
+export function settingsPayload(settings: StudioSettings): Partial<StudioSettings> {
+  const data: Record<string, unknown> = { ...settings };
+  for (const name of KEY_PROVIDERS) {
+    delete data[`has_${name}_key`];
+    const key = String(data[`${name}_api_key`] ?? "").trim();
+    delete data[`${name}_api_key`];
+    if (data[`clear_${name}_key`]) data[`clear_${name}_key`] = true;
+    else delete data[`clear_${name}_key`];
+    if (key && !data[`clear_${name}_key`]) data[`${name}_api_key`] = key;
+  }
+  return data as Partial<StudioSettings>;
+}
 const settingsGroups = [
   ["output", "Nơi xuất video"],
-  ["translation", "Dịch tự động"],
+  ["translation", "Dịch"],
   ["defaults", "Giọng & phụ đề"],
   ["processing", "Xử lý"],
   ["general", "Giao diện & dữ liệu"],
@@ -995,7 +1021,7 @@ export function SettingsPage({
     setLoading(true);
     try {
       const result = await workspaceApi.settings();
-      setSettings({ ...result, translation_api_key: "" });
+      setSettings(cleanKeys(result));
     } catch (e) {
       onError(e);
     } finally {
@@ -1026,13 +1052,8 @@ export function SettingsPage({
   const save = async () => {
     if (!settings) return;
     await run(async () => {
-      const { has_api_key, translation_api_key, ...data } = settings;
-      void has_api_key;
-      const result = await workspaceApi.updateSettings({
-        ...data,
-        ...(translation_api_key?.trim() ? { translation_api_key } : {}),
-      });
-      const safe = { ...result, translation_api_key: "" };
+      const result = await workspaceApi.updateSettings(settingsPayload(settings));
+      const safe = cleanKeys(result);
       setSettings(safe);
       setDirty(false);
       onSaved?.(safe);
@@ -1043,7 +1064,6 @@ export function SettingsPage({
       | "organize_by_collection"
       | "export_srt"
       | "open_after_export"
-      | "auto_translate"
       | "blur_original",
     label: string,
     description?: string,
@@ -1204,112 +1224,7 @@ export function SettingsPage({
               </>
             )}
             {group === "translation" && (
-              <>
-                <div className="studio-notice">
-                  <strong>
-                    {settings.translation_mode === "manual"
-                      ? "Dịch thủ công"
-                      : settings.translation_mode === "api" &&
-                          (!settings.translation_api_url ||
-                            !settings.translation_api_model ||
-                            (!settings.has_api_key &&
-                              !settings.translation_api_key))
-                        ? "Thiếu cấu hình nhà cung cấp"
-                        : ['local','ollama'].includes(settings.translation_mode) ? "Dịch trên máy — cần duyệt kết quả" : "Chưa xác minh bộ dịch hoạt động"}
-                  </strong>
-                  <p>
-                    {settings.translation_mode === "manual"
-                      ? "Nhập SRT hoặc sửa lời Việt trong màn hình biên tập."
-                      : ['local','ollama'].includes(settings.translation_mode) ? "Dịch Trung → Việt trên máy. Kiểm tra cách xưng hô, tên riêng và ý nghĩa trước khi xuất." : "Lưu cấu hình không xác nhận kết nối API. Bộ dịch chỉ được gọi khi bạn xử lý video."}
-                  </p>
-                </div>
-                <Field label="Phương thức dịch" className="studio-settings-wide">
-                  <select
-                    value={settings.translation_mode}
-                    onChange={(e) =>
-                      set(
-                        "translation_mode",
-                        e.target.value as StudioSettings["translation_mode"],
-                      )
-                    }
-                  >
-                    <option value="manual">Nhập bản dịch / SRT thủ công</option>
-                    <option value="local">Model thư mục local — đối chứng từng câu</option>
-                    <option value="ollama">Ollama local — dịch có ngữ cảnh</option>
-                    <option value="api">API dịch — gửi văn bản</option>
-                  </select>
-                </Field>
-                {settings.translation_mode === "local" && (
-                  <>
-                    <Field label="Model dịch local" className="studio-settings-wide">
-                      <input
-                        value={settings.translation_model}
-                        onChange={(e) =>
-                          set("translation_model", e.target.value)
-                        }
-                      />
-                    </Field>
-                    <small>
-                      OPUS-MT Trung → Việt chạy trên CPU, không gửi lời thoại ra mạng. Bản dịch máy cần được duyệt trước khi xuất.
-                    </small>
-                  </>
-                )}
-                {settings.translation_mode === "ollama" && <>
-                  <Field label="Tên model đã cài trên Ollama local" className="studio-settings-wide"><input value={settings.translation_model} onChange={e=>set("translation_model",e.target.value)}/></Field>
-                  <Field label="Giới hạn ngữ cảnh"><select value={settings.translation_num_ctx||4096} onChange={e=>set("translation_num_ctx",Number(e.target.value))}><option value={4096}>4096 token</option><option value={8192}>8192 token — cần thêm RAM/VRAM</option></select></Field>
-                  <small>Chạy START-LOCAL-MODELS.cmd trước. Chỉ gọi máy này tại cổng 11439, không tự tải model, không phí API. Dùng bảng vai/xưng hô đã lưu trong Kiểm tra & duyệt.</small>
-                </>}
-                {settings.translation_mode === "api" && (
-                  <>
-                    <Field label="Địa chỉ API">
-                      <input
-                        type="url"
-                        value={settings.translation_api_url}
-                        onChange={(e) =>
-                          set("translation_api_url", e.target.value)
-                        }
-                        placeholder="https://…/v1/chat/completions"
-                      />
-                    </Field>
-                    <Field label="Model API">
-                      <input
-                        value={settings.translation_api_model}
-                        onChange={(e) =>
-                          set("translation_api_model", e.target.value)
-                        }
-                      />
-                    </Field>
-                    <Field label="API key mới" className="studio-settings-wide">
-                      <input
-                        type="password"
-                        autoComplete="new-password"
-                        value={settings.translation_api_key ?? ""}
-                        placeholder={
-                          settings.has_api_key
-                            ? "Đã lưu khóa · để trống để giữ nguyên"
-                            : "Chưa lưu khóa API"
-                        }
-                        onChange={(e) =>
-                          set("translation_api_key", e.target.value)
-                        }
-                      />
-                    </Field>
-                    <small>
-                      Không hiển thị khóa đã lưu. Có thể phát sinh phí khi bạn
-                      bật dịch và xử lý video.
-                    </small>
-                  </>
-                )}
-                {check(
-                  "auto_translate",
-                  "Tự nhận dạng và dịch khi tải video lên",
-                  "Tải video mới lên sẽ tự vào hàng đợi nhận dạng và dịch; bạn vẫn có thể sửa lời Việt trước khi xuất.",
-                )}
-                <p className="studio-muted">
-                  Không có yêu cầu kết nối nhà cung cấp nào được gửi khi mở hoặc
-                  lưu trang này.
-                </p>
-              </>
+              <TranslationSettings settings={settings} set={set} onError={onError} />
             )}
             {group === "defaults" && (
               <>

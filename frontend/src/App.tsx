@@ -31,6 +31,8 @@ import type { StudioSettings, Collection } from "./workspaceApi";
 import { EditableTitle } from "./EditableTitle";
 import { Pagination, useCapacity } from "./Pagination";
 import { Modal } from "./ui";
+import { TranslatePanel } from "./TranslatePanel";
+import { providerLabels } from "./TranslationSettings";
 import { Button, Empty, Toast } from "./ui";
 import { vietnameseMessage } from "./messages";
 import { Player, Timeline } from "./Player";
@@ -687,8 +689,17 @@ export default function App() {
                       <Upload size={15} />
                       Nhập SRT
                     </Button>
-                    <a className="button secondary" href={`/api/jobs/${encodeURIComponent(currentJob.id)}/source-subtitles.srt`} download aria-disabled={dirty||!cues.length||cues.some(c=>!c.original.trim())} onClick={e=>{if(dirty||!cues.length||cues.some(c=>!c.original.trim())){e.preventDefault();setError('Lưu lời gốc đầy đủ trước khi xuất tiếng Trung.')}}}>Xuất lời Trung</a>
-                    {missing>0&&<Button disabled={busy||isBusy(currentJob)||dirty} onClick={()=>void action('translate')}>Dịch tiếng Việt</Button>}
+                    <TranslatePanel
+                      job={currentJob}
+                      providerLabel={providerLabels[studioSettings?.translation_provider ?? "gemini"]}
+                      ready={health?.capabilities?.automatic_translation === true}
+                      disabled={busy || dirty}
+                      canExport={!dirty && cues.length > 0 && !cues.some((c) => !c.original.trim())}
+                      onJob={(j) => { setJob(j); setPollKey((k) => k + 1); }}
+                      onCues={(rows) => { setCues(rows); setDirty(false); void refresh(); }}
+                      onError={showError}
+                      onNotice={setNotice}
+                    />
                     <input
                       ref={subtitleInput}
                       className="sr-only"

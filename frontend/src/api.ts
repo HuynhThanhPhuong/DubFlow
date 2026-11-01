@@ -1,5 +1,7 @@
 import type {
   Cue,
+  TranslateEstimate,
+  TranslateScope,
   Health,
   Job,
   Mode,
@@ -89,6 +91,20 @@ export const api = {
   ) => request<Job>(`/jobs/${key(id)}`, json("PUT", data)),
   action: (id: string, action: "analyze" | "translate" | "render" | "cancel") =>
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),
+  translateEstimate: (id: string, scope: TranslateScope) =>
+    request<TranslateEstimate>(`/jobs/${key(id)}/translate/estimate?scope=${scope}`),
+  translate: (id: string, scope: TranslateScope, allow_over_cap: boolean) =>
+    request<Job>(`/jobs/${key(id)}/translate`, json("POST", { scope, allow_over_cap })),
+  translatePrompt: async (id: string) => {
+    const response = await fetch(`/api/jobs/${key(id)}/translate-prompt`);
+    if (!response.ok) throw new ApiError(response.status, "Không lấy được lệnh mẫu.");
+    return response.text();
+  },
+  translationSrt: (id: string, file: File) => {
+    const data = new FormData();
+    data.set("file", file);
+    return request<Cue[]>(`/jobs/${key(id)}/translation-srt`, { method: "POST", body: data });
+  },
   resetSource: (id: string) =>
     request<Job>(`/jobs/${key(id)}/analyze?reset_source=1`, json("POST")),
   render: (id:string,kind:'auto'|'draft'|'final')=>request<Job>(`/jobs/${key(id)}/render`,json('POST',{kind})),

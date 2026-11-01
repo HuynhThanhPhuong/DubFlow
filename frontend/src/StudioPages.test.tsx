@@ -18,13 +18,24 @@ const settings: StudioSettings = {
   export_srt: true,
   open_after_export: false,
   resolution: "source",
-  translation_mode: "manual",
-  translation_model: "",
-  translation_api_url: "",
-  translation_api_model: "",
-  translation_api_key: "",
-  has_api_key: true,
-  auto_translate: false,
+  translation_provider: "gemini",
+  gemini_api_key: "",
+  openai_api_key: "",
+  anthropic_api_key: "",
+  gemini_model: "",
+  openai_model: "",
+  anthropic_model: "",
+  has_gemini_key: false,
+  has_openai_key: false,
+  has_anthropic_key: false,
+  translation_tier: "free",
+  rate_rpm: 10,
+  rate_rpd: 250,
+  price_in_per_mtok: 0,
+  price_out_per_mtok: 0,
+  cost_cap_usd: 0.5,
+  vietsub_cps: 17,
+  thinking: "default",
   default_mode: "dub",
   default_voice_id: null,
   blur_original: true,
@@ -71,10 +82,9 @@ it("preserves stored key, saves preferences, and reports saved settings", async 
   expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({
     output_dir: "D:/NewExports",
   });
-  expect(JSON.parse(String(put?.[1]?.body))).not.toHaveProperty(
-    "translation_api_key",
-  );
-  expect(saved.mock.calls[0][0].translation_api_key).toBe("");
+  for (const name of ["gemini", "openai", "anthropic"])
+    expect(JSON.parse(String(put?.[1]?.body))).not.toHaveProperty(`${name}_api_key`);
+  expect(saved.mock.calls[0][0].gemini_api_key).toBe("");
 });
 it("awaits native picker, preserves path on cancel, uses 330 second timeout", async () => {
   const fetcher = network((path) =>
@@ -94,21 +104,68 @@ it("awaits native picker, preserves path on cancel, uses 330 second timeout", as
     (screen.getByLabelText("Thư mục xuất video") as HTMLInputElement).value,
   ).toBe("D:/Exports");
 });
-it("does not call translation provider when displaying configuration", async () => {
+it("translation tab never sends an empty key and only calls the app API", async () => {
   const fetcher = network();
+  render(<SettingsPage onError={vi.fn()} onSaved={vi.fn()} />);
+  await screen.findByDisplayValue("D:/Exports");
+  fireEvent.click(screen.getByRole("button", { name: "Dịch" }));
+  expect(screen.getByText(/Chưa nhập key thì DubFlow không gọi API/)).toBeTruthy();
+  expect((screen.getByLabelText("API key Gemini") as HTMLInputElement).value).toBe("");
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gemini-x" } });
+  fireEvent.click(screen.getAllByRole("button", { name: "Lưu thiết lập" })[0]);
+  await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => i?.method === "PUT")).toBe(true));
+  const body = JSON.parse(String(fetcher.mock.calls.find(([, i]) => i?.method === "PUT")?.[1]?.body));
+  expect(body.gemini_model).toBe("gemini-x");
+  expect(body).not.toHaveProperty("gemini_api_key");
+  expect(body).not.toHaveProperty("has_gemini_key");
+  expect(fetcher.mock.calls.every(([path]) => path.startsWith("/api/"))).toBe(true);
+});
+it("sends the clear flag after Xóa key and no key", async () => {
+  const fetcher = network((path) =>
+    path === "/api/settings" ? { ...settings, has_gemini_key: true } : undefined,
+  );
+  render(<SettingsPage onError={vi.fn()} onSaved={vi.fn()} />);
+  await screen.findByDisplayValue("D:/Exports");
+  fireEvent.click(screen.getByRole("button", { name: "Dịch" }));
+  expect(screen.getByPlaceholderText("Đã lưu key")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Xóa key" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Lưu thiết lập" })[0]);
+  await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => i?.method === "PUT")).toBe(true));
+  const body = JSON.parse(String(fetcher.mock.calls.find(([, i]) => i?.method === "PUT")?.[1]?.body));
+  expect(body.clear_gemini_key).toBe(true);
+  expect(body).not.toHaveProperty("gemini_api_key");
+});
+it("disables model loading without a key and loads models with one", async () => {
+  const fetcher = network((path) =>
+    path === "/api/settings"
+      ? { ...settings, has_openai_key: true }
+      : path.startsWith("/api/settings/models")
+        ? { models: ["gpt-a"] }
+        : undefined,
+  );
   render(<SettingsPage onError={vi.fn()} />);
   await screen.findByDisplayValue("D:/Exports");
-  fireEvent.click(screen.getByRole("button", { name: "Dịch tự động" }));
-  fireEvent.change(screen.getByLabelText("Phương thức dịch"), {
-    target: { value: "api" },
-  });
-  expect(screen.getByText("Thiếu cấu hình nhà cung cấp")).toBeTruthy();
-  expect((screen.getByLabelText("API key mới") as HTMLInputElement).value).toBe(
-    "",
+  fireEvent.click(screen.getByRole("button", { name: "Dịch" }));
+  const load = screen.getByRole("button", { name: "Tải danh sách model" }) as HTMLButtonElement;
+  expect(load.disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("Nhà cung cấp"), { target: { value: "openai" } });
+  expect(load.disabled).toBe(false);
+  fireEvent.click(load);
+  await waitFor(() =>
+    expect(fetcher.mock.calls.some(([path]) => path === "/api/settings/models?provider=openai")).toBe(true),
   );
-  expect(fetcher.mock.calls.every(([path]) => path.startsWith("/api/"))).toBe(
-    true,
-  );
+});
+it("shows price fields only for the paid tier", async () => {
+  network();
+  render(<SettingsPage onError={vi.fn()} />);
+  await screen.findByDisplayValue("D:/Exports");
+  fireEvent.click(screen.getByRole("button", { name: "Dịch" }));
+  expect(screen.getByLabelText(/RPM/)).toBeTruthy();
+  expect(screen.queryByLabelText(/Giá vào/)).toBeNull();
+  fireEvent.change(screen.getByLabelText("Gói sử dụng"), { target: { value: "paid" } });
+  expect(screen.getByLabelText(/Giá vào/)).toBeTruthy();
+  expect(screen.getByLabelText(/Mức trần/)).toBeTruthy();
+  expect(screen.queryByLabelText(/RPM/)).toBeNull();
 });
 it("edits collection with only writable fields", async () => {
   const collection = {

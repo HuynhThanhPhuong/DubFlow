@@ -1,5 +1,6 @@
 import { request } from "./api";
 import type { Job, Mode } from "./types";
+export type Provider = "gemini" | "openai" | "anthropic";
 export interface StudioSettings {
   output_dir: string;
   organize_by_collection: boolean;
@@ -7,14 +8,29 @@ export interface StudioSettings {
   export_srt: boolean;
   open_after_export: boolean;
   resolution: "source" | "1080p" | "720p";
-  translation_mode: "manual" | "local" | "ollama" | "api";
-  translation_num_ctx?: number;
-  translation_model: string;
-  translation_api_url: string;
-  translation_api_model: string;
-  translation_api_key?: string;
-  has_api_key: boolean;
-  auto_translate: boolean;
+  translation_provider: Provider;
+  gemini_api_key?: string;
+  openai_api_key?: string;
+  anthropic_api_key?: string;
+  gemini_model: string;
+  openai_model: string;
+  anthropic_model: string;
+  has_gemini_key: boolean;
+  has_openai_key: boolean;
+  has_anthropic_key: boolean;
+  clear_gemini_key?: boolean;
+  clear_openai_key?: boolean;
+  clear_anthropic_key?: boolean;
+  translation_tier: "free" | "paid";
+  rate_rpm: number;
+  rate_rpd: number;
+  price_in_per_mtok: number;
+  price_out_per_mtok: number;
+  cost_cap_usd: number;
+  vietsub_cps: number;
+  max_output_tokens?: number;
+  max_input_tokens?: number;
+  thinking: "default" | "low" | "high";
   default_mode: Mode;
   default_voice_id: string | null;
   blur_original: boolean;
@@ -76,6 +92,8 @@ export const workspaceApi = {
     }),
   openFolder: (data: { job_id?: string } | string = {}) =>
     request<unknown>("/system/open-folder", json("POST", typeof data === "string" ? { job_id: data } : data)),
+  models: (provider: Provider) =>
+    request<{ models: string[] }>(`/settings/models?provider=${provider}`),
   publish: (key: string) =>
     request<WorkspaceJob>(`/jobs/${id(key)}/publish`, json("POST")),
 };

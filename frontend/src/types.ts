@@ -31,7 +31,28 @@ export interface Job {
   dry_url?: string | null;
   zip_url?: string | null;
   subtitle_style?: SubtitleStyle;
+  translation_usage?: TranslationUsage | null;
 }
+export interface TranslationUsage {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  provider: string;
+  model: string;
+  mode: Mode;
+}
+export interface TranslateEstimate {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  tier: "free" | "paid";
+  cap_usd: number | null;
+  over_cap: boolean;
+  cue_count: number;
+}
+export type TranslateScope = "missing" | "all";
 export interface SubtitleStyle {
   font: string;
   bold: boolean;

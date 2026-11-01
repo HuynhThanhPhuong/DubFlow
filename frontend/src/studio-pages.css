@@ -580,3 +580,22 @@
   --studio-muted: var(--muted, #728097);
   --studio-blue: var(--blue, #4e5cdb);
 }
+.translate-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.translate-panel .translate-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  border: 0;
+  padding: 0;
+}
+.translate-panel .translate-scope .warning,
+.translate-panel > p {
+  flex-basis: 100%;
+  margin: 0;
+}
