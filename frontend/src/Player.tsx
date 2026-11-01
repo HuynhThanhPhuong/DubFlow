@@ -70,26 +70,32 @@ export function Player({
     setView(preferred);
   }, [preferred]);
   useEffect(() => {
-    setRegions([]);
     let live = true;
     api
       .regions(job.id)
       .then((rows) => {
-        if (live) setRegions(rows);
+        if (!live) return;
+        serverRegions.current = rows;
+        setRegions(rows);
       })
-      .catch(() => {
-        if (live) setRegions([]);
-      });
+      .catch(() => {});
     return () => {
       live = false;
     };
   }, [job.id, job.updated_at]);
+  useEffect(() => {
+    serverRegions.current = [];
+    setRegions([]);
+    setSelectedId(null);
+  }, [job.id]);
   const videoW = job.width || video.current?.videoWidth || 0;
   const videoH = job.height || video.current?.videoHeight || 0;
   const regionDuration = job.duration || video.current?.duration || 0;
   const selectedRegion = regions.find(
     (r) => r.id === selectedId && r.kind === "static" && r.enabled,
   );
+  const busy = isBusy(job);
+  const serverRegions = useRef<Region[]>([]);
   const saveSeq = useRef(0);
   const saveRegions = (rows: Region[]) => {
     setRegions(rows);
@@ -97,11 +103,13 @@ export function Player({
     api
       .saveRegions(job.id, rows)
       .then((saved) => {
+        serverRegions.current = saved;
         if (seq === saveSeq.current) setRegions(saved);
       })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "Không lưu được vùng che."),
-      );
+      .catch((e) => {
+        if (seq === saveSeq.current) setRegions(serverRegions.current);
+        setError(e instanceof Error ? e.message : "Không lưu được vùng che.");
+      });
   };
   const detectLogos = async () => {
     setDetecting(true);
@@ -241,6 +249,7 @@ export function Player({
             drawing={drawing}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            disabled={busy}
             onChange={saveRegions}
             onDrawEnd={() => setDrawing(false)}
           />
@@ -260,6 +269,11 @@ export function Player({
           {error}
         </p>
       )}
+      {busy && (
+        <p className="muted small" role="status">
+          Đang xử lý — chưa sửa vùng che được.
+        </p>
+      )}
       <div className="region-tools" aria-label="Che logo">
         <Button
           variant="ghost"
@@ -270,7 +284,7 @@ export function Player({
         </Button>
         <Button
           variant="ghost"
-          disabled={!drawing && !(regionDuration > 0)}
+          disabled={busy || (!drawing && !(regionDuration > 0))}
           onClick={() => (drawing ? setDrawing(false) : startDrawing())}
         >
           {drawing ? "Xong vẽ" : "Vẽ vùng che"}
@@ -278,11 +292,14 @@ export function Player({
         {!drawing && selectedRegion && (
           <RegionEditor
             region={selectedRegion}
+            disabled={busy}
             duration={regionDuration}
             onChange={(change) =>
               saveRegions(
                 regions.map((r) =>
-                  r.id === selectedRegion.id ? { ...r, ...change } : r,
+                  r.id === selectedRegion.id
+                    ? { ...r, ...change, confirmed: true }
+                    : r,
                 ),
               )
             }

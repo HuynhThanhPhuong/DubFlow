@@ -159,13 +159,13 @@ describe("RegionOverlay review fixes", () => {
   });
   it("resizes by a corner handle and clamps to the frame", () => {
     const onChange = vi.fn();
-    render(<Harness {...props} currentTime={2} regions={[confirmed]} onChange={onChange} />);
-    fireEvent.pointerDown(screen.getByText("Tay"));
+    render(<Harness {...props} currentTime={2} regions={[auto]} onChange={onChange} />);
+    fireEvent.pointerDown(screen.getByText("Logo"));
     const se = screen.getByTestId("handle-se");
     fireEvent.pointerDown(se, { clientX: 0, clientY: 0, pointerId: 1 });
     fireEvent.pointerMove(se, { clientX: 5000, clientY: 5000, pointerId: 1 });
     fireEvent.pointerUp(se, { pointerId: 1 });
-    expect(onChange.mock.calls[0][0][0]).toMatchObject({ x: 100, y: 100, width: 1820, height: 980 });
+    expect(onChange.mock.calls[0][0][0]).toMatchObject({ x: 100, y: 100, width: 1820, height: 980, confirmed: true });
   });
   it("commits time on blur and shows an error for invalid ranges", () => {
     const onChange = vi.fn();
@@ -184,6 +184,20 @@ describe("RegionOverlay review fixes", () => {
   });
 });
 
+describe("RegionOverlay busy", () => {
+  it("disables tick and cross and hides handles and drawing while busy", () => {
+    render(<RegionOverlay {...props} disabled regions={[auto]} onChange={vi.fn()} />);
+    expect((screen.getByRole("button", { name: /Giữ vùng/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Bỏ vùng/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.pointerDown(screen.getByText("Logo"));
+    expect(screen.queryByTestId("handle-se")).toBeNull();
+  });
+  it("does not draw while busy", () => {
+    render(<RegionOverlay {...props} disabled drawing regions={[]} onChange={vi.fn()} />);
+    expect(screen.queryByTestId("region-draw-layer")).toBeNull();
+  });
+});
+
 describe("regions dialog", () => {
   it("no longer renders pixel inputs", async () => {
     render(
@@ -199,5 +213,7 @@ describe("regions dialog", () => {
     expect(screen.queryByText(/X \(px\)/)).toBeNull();
     expect(screen.queryByText(/Rộng \(px\)/)).toBeNull();
     expect(screen.getByText(/Bắt đầu \(s\)/)).toBeTruthy();
+    expect(screen.queryByText(/Thêm vùng/)).toBeNull();
+    expect(screen.getByText(/Vẽ vùng che/)).toBeTruthy();
   });
 });

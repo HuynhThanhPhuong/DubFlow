@@ -27,6 +27,7 @@ export function RegionOverlay({
   onDrawEnd,
   selectedId,
   onSelect,
+  disabled = false,
 }: {
   regions: Region[];
   rect: VideoRect;
@@ -40,6 +41,7 @@ export function RegionOverlay({
   onDrawEnd: () => void;
   selectedId?: string | null;
   onSelect?: (id: string | null) => void;
+  disabled?: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [own, setOwn] = useState<string | null>(null);
@@ -144,7 +146,8 @@ export function RegionOverlay({
   };
   const cornerUp = () => {
     anchor.current = null;
-    if (draft?.id) patch(draft.id, draft.box);
+    if (draft?.id && !disabled)
+      patch(draft.id, { ...draft.box, confirmed: true });
     setDraft(null);
   };
 
@@ -201,6 +204,7 @@ export function RegionOverlay({
               </span>
               {isSel &&
                 !drawing &&
+                !disabled &&
                 CORNERS.map((c) => (
                   <i
                     key={c}
@@ -221,6 +225,7 @@ export function RegionOverlay({
                   <button
                     type="button"
                     className="region-btn ok"
+                    disabled={disabled}
                     aria-label={`Giữ vùng ${r.label || "che"}`}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() =>
@@ -232,6 +237,7 @@ export function RegionOverlay({
                   <button
                     type="button"
                     className="region-btn no"
+                    disabled={disabled}
                     aria-label={`Bỏ vùng ${r.label || "che"}`}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => {
@@ -246,7 +252,7 @@ export function RegionOverlay({
             </Fragment>
           );
         })}
-      {drawing && ready && (
+      {drawing && ready && !disabled && (
         <div
           className="region-draw-layer"
           data-testid="region-draw-layer"
@@ -275,15 +281,18 @@ export function RegionEditor({
   duration,
   onChange,
   onDelete,
+  disabled = false,
 }: {
   region: Region;
   duration: number;
   onChange: (change: { start: number; end: number }) => void;
   onDelete: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="region-editor">
       <TimeEditor
+        disabled={disabled}
         key={region.id}
         region={region}
         duration={duration}
@@ -293,6 +302,7 @@ export function RegionEditor({
         type="button"
         className="region-btn no"
         aria-label="Xoá vùng đã chọn"
+        disabled={disabled}
         onClick={onDelete}
       >
         <Trash2 size={14} />
@@ -302,10 +312,12 @@ export function RegionEditor({
 }
 
 function TimeEditor({
+  disabled = false,
   region,
   duration,
   onCommit,
 }: {
+  disabled?: boolean;
   region: Region;
   duration: number;
   onCommit: (change: { start: number; end: number }) => void;
@@ -345,6 +357,7 @@ function TimeEditor({
           min={0}
           value={from}
           onChange={(e) => setFrom(e.target.value)}
+          disabled={disabled}
           onBlur={commit}
           onKeyDown={keys}
         />
@@ -357,6 +370,7 @@ function TimeEditor({
           min={0}
           value={to}
           onChange={(e) => setTo(e.target.value)}
+          disabled={disabled}
           onBlur={commit}
           onKeyDown={keys}
         />

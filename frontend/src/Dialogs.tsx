@@ -212,22 +212,14 @@ export function SettingsDialog({
       if (
         regions.some(
           (r) =>
-            ![r.x, r.y, r.width, r.height, r.start, r.end].every(
-              Number.isFinite,
-            ) ||
-            r.x < 0 ||
-            r.y < 0 ||
-            r.width <= 0 ||
-            r.height <= 0 ||
-            r.x + r.width > (job.width || Infinity) ||
-            r.y + r.height > (job.height || Infinity) ||
+            ![r.start, r.end].every(Number.isFinite) ||
             r.start < 0 ||
             r.end <= r.start ||
             r.end > duration,
         )
       ) {
         setError(
-          "Vùng phải nằm trong kích thước video, có chiều rộng/cao dương và thời gian hợp lệ.",
+          "Thời gian của vùng phải hợp lệ và nằm trong video.",
         );
         return;
       }
@@ -409,42 +401,28 @@ export function SettingsDialog({
                 ))}
           </div>
           <div className="dialog-foot">
-            <Button
-              onClick={() =>
-                kind === "regions"
-                  ? setRegions([
-                      ...regions,
-                      {
-                        id: crypto.randomUUID(),
-                        x: 0,
-                        y: 0,
-                        width: job.width || 300,
-                        height: job.height || 80,
-                        start: 0,
-                        end: job.duration || 1,
-                        kind: "static",
-                        text: "",
-                        translation: "",
-                        enabled: true,
-                        auto: false,
-                        confirmed: true,
-                        label: "Vùng thêm tay",
-                      },
-                    ])
-                  : setParts([
-                      ...parts,
-                      {
-                        id: crypto.randomUUID(),
-                        title: `Phần ${parts.length + 1}`,
-                        start: parts.at(-1)?.end || 0,
-                        end: job.duration || 1,
-                      },
-                    ])
-              }
-            >
-              <Plus size={15} />
-              Thêm {kind === "regions" ? "vùng" : "phần"}
-            </Button>
+            {kind === "regions" ? (
+              <p className="muted small">
+                Muốn thêm vùng che, dùng nút “Vẽ vùng che” trên trình phát.
+              </p>
+            ) : (
+              <Button
+                onClick={() =>
+                  setParts([
+                    ...parts,
+                    {
+                      id: crypto.randomUUID(),
+                      title: `Phần ${parts.length + 1}`,
+                      start: parts.at(-1)?.end || 0,
+                      end: job.duration || 1,
+                    },
+                  ])
+                }
+              >
+                <Plus size={15} />
+                Thêm phần
+              </Button>
+            )}
             <Button
               variant="primary"
               disabled={busy || loadFailed}
