@@ -56,8 +56,7 @@ SYSTEM_COMMON = (
 SYSTEM_BY_MODE = {
     'vietsub': SYSTEM_COMMON + '\nCHẾ ĐỘ PHỤ ĐỀ: "max_chars" là giới hạn cứng, tuyệt đối không vượt. '
                                'Văn phong phụ đề: ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
-    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: viết lời dẫn đọc tự nhiên, mạch lạc, như một người kể chuyện; '
-                          'số âm tiết mỗi câu sát "target_syllables" (sai lệch trong ±15%).',
+    'tm': SYSTEM_COMMON + '\nCHẾ ĐỘ THUYẾT MINH: một giọng đọc duy nhất đọc lại lời thoại đã dịch; vẫn dịch từng câu thoại như lời nhân vật nói (giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; số âm tiết mỗi câu sát "target_syllables" (sai lệch trong ±15%).',
     'dub': SYSTEM_COMMON + '\nCHẾ ĐỘ LỒNG TIẾNG: viết lời thoại nói được thành tiếng cho giọng của từng nhân vật theo '
                            '"speaker", hợp tính cách và cảm xúc của họ (khẩu ngữ, ngắt nhịp tự nhiên); số âm tiết mỗi '
                            'câu sát "target_syllables" (sai lệch trong ±15%).',
