@@ -578,7 +578,7 @@ def subtrack(directory, request):
         return white & near
 
     def frames_of(fps_, crop_y, crop_h):
-        proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_},crop={width}:{crop_h}:0:{crop_y},format=gray',
+        proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_},crop={width}:{crop_h}:0:{crop_y}:exact=1,format=gray',
                                  '-f', 'rawvideo', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         n = width * crop_h
         try:
@@ -671,6 +671,10 @@ def subtrack(directory, request):
     write(directory/'subtrack.json', out)
 
 
+MISS_DIFF = 2.5  # band change (mean gray levels at 1/4 size) under which an unread sample counts as an OCR miss of the same line
+BLIP_DIFF, BLIP_MARGIN = 1.0, .7  # a frame between two samples that differs this much from both and more than they differ from each other is read
+
+
 def subband(directory, request):
     """OCR of the user-drawn subtitle band only -> subtrack.json (version 2): one segment per displayed line.
 
@@ -708,16 +712,33 @@ def subband(directory, request):
                min(bx + bw, int(bx + max(r[2] for r in rows)) + 1), min(by + bh, int(by + max(r[3] for r in rows)) + 1))
         return order_lines(rows), box
 
-    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps:.6f},crop={bw}:{bh}:{bx}:{by}',
+    # exact=1: on a subsampled (yuv420p) picture ffmpeg otherwise rounds an odd size / position down, and the reader below
+    # would mix the bytes of neighbouring frames
+    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps:.6f},crop={bw}:{bh}:{bx}:{by}:exact=1',
                              '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     n_bytes = bw * bh * 3
     samples, reads = [], 0
     last_key, last_small, last_read, middle = None, None, ('', None), None
+    prev_small, text_small = None, None
+
+    def shrink(image):
+        return cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (max(2, bw // 4), max(2, bh // 4)), interpolation=cv2.INTER_AREA).astype(np.int16)
+
+    def distance(a, b):
+        return float(np.abs(a - b).mean())
+
+    def empty_sample(t, small):
+        """A sample nothing was read from. miss: the band still looks like the last one that had a line, so the OCR missed
+        it (the line is probably still there); False: the band changed to something without a line (really empty)."""
+        return dict(t=t, text='', box=None, miss=text_small is not None and distance(small, text_small) < MISS_DIFF)
+
     try:
         i = 0
         while True:
             raw = proc.stdout.read(n_bytes)
             if len(raw) < n_bytes:
+                if raw:
+                    raise RuntimeError('subband: the decoded band frame has an unexpected size (crop geometry)')
                 break
             t = i / fps
             i += 1
@@ -727,22 +748,34 @@ def subband(directory, request):
                 raise RuntimeError('cancelled')
             image = np.frombuffer(raw, np.uint8).reshape(bh, bw, 3)
             if (i - 1) % 2:  # the frame between two samples: kept, read only when needed
-                middle = (t, image)
+                middle = (t, image, shrink(image))
                 continue
-            small = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (max(2, bw // 4), max(2, bh // 4)), interpolation=cv2.INTER_AREA).astype(np.int16)
-            if last_small is not None and float(np.abs(small - last_small).mean()) < .8:
+            small = shrink(image)
+            if last_small is not None and distance(small, last_small) < .8:
                 text, box = last_read  # still picture: the same reading
             else:
                 text, box = read_band(image)
                 reads += 1
                 last_small, last_read = small, (text, box)
             key = line_key(text)
-            if last_key is not None and middle is not None and (bool(last_key) != bool(key) or (key and not compatible(last_key, key))):
-                mtext, mbox = read_band(middle[1])
-                reads += 1
-                samples.append(dict(t=middle[0], text=mtext, box=mbox))
-            samples.append(dict(t=t, text=text, box=box))
-            last_key, middle = key, None
+            if middle is not None and last_key is not None:
+                # read the frame between two samples when the reading changes between them (a line appears, goes away or
+                # is replaced), or when it shows something neither neighbour shows (a line that lasts a single frame)
+                d_mp, d_mn, d_pn = distance(middle[2], prev_small), distance(middle[2], small), distance(prev_small, small)
+                blip = min(d_mp, d_mn) >= BLIP_DIFF and min(d_mp, d_mn) >= d_pn + BLIP_MARGIN
+                if bool(last_key) != bool(key) or (key and not compatible(last_key, key)) or blip:
+                    mtext, mbox = read_band(middle[1])
+                    reads += 1
+                    mkey = line_key(mtext)
+                    samples.append(dict(t=middle[0], text=mtext, box=mbox) if mkey else empty_sample(middle[0], middle[2]))
+                    if mkey:
+                        text_small = middle[2]
+            if key:
+                samples.append(dict(t=t, text=text, box=box))
+                text_small = small
+            else:
+                samples.append(empty_sample(t, small))
+            last_key, middle, prev_small = key, None, small
     finally:
         proc.stdout.close()
         proc.kill()
@@ -902,7 +935,7 @@ def erase_static_boxes(frame, boxes, k, lama, static_tol, reuse_tol, styles, cac
             mask[b[1] - cy0:b[3] - cy0, b[0] - cx0:b[2] - cx0] = True
         out, how, _ = erase_frame(frame[cy0:cy1, cx0:cx1], mask, (0, 0, cx1 - cx0, cy1 - cy0), [], (0, cy1 - cy0), k,
                                   static_tol=static_tol, style=styles.setdefault(tuple(members), {}), lama=lama,
-                                  reuse_tol=reuse_tol, rigid=True)
+                                  reuse_tol=reuse_tol, rigid=True, confine=True)
         if how != 'none':
             if not frame.flags.writeable:
                 frame = frame.copy()
@@ -926,6 +959,9 @@ def clean_static_regions(request, width, height):
     return out
 
 
+TEXT_BOX_FRAC = .06  # share of the OCR text box covered by detected strokes under which the whole box is erased (good frames: .08-.2)
+
+
 def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=.3):
     """Stroke footprint of each erase window inside the user's band -> [bool array (box height, box width) | None].
 
@@ -939,7 +975,7 @@ def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=
     w, h = x1 - x0, y1 - y0
     acc = [None] * len(windows)
     count = [0] * len(windows)
-    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={w}:{h}:{x0}:{y0},format=gray', '-f', 'rawvideo', '-'],
+    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={w}:{h}:{x0}:{y0}:exact=1,format=gray', '-f', 'rawvideo', '-'],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         n, first = 0, 0
@@ -1009,7 +1045,18 @@ def erase(directory, request):
         from subtitle_lines import erase_windows
         bx, by, bw_, bh_ = (int(v) for v in band_box)
         bx0, by0, bx1, by1 = max(0, bx), max(0, by), min(width, bx + bw_), min(height, by + bh_)
-        segs = [dict(s=w['s'], e=w['e'], x0=bx0, y0=by0, x1=bx1, y1=by1) for w in erase_windows(segs, float(request['duration']))]
+        lines = segs
+        pad_t = max(2, int(round(4 * k)))
+
+        def text_box(line):  # where the OCR saw the line, a little grown, inside the band
+            try:
+                return (max(bx0, int(line['x0']) - pad_t), max(by0, int(line['y0']) - pad_t),
+                        min(bx1, int(line['x1']) + pad_t), min(by1, int(line['y1']) + pad_t))
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        segs = [dict(s=w['s'], e=w['e'], x0=bx0, y0=by0, x1=bx1, y1=by1, tb=text_box(lines[w['line']]))
+                for w in erase_windows(lines, float(request['duration']))]
         margin, box_grow = 0.0, 0
         band = [by0, by1]
     else:
@@ -1024,7 +1071,7 @@ def erase(directory, request):
     # pass 1: first glyph-free band crop after each segment (a "future" reference), band crops only
     # crops live on disk (erase-refs/) and are loaded one at a time, so memory is bounded by the current segment
     after, pending, bh = {}, list(range(len(segs))), ry1 - ry0
-    scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={width}:{bh}:0:{ry0}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+    scan = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={width}:{bh}:0:{ry0}:exact=1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
                             stdout=subprocess.PIPE, stderr=None) if segs else None
     try:
         m_ = 0
@@ -1064,6 +1111,7 @@ def erase(directory, request):
         shutil.rmtree(refs_dir, ignore_errors=True)
         raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
+    box_frames, text_box_frac = 0, float(request.get('erase_text_box_frac', TEXT_BOX_FRAC))
     loaded, style = (None, None), {}
     static_styles, static_groups, static_fills, static_frames = {}, {}, {}, 0
     try:
@@ -1099,12 +1147,22 @@ def erase(directory, request):
                 part = glyph_mask(gray[y0:y1, x0:x1], k)
                 if foot is not None and foot[seg_index[id(s)]] is not None and foot[seg_index[id(s)]].shape == part.shape:
                     part = part | foot[seg_index[id(s)]]  # the line's whole footprint, also on frames the detector missed
+                tb = s.get('tb')
+                if tb is not None and band_box and s['s'] <= t < s['e']:
+                    # white text on a bright picture has no dark outline for the detector: when the strokes found cover only
+                    # a sliver of where the OCR read the line, the whole text box is the mask (the model rebuilds it)
+                    ta, tc, td, te = tb[0] - x0, tb[1] - y0, tb[2] - x0, tb[3] - y0
+                    if td > ta and te > tc and part[tc:te, ta:td].mean() < text_box_frac:
+                        part = part.copy()
+                        part[tc:te, ta:td] = True
+                        box_frames += 1
                 # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
                 if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
                     continue
                 mask = np.zeros((height, width), bool)
                 mask[y0:y1, x0:x1] = part
-                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol)
+                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol,
+                                             confine=bool(band_box))
                 fills[how] = fills.get(how, 0) + 1
                 if how in ('ref', 'lamaref'):
                     ref_diffs.append(rd)
@@ -1172,7 +1230,7 @@ def erase(directory, request):
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
-                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3), windows=len(segs) if band_box else None,
+                                       frames_touched=touched, text_box_frames=box_frames, seconds=round(time.monotonic() - started, 3), windows=len(segs) if band_box else None,
                                        static_hash=request.get('static_hash', ''), static_ids=[r['id'] for r in statics],
                                        static_frames=static_frames, static_fills=static_fills,
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

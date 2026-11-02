@@ -338,7 +338,7 @@ def _paste_ref(fb: np.ndarray, ref: np.ndarray, zone: np.ndarray, scale: float) 
 
 def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, band: tuple,
                 scale: float = 1.0, static_tol: float = STATIC_TOL, style: dict | None = None, lama=None,
-                reuse_tol: float = LAMA_REUSE_TOL, rigid: bool = False):
+                reuse_tol: float = LAMA_REUSE_TOL, rigid: bool = False, confine: bool = False):
     """Erase glyphs (mask = glyph_mask output, full-frame, limited to box) and their drop shadow.
 
     refs: band-sized BGR crops (frame[y0b:y1b]). A motion-aligned reference is used when its ring diff <= static_tol
@@ -349,6 +349,9 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
     style: dict shared across frames; keeps the shadow strength and the recent LaMa results.
     rigid: the mask is a solid region (logo / fixed text box), not glyph strokes: it is used as is, with no stroke growth,
     gap closing or drop-shadow model.
+    confine: box is the only area that may change (the user's band / logo box). The stroke growth, shadow zone, feathered
+    alpha and the model output are cut to it: every pixel outside box is returned exactly as it was (the rows around the
+    mask are still read as context). Without it the repaired zone may reach grow+2 px beyond the box.
     Returns (out, how, ring_diff) with how in {'none','ref','lamaref','lama','smooth'}."""
     x0, y0, x1, y1 = (int(v) for v in box)
     H, W = frame.shape[:2]
@@ -360,6 +363,11 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         return frame.copy(), 'none', None
     fb = np.ascontiguousarray(frame[b0:b1])
     core = np.ascontiguousarray(mm[b0:b1])
+    allow = None
+    if confine:  # a solid (rigid) mask is its own allowed area; for glyph strokes it is the box
+        allow = core.copy() if rigid else np.zeros(core.shape, bool)
+        if not rigid:
+            allow[max(y0, b0) - b0:max(0, min(y1, b1) - b0), max(0, x0):min(W, x1)] = True
     gray = cv2.cvtColor(fb, cv2.COLOR_BGR2GRAY)
     # strokes + a few px (anti-aliasing, ringing) and the small gaps inside/between strokes: that is what gets rebuilt
     def grown(px, gap):
@@ -383,6 +391,8 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         a = lam * _shadow_unit(T)
         a[a < 0.004] = 0.0
         zone = m_big | (a > 0.03)
+    if allow is not None:
+        zone = zone & allow
     ring = _ring_of(zone)
     best, best_diff = None, None
     for ref in refs or []:
@@ -394,8 +404,12 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         if best_diff <= ALIGN_GOOD:
             break
     out = frame.copy()
+
+    def put(patch):
+        out[b0:b1] = patch if allow is None else np.where(allow[..., None], patch, fb)
+
     if best is not None and best_diff <= static_tol:
-        out[b0:b1] = _paste_ref(fb, best, zone, scale)
+        put(_paste_ref(fb, best, zone, scale))
         return out, 'ref', best_diff
     if lama is not None:
         keys = style.setdefault('lama_keys', [])
@@ -409,7 +423,7 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
             if kdiff <= ALIGN_GOOD:
                 break
         if kbest is not None and kdiff <= reuse_tol:
-            out[b0:b1] = _paste_ref(fb, kbest, zone, scale)
+            put(_paste_ref(fb, kbest, zone, scale))
             return out, 'lamaref', kdiff
         # LaMa rebuilds glyphs and the shadow zone from the untouched frame (measured cleaner than dividing the shadow
         # out and inpainting only the strokes, which left grey smudges at object edges)
@@ -421,7 +435,11 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
             style['lama_failed'] = style.get('lama_failed', 0) + 1
             lama_out = None
         if lama_out is not None:
-            out = lama_out
+            if allow is not None:  # the model blends ~1 px beyond the hole and the tiles read context: keep only the box
+                out = frame.copy()
+                put(lama_out[b0:b1])
+            else:
+                out = lama_out
             if reuse_tol > 0:
                 keys.append(np.ascontiguousarray(out[b0:b1]))
                 del keys[:-LAMA_KEEP]
@@ -443,5 +461,5 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
     thin = cv2.GaussianBlur(mf, (0, 0), max(1.0, 1.5 * scale))
     alpha = np.maximum(mf, np.where(edge_zone, thin, wide))
     mixed = corr.astype(np.float32) * (1 - alpha[..., None]) + filled.astype(np.float32) * alpha[..., None]
-    out[b0:b1] = np.clip(mixed + .5, 0, 255).astype(np.uint8)
+    put(np.clip(mixed + .5, 0, 255).astype(np.uint8))
     return out, 'smooth', best_diff

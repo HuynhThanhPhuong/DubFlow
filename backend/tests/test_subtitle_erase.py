@@ -724,3 +724,196 @@ class SubbandStageTest(unittest.TestCase):
                 self.assertLessEqual(abs(line['e'] - b), .3, line)
                 self.assertTrue(100 <= line['x0'] < line['x1'] <= 560 and 285 <= line['y0'] < line['y1'] <= 345, line)
             self.assertLess(track['ocr_reads'], 6 * 5)  # sampled at 2.5 fps plus the frames at the edges, not every frame
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class ConfinedEraseTest(unittest.TestCase):
+    """The drawn box is the only area that may change: glyph pixels at its edge, the stroke growth, the shadow zone and the
+    feathered model output must not reach a pixel outside it, in every fill path (reviewer finding: 13 pixels leaked)."""
+
+    def _case(self):
+        frame, clean, _text = _shadowed(_bg())
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        ys, xs = np.nonzero(mask)
+        box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)  # glyph pixels touch every side of it
+        outside = np.ones((h, w), bool)
+        outside[box[1]:box[3], box[0]:box[2]] = False
+        return frame, clean, mask, box, outside, h
+
+    def test_without_confine_the_repair_reaches_beyond_the_box(self):
+        frame, _clean, mask, box, outside, h = self._case()
+        out, how, _ = erase_frame(frame, mask, box, [], (0, h), 1.0, lama=_FakeLama(), reuse_tol=0)
+        self.assertEqual(how, 'lama')
+        self.assertTrue((out != frame).any(axis=2)[outside].any())
+
+    def test_every_fill_path_leaves_the_pixels_outside_the_box_exactly_as_they_were(self):
+        frame, clean, mask, box, outside, h = self._case()
+        wide = (max(0, box[0] - 14), max(0, box[1] - 14), box[2] + 14, box[3] + 14)  # a clean reference only matches with the shadow inside the box
+        for refs, lama, edge, want in (([], _FakeLama(), box, 'lama'), ([clean], None, wide, 'ref'), ([], None, box, 'smooth')):
+            out_of = np.ones_like(outside)
+            out_of[edge[1]:edge[3], edge[0]:edge[2]] = False
+            out, how, _ = erase_frame(frame, mask, edge, refs, (0, h), 1.0, style={}, lama=lama, reuse_tol=0, confine=True)
+            self.assertEqual(how, want)
+            self.assertTrue(np.array_equal(out[out_of], frame[out_of]), want)
+            self.assertTrue((out != frame).any(), want)  # and the inside did change
+        fake, style = _FakeLama(), {}
+        out, how, _ = erase_frame(frame, mask, box, [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5, confine=True)
+        out2, how2, _ = erase_frame(frame, mask, box, [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5, confine=True)
+        self.assertEqual((how, how2), ('lama', 'lamaref'))
+        for o in (out, out2):
+            self.assertTrue(np.array_equal(o[outside], frame[outside]))
+
+    def test_the_mask_handed_to_the_model_stays_inside_the_box_and_rows_outside_the_band_are_untouched(self):
+        import dubflow.subtitle_erase as module
+        frame, _clean, mask, box, outside, h = self._case()
+        seen, real = [], module.lama_inpaint
+
+        def spy(session, image, hole, scale=1.0, feather=1.2):
+            seen.append(int(hole[outside].sum()))
+            return real(session, image, hole, scale, feather)
+        module.lama_inpaint = spy
+        try:
+            band = (box[1] - 3, box[3] + 3)
+            out, how, _ = erase_frame(frame, mask, box, [], band, 1.0, lama=_FakeLama(), reuse_tol=0, confine=True)
+        finally:
+            module.lama_inpaint = real
+        self.assertEqual((how, seen), ('lama', [0]))
+        self.assertTrue(np.array_equal(out[:band[0]], frame[:band[0]]) and np.array_equal(out[band[1]:], frame[band[1]:]))
+
+    def test_a_rigid_box_changes_nothing_outside_its_own_pixels(self):
+        frame = _shadowed(_bg())[0]
+        h, w = frame.shape[:2]
+        mask = np.zeros((h, w), bool)
+        mask[40:70, 100:220] = True
+        out, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style={}, lama=_FakeLama(), reuse_tol=0, rigid=True, confine=True)
+        self.assertEqual(how, 'lama')
+        self.assertTrue(np.array_equal(out[~mask], frame[~mask]))
+
+
+def _ffmpeg_or_skip(case):
+    import os, shutil, sys
+    ff = os.getenv('DUBFLOW_FFMPEG') or shutil.which('ffmpeg')
+    if not ff:
+        try:
+            from dubflow.config import Settings
+            ff = Settings().ffmpeg
+        except Exception:
+            ff = None
+    if not ff or not (Path(ff).exists() or shutil.which(ff)):
+        case.skipTest('ffmpeg unavailable')
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+    return ff
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class OddBandGeometryTest(unittest.TestCase):
+    """A box with odd size / position on a yuv420p video: every pass must decode exactly the pixels of the drawn box
+    (ffmpeg's crop rounds such a box down to even numbers unless exact=1, which shifted every following byte)."""
+    W, H, FPS = 128, 96, 10
+    BOX = [7, 21, 101, 31]  # x y w h, all odd
+
+    def _clip(self, tmp, ff, shows):
+        """Black picture; a bright block fills the whole box while a line is shown (frame ranges in `shows`); yuv420p."""
+        import subprocess
+        frames = np.zeros((10, self.H, self.W, 3), np.uint8)
+        x, y, w, h = self.BOX
+        for a, b in shows:
+            frames[a:b, y:y + h, x:x + w] = 255
+        src = Path(tmp) / 'source.mp4'
+        subprocess.run([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{self.W}x{self.H}', '-r', str(self.FPS), '-i', '-',
+                        '-c:v', 'libx264', '-crf', '0', '-pix_fmt', 'yuv420p', str(src)], input=frames.tobytes(), check=True)
+        return src
+
+    def test_an_odd_crop_decodes_exactly_the_boxed_bytes_and_the_stages_ask_for_it(self):
+        import subprocess, tempfile
+        ff = _ffmpeg_or_skip(self)
+        import engine_cli
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._clip(tmp, ff, [(2, 4)])
+            x, y, w, h = self.BOX
+            raw = subprocess.run([ff, '-v', 'error', '-i', str(src), '-vf', f'fps=5,crop={w}:{h}:{x}:{y}:exact=1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                                 capture_output=True, check=True).stdout
+            self.assertEqual(len(raw), 5 * w * h * 3)
+            raw = subprocess.run([ff, '-v', 'error', '-i', str(src), '-vf', f'fps=5,crop={w}:{h}:{x}:{y}:exact=1,format=gray', '-f', 'rawvideo', '-'],
+                                 capture_output=True, check=True).stdout
+            self.assertEqual(len(raw), 5 * w * h)
+        text = Path(engine_cli.__file__).read_text(encoding='utf-8')
+        self.assertEqual(text.count('crop='), text.count(':exact=1'))  # subband, footprints, refs scan, legacy ocr
+
+    def test_subband_hands_the_reader_boxed_frames_of_the_declared_size_and_position(self):
+        import json, tempfile
+        ff = _ffmpeg_or_skip(self)
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+        except ImportError:
+            self.skipTest('rapidocr unavailable')
+        import engine_cli
+        from unittest.mock import patch
+        shapes, means = [], []
+
+        class Reader:
+            def __init__(self, **kwargs):
+                pass
+
+            def __call__(self, image, **kwargs):
+                shapes.append(image.shape)
+                means.append(float(image.mean()))
+                return ([([[2, 2], [90, 2], [90, 25], [2, 25]], '快跑快跑', .99)], None) if image.mean() > 100 else ([], None)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            src = self._clip(tmp, ff, [(0, 6)])  # shown from 0 to 0.6 s
+            with patch('rapidocr_onnxruntime.RapidOCR', Reader):
+                engine_cli.subband(d, dict(ffmpeg=ff, source=str(src), width=self.W, height=self.H, duration=1.0, box=self.BOX))
+            track = json.loads((d / 'subtrack.json').read_text(encoding='utf-8'))
+        x, y, w, h = self.BOX
+        self.assertEqual(set(shapes), {(h, w, 3)})
+        self.assertTrue(all(m > 240 or m < 1 for m in means), means)  # the box is wholly bright or wholly dark: a shifted crop shows a mix
+        self.assertEqual(len(track['segments']), 1)
+        seg = track['segments'][0]
+        self.assertLess(seg['s'], .15)
+        self.assertTrue(x <= seg['x0'] and seg['x1'] <= x + w and y <= seg['y0'] and seg['y1'] <= y + h, seg)
+
+    def test_a_subtitle_that_shows_only_between_two_samples_is_read(self):
+        """The frame between two samples (0.2 s from each) is read when it differs from both, also when both are empty."""
+        import json, tempfile
+        ff = _ffmpeg_or_skip(self)
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+        except ImportError:
+            self.skipTest('rapidocr unavailable')
+        import engine_cli
+        from unittest.mock import patch
+        reads = []
+
+        class Reader:
+            def __init__(self, **kwargs):
+                pass
+
+            def __call__(self, image, **kwargs):
+                reads.append(float(image.mean()))
+                return ([([[0, 0], [99, 0], [99, 29], [0, 29]], '快跑', .99)], None) if image.mean() > 100 else ([], None)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            src = self._clip(tmp, ff, [(2, 4)])  # 0.2-0.4 s: at 5 fps only the 0.2 s frame shows it, and that is not a sample
+            with patch('rapidocr_onnxruntime.RapidOCR', Reader):
+                engine_cli.subband(d, dict(ffmpeg=ff, source=str(src), width=self.W, height=self.H, duration=1.0, box=self.BOX))
+            track = json.loads((d / 'subtrack.json').read_text(encoding='utf-8'))
+        self.assertTrue(any(m > 100 for m in reads), reads)
+        self.assertEqual([s['text'] for s in track['segments']], ['快跑'], track)
+        seg = track['segments'][0]
+        self.assertTrue(.0 <= seg['s'] <= .3 and .2 <= seg['e'] <= .5, seg)
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class OddBandEraseStageTest(BandEraseStageTest):
+    """The band stage tests again with a drawn band that has odd size and position (yuv420p source)."""
+    BAND = (161, 621, 959, 79)
+
+    def test_erase_json_records_the_text_box_pass(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            _ff, _src, d = self._erase(tmp, [dict(s=.6, e=1.8, x0=300, y0=630, x1=560, y1=690, text='a')])
+            done = json.loads((d / 'erase.json').read_text())
+            self.assertGreater(done['frames_touched'], 20)
+            self.assertIn('text_box_frames', done)

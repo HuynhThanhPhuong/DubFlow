@@ -193,5 +193,94 @@ class PrimarySourceCuesTest(unittest.TestCase):
         self.assertEqual([c['id'][:3] for c in cues], ['ocr'])  # leftovers of 0.2 s and 0.3 s are not worth a cue
 
 
+class DistinctLinesTest(unittest.TestCase):
+    """A review found two defects of the fragment merge: a negated sentence replaced the sentence before it, and a line
+    shown twice with the band empty in between became one long cue."""
+
+    @staticmethod
+    def samples(*rows, miss=None):
+        out, t = [], 0.0
+        for text in rows:
+            row = dict(t=round(t, 3), text=text)
+            if miss is not None and not text:
+                row['miss'] = miss
+            out.append(row)
+            t += .4
+        return out
+
+    def test_two_stable_readings_that_differ_inside_the_sentence_stay_two_cues(self):
+        lines = subtitle_lines(self.samples('我喜欢你', '我喜欢你', '我喜欢你', '我不喜欢你', '我不喜欢你', '我不喜欢你', ''), 10)
+        self.assertEqual([(l['text'], l['s'], l['e']) for l in lines], [('我喜欢你', 0.0, 1.0), ('我不喜欢你', 1.0, 2.2)])
+
+    def test_they_stay_apart_in_the_merge_as_well(self):
+        rows = merge_fragments([dict(s=0, e=1.2, text='我喜欢你'), dict(s=1.2, e=2.4, text='我不喜欢你')])
+        self.assertEqual([r['text'] for r in rows], ['我喜欢你', '我不喜欢你'])
+
+    def test_a_single_wrong_frame_inside_a_stable_line_is_still_absorbed(self):
+        lines = subtitle_lines(self.samples('我喜欢你', '我喜欢你', '我不喜欢你', '我喜欢你', '我喜欢你', ''), 10)
+        self.assertEqual([l['text'] for l in lines], ['我喜欢你'])
+        # two stable readings that differ at the ends only (a bracket read as a character) are one line
+        lines = subtitle_lines(self.samples('古晋见过师尊见过两位师兄门', '古晋见过师尊见过两位师兄门', '古晋见过师尊见过两位师兄了', '古晋见过师尊见过两位师兄了', ''), 10)
+        self.assertEqual(len(lines), 1)
+
+    def test_the_same_sentence_after_a_confirmed_empty_band_is_a_second_cue(self):
+        rows = ['救救我吧', '救救我吧', '救救我吧', '', '', '救救我吧', '救救我吧', '救救我吧', '']
+        for miss in (False, None):  # confirmed empty band / no evidence (two empty samples)
+            lines = subtitle_lines(self.samples(*rows, miss=miss), 10)
+            self.assertEqual([(l['text'], l['s'], l['e']) for l in lines], [('救救我吧', 0.0, 1.0), ('救救我吧', 1.8, 3.0)], miss)
+
+    def test_a_single_confirmed_empty_sample_separates_repeats_too(self):
+        lines = subtitle_lines(self.samples('救救我吧', '救救我吧', '', '救救我吧', '救救我吧', miss=False), 10)
+        self.assertEqual(len(lines), 2)
+
+    def test_a_missed_read_of_an_unchanged_band_does_not_split_a_line(self):
+        for gap in (1, 2, 3):
+            lines = subtitle_lines(self.samples('救救我吧', '救救我吧', *[''] * gap, '救救我吧', '救救我吧', miss=True), 10)
+            self.assertEqual(len(lines), 1, gap)
+        lines = subtitle_lines(self.samples('救救我吧', '救救我吧', *[''] * 4, '救救我吧', '救救我吧', miss=True), 10)
+        self.assertEqual(len(lines), 2)
+
+    def test_merge_does_not_rejoin_what_the_samples_kept_apart(self):
+        rows = merge_fragments(lines_from_samples(self.samples('救救我吧', '救救我吧', '', '救救我吧', '救救我吧', miss=False), 10))
+        self.assertEqual(len(rows), 2)
+
+
+class AsrBesideOcrTest(unittest.TestCase):
+    def asr(self, start, end, text, i='a'):
+        return dict(id=i, start=start, end=end, speaker='s', original=text, text='')
+
+    def test_the_same_words_spoken_again_away_from_the_subtitle_are_kept(self):
+        cues = build_source_cues_primary([dict(s=1, e=2, text='快跑')], [self.asr(4, 5, '快跑')], 30)
+        self.assertEqual([(c['source'], c['start'], c['end']) for c in cues], [('ocr', 1.0, 2.0), ('asr', 4, 5)])
+
+    def test_speech_touching_the_line_is_still_its_speech(self):
+        cues = build_source_cues_primary([dict(s=1, e=2, text='快跑快跑')], [self.asr(2.1, 2.9, '快跑快跑')], 30)
+        self.assertEqual([c['source'] for c in cues], ['ocr'])
+        cues = build_source_cues_primary([dict(s=1, e=2, text='快跑快跑')], [self.asr(.2, 1.4, '快跑快跑')], 30)  # overlaps it
+        self.assertEqual([c['source'] for c in cues], ['ocr+asr'])
+
+    def test_asr_longer_than_the_subtitle_keeps_only_the_words_outside_it(self):
+        cues = build_source_cues_primary([dict(s=0, e=4, text='大门已经打开')], [self.asr(0, 10, '大门已经打开现在赶快离开这里')], 30)
+        ocr, asr = cues
+        self.assertEqual((asr['source'], asr['start'], asr['end']), ('asr', 4, 10))
+        self.assertEqual(asr['original'], '现在赶快离开这里')
+        self.assertTrue(asr['source_partial'])
+        self.assertNotIn('source_uncertain', asr)
+
+    def test_words_before_the_subtitle_are_kept_and_the_misheard_part_is_found_by_alignment(self):
+        cues = build_source_cues_primary([dict(s=6, e=10, text='大门已经打开')], [self.asr(0, 10, '现在赶快离开这里大们已经打开')], 30)
+        asr = [c for c in cues if c['source'] == 'asr'][0]
+        self.assertEqual(asr['original'], '现在赶快离开这里')
+        self.assertEqual((asr['start'], asr['end']), (0, 6))
+
+    def test_without_a_text_match_the_cut_is_by_time_and_flagged_for_review(self):
+        cues = build_source_cues_primary([dict(s=0, e=4, text='今天天气真好啊')], [self.asr(0, 10, '完全不同的一句话还有后半句内容')], 30)
+        asr = cues[-1]
+        self.assertTrue(asr['source_uncertain'])
+        self.assertTrue(asr['source_partial'])
+        self.assertLess(len(asr['original']), len('完全不同的一句话还有后半句内容'))
+        self.assertEqual(asr['status'], 'needs_review')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -49,6 +49,35 @@ def compatible(ka, kb):
     return len(short) >= 4 and _matched(short, long) / len(short) >= .75
 
 
+def edge_variant(ka, kb):
+    """True when the two readings differ only at their ends: one common run covers everything but at most one character
+    at either end of the shorter reading (a bracket read as a character, e.g. '...师兄门' vs '...师兄了'), as opposed to a
+    difference inside the sentence ('我喜欢你' vs '我不喜欢你', '阿晋' vs '阿音'), which changes the meaning."""
+    short, long = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    blocks = [b for b in SequenceMatcher(None, short, long, autojunk=False).get_matching_blocks() if b.size]
+    if len(blocks) != 1 or blocks[0].size < 3:
+        return False
+    b = blocks[0]
+    return b.a <= 1 and len(short) - (b.a + b.size) <= 1 and b.size / len(short) >= .75
+
+
+def same_line(ka, kb):
+    """Strict form of compatible for two STABLE readings (each seen on several frames): equal, one contained in the
+    other (growing / partial line) or differing only at the ends. A reading that differs inside the sentence is another
+    line, however similar (a negation, one changed word)."""
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    short, long = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    if len(short) >= 2 and short in long:
+        return True
+    return len(short) >= 4 and edge_variant(ka, kb)
+
+
+STABLE_SECONDS = .6  # a reading shown this long, or on 2+ consecutive samples, is a real line and not a blink / mis-read
+
+
 def pick_text(votes):
     """votes {reading: weight} -> (best reading without brackets, share of the weight that agrees with it).
 
@@ -108,19 +137,27 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
     see compatible) and the gap between them is at most gap_same for equal texts of 4+ characters (a read that dropped
     out for a moment) or gap_fuzzy otherwise. The merged segment spans the first to the last frame, takes the most
     complete reading (pick_text over the members' readings) and the union of their boxes.
+    A "nearly equal" match (not equal, not contained) is only trusted for a weak fragment (shorter than STABLE_SECONDS: a
+    blink or a partial read) or when the readings differ at their ends only (same_line): two readings that were each
+    shown long enough and differ inside the sentence are two lines ('我喜欢你' then '我不喜欢你').
+    A segment flagged break_before (lines_from_samples saw a confirmed empty band, or a different stable line, between it
+    and the previous one) is never merged into it.
     A member may carry `votes` {reading: weight} (from lines_from_samples); otherwise its text, weighted by duration,
     is its only reading."""
     out = []
     for sg in sorted(segments, key=lambda x: (float(x['s']), float(x['e']))):
         votes = dict(sg.get('votes') or {sg.get('text', ''): max(1e-3, float(sg['e']) - float(sg['s']))})
         k = line_key(sg.get('text', ''))
-        member = dict(sg, votes=votes, _keys=[k], readings=list(sg.get('readings') or [sg.get('text', '')]))
+        dur = float(sg['e']) - float(sg['s'])
+        member = dict(sg, votes=votes, _keys=[k], _last_dur=dur, readings=list(sg.get('readings') or [sg.get('text', '')]))
         prev = out[-1] if out else None
-        if prev is not None and k:
+        if prev is not None and k and not sg.get('break_before'):
             gap = float(sg['s']) - float(prev['e'])
             same = k in prev['_keys']
             limit = gap_same if (same and len(k) >= 4) else gap_fuzzy
-            near = same or any(compatible(pk, k) for pk in prev['_keys'][-3:]) or compatible(line_key(prev['text']), k)
+            weak = dur < STABLE_SECONDS - 1e-9 or prev['_last_dur'] < STABLE_SECONDS - 1e-9
+            match = compatible if weak else same_line
+            near = same or any(match(pk, k) for pk in prev['_keys'][-3:]) or match(line_key(prev['text']), k)
             if not near and gap <= .25 + 1e-9 and _flicker(prev, sg):
                 near = True
             if near and gap <= limit + 1e-9:
@@ -132,6 +169,7 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
                     prev.update(x0=min(b['x0'] for b in boxes), y0=min(b['y0'] for b in boxes),
                                 x1=max(b['x1'] for b in boxes), y1=max(b['y1'] for b in boxes))
                 prev['_keys'].append(k)
+                prev['_last_dur'] = dur
                 prev['readings'] = prev['readings'] + member['readings']
                 prev['text'], prev['confidence'] = pick_text(prev['votes'])
                 continue
@@ -141,38 +179,94 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
         item['text'] = text or clean_line(item.get('text', ''))
         item['confidence'] = conf if text else item.get('confidence', 0.0)
         item['s'], item['e'] = round(float(item['s']), 3), round(float(item['e']), 3)
-        item.pop('votes')
-        item.pop('_keys')
+        for key in ('votes', '_keys', '_last_dur'):
+            item.pop(key)
     return out
 
 
+def _stable_flags(keys, times, step):
+    """Per sample: True when its reading is shown on 2+ consecutive samples (or for STABLE_SECONDS)."""
+    flags = [False] * len(keys)
+    i = 0
+    while i < len(keys):
+        if not keys[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(keys) and keys[j + 1] == keys[i]:
+            j += 1
+        if j > i or times[j] - times[i] + step >= STABLE_SECONDS - 1e-9:
+            flags[i:j + 1] = [True] * (j - i + 1)
+        i = j + 1
+    return flags
+
+
+def _bridgeable(kinds, ka, kb):
+    """May a line continue across the empty samples `kinds` between two readings ka, kb of one line?
+
+    kinds: 'miss' (nothing read although the band looks like the last one that had text), 'empty' (band confirmed empty:
+    the subtitle really went away) or 'unknown' (no evidence). A confirmed empty sample ends the line, so the same
+    sentence shown twice stays two cues. Misses are bridged up to 3 samples for equal readings of 4+ characters (a read
+    that dropped out for a moment), otherwise 1; with no evidence only 1 sample is bridged."""
+    if not kinds:
+        return True
+    if 'empty' in kinds:
+        return False
+    if 'unknown' in kinds:
+        return len(kinds) <= 1
+    return len(kinds) <= (3 if (ka == kb and len(kb) >= 4) else 1)
+
+
 def lines_from_samples(samples, duration, step=.4, min_chars=2):
-    """OCR samples [{t, text, box?}] (text '' = nothing read) -> raw lines [{s, e, text, votes, readings, x0..y1}].
+    """OCR samples [{t, text, box?, miss?}] (text '' = nothing read) -> raw lines [{s, e, text, votes, readings, x0..y1}].
 
     A line is a run of consecutive samples whose readings are compatible. Its first/last frame is the first/last
     sample moved half way to the neighbouring sample (a miss or a different line), so adjacent lines touch and a
     line never lasts less than one sample interval. A reading shorter than min_chars characters is ignored unless
-    the same character is read in a neighbouring sample too (a real one-character line)."""
+    the same character is read in a neighbouring sample too (a real one-character line).
+
+    Readings seen on a single sample are weak (a blink, a partial or mis-read frame): they join the current line when
+    compatible (including a near match). Readings seen on 2+ consecutive samples are stable: they join a line only
+    when equal, contained or differing at the ends (same_line); another stable reading starts a new line, flagged
+    break_before when it is merely similar ('我喜欢你' then '我不喜欢你'). An empty sample (`miss` True = the band looked
+    unchanged, False = the band really changed to empty, absent = unknown) ends the line unless _bridgeable."""
     samples = sorted(samples, key=lambda s: float(s['t']))
     keys = [line_key(s.get('text', '')) for s in samples]
     for i, k in enumerate(keys):
         if len(k) < min_chars and not (k and ((i + 1 < len(keys) and keys[i + 1] == k) or (i and keys[i - 1] == k))):
             keys[i] = ''
-    lines, cur = [], None
+    stable = _stable_flags(keys, [float(s['t']) for s in samples], step)
+    lines, cur, gap = [], None, []
     for i, sm in enumerate(samples):
         k = keys[i]
         if not k:
-            cur = None
+            if cur is not None:
+                if line_key(sm.get('text', '')):  # a stray character: read something, so no evidence of an empty band
+                    gap.append('unknown')
+                else:
+                    gap.append('miss' if sm.get('miss') is True else 'empty' if sm.get('miss') is False else 'unknown')
             continue
-        if cur is not None and (compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k)):
+        join, brk = False, False
+        if cur is not None:
+            if stable[i] and cur['stable']:
+                join = any(same_line(sk, k) for sk in cur['stable'])
+                brk = not join and (compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k))
+            else:
+                join = compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k)
+            if join and not _bridgeable(gap, cur['last_key'], k):
+                join, brk = False, True
+        if join:
             cur['idx'].append(i)
             cur['last_key'] = k
             cur['votes'][sm['text']] = cur['votes'].get(sm['text'], 0.0) + 1
+            if stable[i]:
+                cur['stable'].add(k)
             if len(k) > len(line_key(cur['best'])):
                 cur['best'] = sm['text']
         else:
-            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: 1.0})
+            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: 1.0}, stable={k} if stable[i] else set(), brk=brk)
             lines.append(cur)
+        gap = []
     out = []
     for ln in lines:
         a, b = ln['idx'][0], ln['idx'][-1]
@@ -184,6 +278,8 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
             continue
         boxes = [samples[i].get('box') for i in ln['idx'] if samples[i].get('box')]
         row = dict(s=s, e=e, text=ln['best'], votes=ln['votes'], readings=[samples[i]['text'] for i in ln['idx']])
+        if ln['brk']:
+            row['break_before'] = True
         if boxes:
             row.update(x0=min(b[0] for b in boxes), y0=min(b[1] for b in boxes), x1=max(b[2] for b in boxes), y1=max(b[3] for b in boxes))
         out.append(row)
@@ -241,14 +337,61 @@ def han_cover(han, other):
     return sum(1 for i, c in enumerate(han) if i in used and c not in _STOP) / len(chars)
 
 
-def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_window=3.0, dup_cover=.5, min_gap=.5):
+def _asr_outside_text(c, lines, a, b):
+    """Words of ASR cue `c` that are not on screen -> (text of the free part (a, b), sure).
+
+    Segment-level ASR has no word times, so the words of a displayed line are located by text: the line's characters are
+    aligned (difflib) with the ASR characters around the place where the overlap lies in time; when most of the line is
+    found, the span between its first and last matched character is the part already shown. Without such a match the
+    overlap is cut by time share (sure False). The result keeps the runs of remaining characters that touch the free
+    time part by the same proportion."""
+    original = c['original']
+    idx = [i for i, ch in enumerate(original) if '㐀' <= ch <= '鿿']
+    han = ''.join(original[i] for i in idx)
+    n, d = len(han), c['end'] - c['start']
+    if not n or d <= 0:
+        return original, True
+    covered, sure = [False] * n, True
+    for o in lines:
+        oh = chinese(o['original'])
+        i0 = int(round((max(o['start'], c['start']) - c['start']) / d * n))
+        i1 = int(round((min(o['end'], c['end']) - c['start']) / d * n))
+        margin = max(2, len(oh) // 2)
+        lo, hi = max(0, i0 - margin), min(n, i1 + margin)
+        blocks = [m for m in SequenceMatcher(None, han[lo:hi], oh, autojunk=False).get_matching_blocks() if m.size]
+        if oh and sum(m.size for m in blocks) / len(oh) >= .5:
+            first, last = lo + blocks[0].a, lo + blocks[-1].a + blocks[-1].size
+            for j in range(first, last):
+                covered[j] = True
+        else:
+            sure = False
+            for j in range(i0, i1):
+                covered[j] = True
+    j0, j1 = int(round((a - c['start']) / d * n)), int(round((b - c['start']) / d * n))
+    keep, j = [], 0
+    while j < n:
+        if covered[j]:
+            j += 1
+            continue
+        k = j
+        while k < n and not covered[k]:
+            k += 1
+        if k > j0 and j < j1:  # this run touches the free part
+            keep.append((j, k))
+        j = k
+    return ''.join(original[idx[j]:idx[k - 1] + 1] for j, k in keep), sure
+
+
+def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_window=.3, dup_cover=.5, min_gap=.5):
     """Source cues when the subtitle band is known: the on-screen lines are the text (one OCR cue per line); ASR only
     fills the time where no line is displayed and never overlaps an OCR cue.
 
     OCR cue: source 'ocr' (or 'ocr+asr' when speech overlaps it; asr_text and source_agreement stay for review).
-    ASR cue: dropped when half or more of it lies under a displayed line, or when its text repeats a line shown
-    within `dup_window` seconds (the speech of a line that appears a moment earlier or later); otherwise the longest
-    part outside the lines (at least `min_gap` s) is kept, flagged source_partial when it was cut."""
+    ASR cue: dropped when half or more of it lies under a displayed line, or when its text repeats a line shown at
+    most `dup_window` seconds away (the speech of a line that appears a moment earlier or later; the same words
+    further away are another utterance and are kept); otherwise the longest part outside the lines (at least `min_gap`
+    s) is kept, flagged source_partial when it was cut. The text of a cut cue is only the words outside the lines
+    (see _asr_outside_text), never the whole sentence again."""
     segs = sorted((s for s in segments if float(s['e']) > float(s['s']) and line_key(s.get('text', ''))),
                   key=lambda s: (float(s['s']), float(s['e'])))
     asrs = sorted(asr_cues, key=lambda c: (c['start'], c['end']))
@@ -286,13 +429,16 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
             continue
         covered = sum(_overlap(c['start'], c['end'], o['start'], o['end']) for o in ocr_cues)
         han = chinese(c['original'])
+        # speech a moment before / after the line it belongs to (the subtitle appears slightly late or leaves late) is
+        # the same utterance; the same words further away are another utterance and stay (the user can review them)
         near = [o for o in ocr_cues if o['start'] < c['end'] + dup_window and o['end'] > c['start'] - dup_window]
         repeats = bool(han) and any(han_cover(han, chinese(o['original'])) >= dup_cover for o in near)
         if covered / d >= .5 or repeats:
             dropped += 1
             continue
+        overlapping = [o for o in ocr_cues if _overlap(c['start'], c['end'], o['start'], o['end']) > 1e-9]
         pieces = [(c['start'], c['end'])]
-        for o in ocr_cues:
+        for o in overlapping:
             nxt = []
             for a, b in pieces:
                 if o['end'] <= a or o['start'] >= b:
@@ -311,6 +457,14 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
         new = dict(c, start=a, end=b, source='asr', source_agreement=1.0)
         if (a, b) != (c['start'], c['end']):
             new['source_partial'] = True
+            text, sure = _asr_outside_text(c, overlapping, a, b)
+            if not text:
+                dropped += 1
+                continue
+            new['original'] = text
+            if not sure:
+                new['source_uncertain'] = True  # the cut was made by time only: check the words against the video
+                new['status'] = 'needs_review'
         out.append(new)
     if stats is not None:
         stats.update(ocr_unreadable=0, asr_dropped=dropped)
