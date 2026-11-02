@@ -110,7 +110,7 @@ it("queue: lists awaiting_regions jobs with their status chip and an open button
   stub([], [waiting]);
   render(<App />);
   await screen.findByText("Chờ vùng");
-  expect(screen.getByText("Chờ chọn vùng sub")).toBeTruthy();
+  expect(document.querySelector(".badge")?.textContent).toBe("Chờ chọn vùng sub");
   expect(screen.getByRole("button", { name: "Mở biên tập" })).toBeTruthy();
   expect(screen.queryByText("Không có tác vụ đang chờ hoặc cần xử lý.")).toBeNull();
 });
