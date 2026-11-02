@@ -182,7 +182,16 @@ def stream_load_state_dict(model, weights):
     return _IncompatibleKeys(missing, unexpected)
 
 
+def takes_missing(directory, request):
+    """True when some (task, seed) take wav is not on disk yet; a resumed or repeated round with nothing to write loads no model."""
+    return any(not (directory/'lines'/f"{cache_key(dict(task['params'], seed=seed))}.wav").exists()
+               for task in request['tasks'] for seed in range(1000, 1000+request['count']))
+
+
 def gen(directory, request):
+    if not takes_missing(directory, request):
+        print('all takes exist; model not loaded', flush=True)
+        return
     import numpy as np
     import soundfile as sf
     import torch
@@ -247,6 +256,9 @@ def gen(directory, request):
 
 def gen_omni(directory, request):
     """OmniVoice takes (zero-shot clone of the reference clip + transcript). Runs in the OmniVoice venv, one GPU model at a time."""
+    if not takes_missing(directory, request):
+        print('all takes exist; model not loaded', flush=True)
+        return
     import numpy as np
     import soundfile as sf
     import torch
@@ -337,9 +349,15 @@ def similarity(directory, request):
 
 
 def pick(directory, request):
+    state = read(directory/'state.json',{})
+    unscored = any((directory/'lines'/f"{cache_key(dict(task['params'],seed=seed))}.wav").exists()
+                   and str(seed) not in state.get(task['key'],{}).get('takes',{})
+                   for task in request['tasks'] for seed in range(1000,1000+request['count']))
+    if not unscored:
+        print('all takes scored; ASR not loaded', flush=True)
+        return
     import soundfile as sf
     asr = load_asr(request)
-    state = read(directory/'state.json',{})
     for task in request['tasks']:
         st = state.setdefault(task['key'],{'takes':{}})
         for seed in range(1000,1000+request['count']):
