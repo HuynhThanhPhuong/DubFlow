@@ -1,0 +1,39 @@
+.logo-overlay { position:absolute; inset:0; pointer-events:none; z-index:7; }
+.logo-box { position:absolute; box-sizing:border-box; pointer-events:auto; touch-action:none; cursor:move; outline:1px dashed transparent; }
+.logo-box.selected { outline:2px solid #4658db; }
+.logo-box.inactive { pointer-events:none; }
+.logo-box img { width:100%; height:100%; display:block; object-fit:fill; user-select:none; -webkit-user-drag:none; pointer-events:none; }
+.logo-handle { position:absolute; width:20px; height:20px; background:#fff; border:2px solid #4658db; border-radius:4px; box-sizing:border-box; touch-action:none; }
+.logo-handle.nw { left:-10px; top:-10px; cursor:nwse-resize; }
+.logo-handle.ne { right:-10px; top:-10px; cursor:nesw-resize; }
+.logo-handle.sw { left:-10px; bottom:-10px; cursor:nesw-resize; }
+.logo-handle.se { right:-10px; bottom:-10px; cursor:nwse-resize; }
+.logo-editor { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:4px 6px; font-size:12px; flex-basis:100%; }
+.logo-editor label { display:flex; align-items:center; gap:4px; }
+.logo-editor input[type=number] { width:64px; }
+.logo-editor input[type=range] { width:90px; }
+.logo-delete { display:inline-flex; align-items:center; gap:4px; border:0; border-radius:6px; padding:3px 8px; font-size:12px; color:#fff; background:#c0392b; cursor:pointer; }
+.logo-delete:disabled { opacity:.5; cursor:default; }
+.logo-tools { position:relative; display:inline-flex; }
+.logo-popover { position:absolute; left:0; top:calc(100% + 4px); z-index:30; width:min(320px, calc(100vw - 24px)); max-height:70vh; overflow:auto; box-sizing:border-box; padding:8px; display:grid; gap:6px; font-size:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px #0002; }
+.logo-pop-head { display:flex; justify-content:space-between; align-items:center; }
+.logo-x { border:0; background:none; font-size:18px; line-height:1; cursor:pointer; color:var(--muted); }
+.logo-list { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill,minmax(88px,1fr)); gap:6px; }
+.logo-list li { position:relative; }
+.logo-item { width:100%; display:grid; gap:2px; justify-items:center; padding:4px; border:1px solid var(--line); border-radius:6px; background:repeating-conic-gradient(#e6eaea 0 25%, #fff 0 50%) 0 0/10px 10px; cursor:pointer; }
+.logo-item img { max-width:100%; height:40px; object-fit:contain; }
+.logo-item span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; background:#fffc; padding:0 3px; border-radius:3px; }
+.logo-item-del { position:absolute; top:2px; right:2px; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:50%; color:#fff; background:#c0392b; cursor:pointer; }
+.logo-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.logo-text-form { display:grid; gap:6px; }
+.logo-text-form label { display:grid; gap:2px; }
+.logo-text-form input[type=text] { width:100%; box-sizing:border-box; }
+.logo-text-row { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+.logo-text-row input[type=color] { width:36px; height:24px; padding:0; }
+.logo-text-stage { min-height:56px; display:flex; align-items:center; justify-content:center; padding:6px; border-radius:6px; background:#556; overflow:hidden; }
+.logo-text-stage img { max-width:100%; max-height:64px; }
+.logo-text-preview { font:700 32px/1.2 Roboto, "Segoe UI", sans-serif; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width:480px) {
+  .logo-tools { position:static; }
+  .logo-popover { position:fixed; left:12px; right:12px; top:auto; bottom:12px; width:auto; }
+}

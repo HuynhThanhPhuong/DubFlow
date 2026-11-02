@@ -1,5 +1,5 @@
 import { request } from "./api";
-import type { Job, Mode } from "./types";
+import type { DefaultOverlay, Job, Mode } from "./types";
 export type Provider = "gemini" | "openai" | "anthropic";
 export interface StudioSettings {
   output_dir: string;
@@ -38,6 +38,7 @@ export interface StudioSettings {
   max_takes: number;
   toast_success_ms: number;
   toast_error_ms: number;
+  default_overlay?: DefaultOverlay | null;
 }
 export interface Collection {
   id: string;

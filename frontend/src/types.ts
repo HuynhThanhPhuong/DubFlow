@@ -32,6 +32,7 @@ export interface Job {
   zip_url?: string | null;
   subtitle_style?: SubtitleStyle;
   translation_usage?: TranslationUsage | null;
+  overlays?: Overlay[];
 }
 export interface TranslationUsage {
   requests: number;
@@ -144,4 +145,41 @@ export interface VoiceScript {
   id: string;
   style: string;
   text: string;
+}
+
+export interface Overlay {
+  id: string;
+  logo_id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  start: number;
+  end: number;
+}
+export interface TextLogoStyle {
+  font: string;
+  color: string;
+  stroke_color: string;
+  stroke_width: number;
+  size: number;
+  bold?: boolean;
+}
+export interface Logo {
+  id: string;
+  kind: "image" | "text";
+  name: string;
+  width: number;
+  height: number;
+  url: string;
+  text?: string;
+  style?: TextLogoStyle;
+}
+export interface DefaultOverlay {
+  logo_id: string;
+  fx: number;
+  fy: number;
+  fw: number;
+  opacity: number;
 }

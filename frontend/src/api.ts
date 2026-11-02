@@ -4,7 +4,10 @@ import type {
   TranslateScope,
   Health,
   Job,
+  Logo,
   Mode,
+  Overlay,
+  TextLogoStyle,
   Part,
   Region,
   Sample,
@@ -127,6 +130,21 @@ export const api = {
   parts: (id: string) => request<Part[]>(`/jobs/${key(id)}/parts`),
   saveParts: (id: string, data: Part[]) =>
     request<Part[]>(`/jobs/${key(id)}/parts`, json("PUT", data)),
+  logos: () => request<Logo[]>("/logos"),
+  uploadLogo: (file: File, name: string) => {
+    const data = new FormData();
+    data.set("file", file);
+    data.set("name", name);
+    return request<Logo>("/logos", { method: "POST", body: data });
+  },
+  createTextLogo: (data: { name?: string; text: string; style: TextLogoStyle }) =>
+    request<Logo>("/logos/text", json("POST", data)),
+  deleteLogo: (id: string) => request<void>(`/logos/${key(id)}`, json("DELETE")),
+  saveOverlays: (id: string, overlays: Overlay[]) =>
+    request<Overlay[]>(
+      `/jobs/${key(id)}/overlays`,
+      json("PUT", { overlays }),
+    ),
   voices: () => request<Voice[]>("/voices"),
   scripts: () => request<VoiceScript[]>("/voice-scripts"),
   uploadVoice: (body: FormData) =>

@@ -9,8 +9,11 @@ import {
   Maximize,
 } from "lucide-react";
 import WaveSurfer from "wavesurfer.js";
-import type { Cue, Job, Region } from "./types";
+import type { Cue, Job, Logo, Overlay, Region } from "./types";
 import { api, ApiError, mediaUrl } from "./api";
+import { workspaceApi } from "./workspaceApi";
+import { LogoEditor, LogoOverlay, placeLogo } from "./LogoOverlay";
+import { LogoPicker } from "./LogoPicker";
 import { RegionEditor, RegionOverlay } from "./RegionOverlay";
 import { isBusy, playerSource, time } from "./helpers";
 import { Button, Empty } from "./ui";
@@ -50,6 +53,15 @@ export function Player({
     y: number;
     nodes: [Element, number, number][];
   } | null>(null);
+  const [overlays, setOverlays] = useState<Overlay[]>(job.overlays ?? []);
+  const [logoId, setLogoId] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [defaultLogo, setDefaultLogo] = useState<string | null>(null);
+  const serverOverlays = useRef<Overlay[]>(job.overlays ?? []);
+  const overlayTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overlaySeq = useRef(0);
+  const defaultRef = useRef<string | null>(null);
+  const defaultTouched = useRef(false);
   const togglePlay = async () => {
     if (!video.current) return;
     try {
@@ -93,6 +105,26 @@ export function Player({
     setRegions([]);
     setSelectedId(null);
   }, [job.id]);
+  useEffect(() => {
+    // The server list is authoritative unless a local edit is still waiting to be saved.
+    if (overlayTimer.current) return;
+    serverOverlays.current = job.overlays ?? [];
+    setOverlays(job.overlays ?? []);
+  }, [job.id, job.updated_at, job.overlays]);
+  useEffect(() => {
+    setLogoId(null);
+    setPickerOpen(false);
+    defaultRef.current = null;
+    setDefaultLogo(null);
+    if (overlayTimer.current) clearTimeout(overlayTimer.current);
+    overlayTimer.current = null;
+  }, [job.id]);
+  useEffect(
+    () => () => {
+      if (overlayTimer.current) clearTimeout(overlayTimer.current);
+    },
+    [],
+  );
   const videoW = job.width || video.current?.videoWidth || 0;
   const videoH = job.height || video.current?.videoHeight || 0;
   const regionDuration = job.duration || video.current?.duration || 0;
@@ -114,6 +146,74 @@ export function Player({
       .catch((e) => {
         if (seq === saveSeq.current) setRegions(serverRegions.current);
         setError(e instanceof Error ? e.message : "Không lưu được vùng che.");
+      });
+  };
+  const frac = (o: Overlay) => ({
+    logo_id: o.logo_id,
+    fx: o.x / videoW,
+    fy: o.y / videoH,
+    fw: o.width / videoW,
+    opacity: o.opacity,
+  });
+  const saveOverlays = (rows: Overlay[]) => {
+    setOverlays(rows);
+    if (overlayTimer.current) clearTimeout(overlayTimer.current);
+    const seq = ++overlaySeq.current;
+    overlayTimer.current = setTimeout(() => {
+      overlayTimer.current = null;
+      api
+        .saveOverlays(job.id, rows)
+        .then((saved) => {
+          serverOverlays.current = saved;
+          if (seq === overlaySeq.current) setOverlays(saved);
+          const kept = saved.find((o) => o.logo_id === defaultRef.current);
+          if (kept)
+            void workspaceApi
+              .updateSettings({ default_overlay: frac(kept) })
+              .catch(() => {});
+        })
+        .catch((e) => {
+          if (seq === overlaySeq.current) setOverlays(serverOverlays.current);
+          setError(e instanceof Error ? e.message : "Không lưu được logo.");
+        });
+    }, 300);
+  };
+  const addLogo = (logo: Logo) => {
+    if (!(videoW > 0 && videoH > 0 && regionDuration > 0)) return;
+    const placed = placeLogo(logo, videoW, videoH, regionDuration);
+    saveOverlays([...overlays, placed]);
+    setLogoId(placed.id);
+    setSelectedId(null);
+    setPickerOpen(false);
+  };
+  const selectedLogo = overlays.find((o) => o.id === logoId);
+  useEffect(() => {
+    if (!selectedLogo) return;
+    let live = true;
+    defaultTouched.current = false;
+    workspaceApi
+      .settings()
+      .then((s) => {
+        if (!live || defaultTouched.current) return;
+        defaultRef.current = s.default_overlay?.logo_id ?? null;
+        setDefaultLogo(defaultRef.current);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [selectedLogo?.id]);
+  const setAsDefault = (o: Overlay, on: boolean) => {
+    const previous = defaultRef.current;
+    defaultTouched.current = true;
+    defaultRef.current = on ? o.logo_id : null;
+    setDefaultLogo(defaultRef.current);
+    workspaceApi
+      .updateSettings({ default_overlay: on ? frac(o) : null })
+      .catch((e) => {
+        defaultRef.current = previous;
+        setDefaultLogo(previous);
+        setError(e instanceof Error ? e.message : "Không lưu được thiết lập logo.");
       });
   };
   const detectLogos = async () => {
@@ -286,10 +386,30 @@ export function Player({
             playing={playing}
             drawing={drawing}
             selectedId={selectedId}
-            onSelect={setSelectedId}
+            onSelect={(id) => {
+              setSelectedId(id);
+              if (id) setLogoId(null);
+            }}
             disabled={busy}
             onChange={saveRegions}
             onDrawEnd={() => setDrawing(false)}
+          />
+        )}
+        {source && videoW > 0 && view !== "output" && (
+          <LogoOverlay
+            overlays={overlays}
+            rect={rect}
+            videoWidth={videoW}
+            videoHeight={videoH}
+            currentTime={now}
+            selectedId={logoId}
+            onSelect={(id) => {
+              setLogoId(id);
+              if (id) setSelectedId(null);
+            }}
+            onChange={saveOverlays}
+            disabled={busy}
+            inactive={drawing}
           />
         )}
         {source && !playing && !drawing && (
@@ -327,6 +447,43 @@ export function Player({
         >
           {drawing ? "Xong vẽ" : "Vẽ vùng che"}
         </Button>
+        <span className="logo-tools">
+          <Button
+            variant="ghost"
+            aria-expanded={pickerOpen}
+            disabled={busy || drawing || !(regionDuration > 0)}
+            onClick={() => setPickerOpen(!pickerOpen)}
+          >
+            Chèn logo
+          </Button>
+          {pickerOpen && (
+            <LogoPicker
+              disabled={busy}
+              onPick={addLogo}
+              onClose={() => setPickerOpen(false)}
+            />
+          )}
+        </span>
+        {!drawing && selectedLogo && (
+          <LogoEditor
+            overlay={selectedLogo}
+            duration={regionDuration}
+            disabled={busy}
+            isDefault={defaultLogo === selectedLogo.logo_id}
+            onChange={(change) =>
+              saveOverlays(
+                overlays.map((o) =>
+                  o.id === selectedLogo.id ? { ...o, ...change } : o,
+                ),
+              )
+            }
+            onDelete={() => {
+              saveOverlays(overlays.filter((o) => o.id !== selectedLogo.id));
+              setLogoId(null);
+            }}
+            onDefault={(on) => setAsDefault(selectedLogo, on)}
+          />
+        )}
         {!drawing && selectedRegion && (
           <RegionEditor
             region={selectedRegion}
