@@ -584,7 +584,22 @@ class PipelineTests(unittest.TestCase):
                 counts[name]=(Path(d)/'render-filter.txt').read_text().count('overlay=')
         self.assertEqual(counts,dict(unconfirmed=2,confirmed=3,drawn=3))  # subtitle + transient, plus the static box when reviewed
 
-    def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None, static=None):
+    def _render_gains(self, directory, mode, **settings):
+        directory.mkdir()
+        (directory/'background.wav').write_bytes(b'b')
+        self._render_cmd(directory,False,mode=mode,settings=settings)
+        graph=(directory/'render-filter.txt').read_text()
+        return float(graph.split('volume=')[1].split('[')[0])
+
+    def test_dub_background_uses_background_gain_and_tm_keeps_original_gain(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            self.assertEqual(self._render_gains(d/'a','dub'),.8)
+            self.assertEqual(self._render_gains(d/'b','dub',background_gain=.5,original_gain=.1),.5)
+            self.assertEqual(self._render_gains(d/'c','tm',original_gain=.1,background_gain=.5),.1)
+            self.assertEqual(self._render_gains(d/'e','tm'),.32)
+
+    def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None, static=None, settings=None):
         (directory/'source.mp4').write_bytes(b'src')
         (directory/'dry.wav').write_bytes(b'x')
         cues=[dict(id='1',start=0,end=1,speaker='s',original='o',text='Xin chào')]
@@ -595,14 +610,14 @@ class PipelineTests(unittest.TestCase):
             dict(id='s',kind='subtitle',enabled=True,x=10,y=200,width=100,height=20,start=0,end=3),
             dict(dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3,auto=True,confirmed=True),**(static or {})),
             dict(id='t',kind='transient',enabled=True,x=0,y=100,width=60,height=20,start=1,end=2,text='x',translation='y')])
-        if mode=='tm':
-            p.write(directory/'manifest.json',dict(mode='tm',input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))
+        if mode in ('tm','dub'):
+            p.write(directory/'manifest.json',dict(mode=mode,input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))
         if clean:
             (directory/'clean.mp4').write_bytes(b'c')
             p.write(directory/'erase.json',self._stamp(directory,**(stamp or {})))
         with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run') as run:
             try:
-                p.render(directory,SimpleNamespace(blur_original=blur),lambda *a:None)
+                p.render(directory,SimpleNamespace(blur_original=blur,**(settings or {})),lambda *a:None)
             except Exception:
                 pass
             return run.call_args_list[0].args[0] if run.call_args_list else None

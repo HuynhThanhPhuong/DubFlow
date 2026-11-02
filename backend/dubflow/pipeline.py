@@ -1125,11 +1125,10 @@ def render(job_dir, settings, emit):
             if not (directory/'background.wav').exists():
                 raise NeedsReview('Dub requires separated background.wav')
             cmd += ['-i',str(directory/'background.wav'),'-i',str(directory/'dry.wav')]
-            bed,voice,bg_gain,vo_gain = f'{mask_inputs+1}:a',f'{mask_inputs+2}:a',.8,.85
+            bed,voice,bg_gain,vo_gain = f'{mask_inputs+1}:a',f'{mask_inputs+2}:a',getattr(settings,'background_gain',.8),.85
         else:
             cmd += ['-i',str(directory/'dry.wav')]
-            bed,voice,bg_gain,vo_gain = '0:a',f'{mask_inputs+1}:a',.32,.9
-        bg_gain = getattr(settings,'original_gain',bg_gain)
+            bed,voice,bg_gain,vo_gain = '0:a',f'{mask_inputs+1}:a',getattr(settings,'original_gain',.32),.9
         graph.append(f'[{bed}]volume={bg_gain}[bg];[{voice}]volume={vo_gain}[vo];[bg][vo]amix=inputs=2:normalize=0:duration=longest,loudnorm=I=-17:TP=-2.5:LRA=11[a]')
         amap = '[a]'
     if use_clean:  # video from clean.mp4 as the last input; audio inputs above are unchanged

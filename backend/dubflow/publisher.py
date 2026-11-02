@@ -24,7 +24,8 @@ def render_signature(folder, job, values):
     digest=hashlib.sha256()
     # Publication metadata does not affect content validity.
     digest.update(json.dumps({k:job.get(k) for k in ('mode','voice_id','voice_ref','source_path','export_kind')},sort_keys=True).encode())
-    digest.update(json.dumps({k:values[k] for k in ('resolution','blur_original','original_gain')},sort_keys=True).encode())
+    gains=('background_gain',) if job.get('mode')=='dub' else ('original_gain',)  # each mode's own gain only
+    digest.update(json.dumps({k:values[k] for k in ('resolution','blur_original')+gains},sort_keys=True).encode())
     for name in ('cues.json','regions.json','parts.json','manifest.json','review-state.json','output.mp4'):
         path=folder/name
         if path.exists():

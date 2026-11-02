@@ -40,7 +40,8 @@ class Preferences(BaseModel):
     default_mode: Literal['dub','tm','vietsub'] = 'dub'
     default_voice_id: str | None = Field(default=None, max_length=100)
     blur_original: bool = True
-    original_gain: FiniteFloat = Field(default=.32, ge=0, le=1)
+    original_gain: FiniteFloat = Field(default=.32, ge=0, le=1)  # TM: original audio under the voice
+    background_gain: FiniteFloat = Field(default=.8, ge=0, le=1)  # dub: separated background under the voice
     max_takes: int = Field(default=24, ge=4, le=24)
     fallback_takes: int = Field(default=8, ge=0, le=24)  # extra takes of the second engine, only for lines the first engine could not pass
     default_overlay: DefaultOverlay | None = None
