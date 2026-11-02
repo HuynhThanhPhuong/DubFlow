@@ -178,3 +178,11 @@
 .studio-app .studio-workflow b,.studio-app .editor-head .studio-workflow b{display:block;font-size:11px;line-height:1.2;font-weight:600;overflow:hidden;text-overflow:ellipsis}
 .studio-app .studio-workflow .step-meta,.studio-app .editor-head .studio-workflow .step-meta{display:block;margin:0;font-size:10px;line-height:1.2;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
 @media(max-width:700px){.studio-app .studio-workflow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Step bar live progress: running card, default-guess estimate and thin translate progress bar. */
+.studio-app .studio-workflow>div.running,.studio-app .editor-head .studio-workflow>div.running{border-color:#aab5ef;background:#f6f8ff}
+.studio-app .studio-workflow .step-meta.is-guess{opacity:.75;font-style:italic}
+.studio-app .studio-workflow .step-progress{display:block;width:100%;height:3px;margin-top:3px;border-radius:2px;flex-shrink:0}
+.studio-app .studio-workflow .step-progress::-webkit-progress-bar{background:#e4e9f7;border-radius:2px}
+.studio-app .studio-workflow .step-progress::-webkit-progress-value{background:#4658db;border-radius:2px}
+.studio-app .studio-workflow .step-progress::-moz-progress-bar{background:#4658db;border-radius:2px}

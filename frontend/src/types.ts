@@ -1,4 +1,14 @@
 export type Mode = "dub" | "tm" | "vietsub";
+export type StageStep = "analyze" | "translate" | "synthesize" | "render";
+export interface StageEstimate {
+  seconds: number;
+  source: "history" | "default";
+}
+export interface StageDetail {
+  done: number;
+  total: number;
+  unit: string;
+}
 export interface Job {
   collection_id?: string | null;
   collection_name?: string | null;
@@ -14,6 +24,11 @@ export interface Job {
   status: string;
   stage: string;
   progress: number;
+  stage_step?: StageStep | null;
+  stage_started_at?: string | null;
+  stage_detail?: StageDetail | null;
+  eta_seconds?: number | null;
+  stage_estimates?: Partial<Record<StageStep, StageEstimate>> | null;
   error: string | null;
   duration: number | null;
   width: number | null;

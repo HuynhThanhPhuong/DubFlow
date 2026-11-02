@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -53,4 +53,26 @@ it("renders pipeline steps with a .step-meta status element", async () => {
   const steps = document.querySelectorAll(".studio-workflow > div");
   expect(steps.length).toBe(4);
   steps.forEach((step) => expect(step.querySelector(".step-meta")).not.toBeNull());
+});
+
+it("updates the step bar from SSE pushes carrying the progress/ETA fields, without reload", async () => {
+  location.hash = "#editor?job=job1";
+  stubFetch();
+  const sources: { onmessage: ((e: { data: string }) => void) | null; close: () => void }[] = [];
+  vi.stubGlobal("EventSource", class {
+    onmessage: ((e: { data: string }) => void) | null = null;
+    close() {}
+    constructor() { sources.push(this); }
+  });
+  render(<App />);
+  await screen.findByRole("button", { name: /Lưu ý của dự án/ });
+  await waitFor(() => expect(sources.length).toBeGreaterThan(0));
+  act(() => {
+    sources[sources.length - 1].onmessage?.({ data: JSON.stringify({
+      ...job, status: "processing", stage_step: "translate", eta_seconds: 120,
+      stage_detail: { done: 21, total: 40, unit: "câu" },
+      stage_estimates: { translate: { seconds: 120, source: "history" } },
+    }) });
+  });
+  expect(await screen.findByText("Đang dịch 21/40 câu · còn ~2 phút")).toBeTruthy();
 });

@@ -38,6 +38,7 @@ import { providerLabels } from "./TranslationSettings";
 import { Button, Empty, Toast } from "./ui";
 import { vietnameseMessage } from "./messages";
 import { Player, Timeline } from "./Player";
+import { PipelineSteps } from "./PipelineSteps";
 import './editor-interactions.css';
 import {
   ImportDialog,
@@ -519,7 +520,7 @@ export default function App() {
                 )}
               </div>
               </div>
-              <div className="studio-workflow"><div><b>Nhận dạng</b><small className="step-meta">{cues.length?`${cues.length} câu lời gốc`:"Chưa phân tích"}</small></div><div className={missing?"current":""}><b>Dịch tiếng Việt</b><small className="step-meta">{cues.length?`${cues.length-missing}/${cues.length} câu đã có lời Việt`:"Chưa có bản dịch"}</small></div><div><b>{currentJob.mode==="vietsub"?"Xem & sửa lời dịch":"Tạo giọng & kiểm tra"}</b><small className="step-meta">{currentJob.mode==="vietsub"?"Sửa ngay trong Lời dịch khi cần":`${currentJob.ready_count||0}/${cues.length} câu có giọng`}</small></div><div><b>Xuất video</b><small className="step-meta">{currentJob.exported_paths?.length?"Đã lưu vào thư mục":currentJob.status==="done"?"Có bản xem trước":"Chưa xuất"}</small></div></div>
+              <PipelineSteps job={currentJob} cueCount={cues.length} missing={missing}/>
               </div>
               {isBusy(currentJob) && (
                 <div className="job-progress">
