@@ -1,5 +1,6 @@
 """Synchronous file-only pipeline, called by the single durable worker."""
 from __future__ import annotations
+import ast
 import hashlib
 import json
 import logging
@@ -47,6 +48,52 @@ def file_hash(path):
         for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
+
+def code_hash(names, *paths):
+    """Hash of the source text of the named top-level functions, classes and constants, looked up in the given files in order.
+    Parsed with ast, so the heavy model libraries those files import lazily are never imported. A missing name raises."""
+    found = {}
+    for path in paths:
+        text = Path(path).read_text(encoding='utf-8')
+        for node in ast.parse(text).body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                owned = [node.name]
+            elif isinstance(node, ast.Assign):
+                owned = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            else:
+                continue
+            for name in owned:
+                if name in names and name not in found:
+                    found[name] = ast.get_source_segment(text, node) or ''
+    missing = [n for n in names if n not in found]
+    if missing:
+        raise KeyError('code_hash: not found: ' + ', '.join(missing))
+    return cache_key([found[n] for n in names])
+
+def take_code_hash(engine_path=None, pipeline_path=None):
+    """Part of every take key: the code that decides a take's audio and score (engine_cli.TAKE_CODE). Unrelated edits keep old takes valid."""
+    engine_path = Path(engine_path or Path(__file__).with_name('engine_cli.py'))
+    pipeline_path = Path(pipeline_path or __file__)
+    names = None
+    for node in ast.parse(engine_path.read_text(encoding='utf-8')).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'TAKE_CODE' for t in node.targets):
+            names = ast.literal_eval(node.value)
+    if not names:
+        raise KeyError('TAKE_CODE missing in ' + engine_path.name)
+    return code_hash(tuple(names), engine_path, pipeline_path)
+
+def source_stamp(path):
+    """Content hash of a stage input; 'missing' when the file is absent (tests and partly deleted jobs)."""
+    path = Path(path)
+    return file_hash(path) if path.is_file() else 'missing'
+
+def stage_stamp_current(stamp, key):
+    """True when the stamp file holds this key; a job from before stamps existed (no file) adopts the key and keeps its outputs."""
+    old = read(stamp, None)
+    if old is None:
+        write(stamp, dict(key=key))
+        return True
+    return old.get('key') == key
 
 _TONES = {'̀': '1', '́': '2', '̃': '3', '̉': '4', '̣': '5'}
 _Y_ONSET = re.compile(r'(ngh|ng|gh|kh|ph|th|tr|ch|nh|[bcdđghklmnpqrstvx])y')
@@ -527,14 +574,21 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings, accept_fa
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     emit('separating', 'Separating background and original voices', 5)
-    if job.get('mode') == 'dub' and (not (directory/'background.wav').exists() or not (directory/'vocals.wav').exists()):
-        engine('separate', directory, settings, {'source':str(source)}, emit=emit)
-    fresh_transcript = not read(directory/'cues.json', [])
+    if job.get('mode') == 'dub':
+        # keyed by the source content: a replaced source.mp4 is separated again
+        separate_key = cache_key(dict(stage='separate', source=source_stamp(source), version=1))
+        have = (directory/'background.wav').exists() and (directory/'vocals.wav').exists()
+        if not have or not stage_stamp_current(directory/'separate.json', separate_key):
+            engine('separate', directory, settings, {'source':str(source)}, emit=emit)
+            write(directory/'separate.json', dict(key=separate_key))
+    audio = directory/'vocals.wav' if (directory/'vocals.wav').exists() else source
+    transcribe_key = cache_key(dict(stage='transcribe', audio=source_stamp(audio), duration=meta['duration'], language='zh', version=1))
+    fresh_transcript = not read(directory/'cues.json', []) or not stage_stamp_current(directory/'transcribe.json', transcribe_key)
     warnings = []
     if fresh_transcript:
-        audio = directory/'vocals.wav' if (directory/'vocals.wav').exists() else source
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
+        write(directory/'transcribe.json', dict(key=transcribe_key))
         build_source(directory, source, audio, meta, settings, emit, warnings)
     if not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
@@ -732,7 +786,7 @@ def synthesize(job_dir, settings, emit):
         conf['model_revision'] = model_identity(conf['model'],conf['model_cache'])
     asr_model, asr_cache = 'openai/whisper-large-v3-turbo', str(getattr(settings,'asr_cache',''))
     asr_revision = model_identity(asr_model,asr_cache)
-    engine_code = file_hash(Path(__file__).with_name('engine_cli.py'))
+    engine_code = take_code_hash()
     by_engine = {name:{} for name in order}  # engine -> cue index -> task
     skipped = {}  # cue index -> {engine: reason it is not used for that line}
     checked = {}  # reference path -> problem (dub speaker clips are checked once)
@@ -943,6 +997,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             out += event(start,end,group[0]['translation'],x,y,size,4)
     return out
 
+def render_key(directory, command, graph_text, meta, mask_files=()):
+    """Key of one final encode: the full command (inputs, encoder, output size via the graph), the filter graph, the captions and
+    the content of every input file (large videos by size and mtime). The same key means the same output.mp4."""
+    inputs = [command[i+1] for i,a in enumerate(command[:-1]) if a == '-i']
+    inputs += [str(p) for p in mask_files]
+    stamps = {}
+    for name in inputs + [str(directory/'captions.ass')]:
+        path = Path(name) if Path(name).is_absolute() else directory/name
+        if not path.is_file():
+            stamps[name] = None
+        elif path.stat().st_size > 32*1024*1024:
+            stamps[name] = [path.stat().st_size, path.stat().st_mtime_ns]
+        else:
+            stamps[name] = file_hash(path)
+    size = dict(width=meta.get('width'), height=meta.get('height'), fps=meta.get('fps'), duration=meta.get('duration'))
+    return cache_key(dict(version=1, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size))
+
 def render(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     cues = read(directory/'cues.json', [])
@@ -1012,8 +1083,8 @@ def render(job_dir, settings, emit):
         mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle' and not (r.get('kind') == 'static' and r.get('id') in erased)]
         last = 'cleanv'
     mask_inputs = 0
+    paths = {}
     if getattr(settings,'blur_original',True):
-        paths = {}
         for i,r in enumerate(mask_regions):
             if r.get('mask_path'):
                 path = Path(r['mask_path'])
@@ -1079,28 +1150,37 @@ def render(job_dir, settings, emit):
     video = video_encoder(settings,ff)
     tail = ['-c:a','aac','-b:a','192k','-ar','48000','-movflags','+faststart','output.mp4']
     cmd += ['-filter_complex_script','render-filter.txt','-map','[vout]','-map',amap,'-t',str(meta['duration'])]
-    if (directory/'output.mp4').exists():
-        archive=directory/'render-history'/uuid.uuid4().hex
-        archive.mkdir(parents=True)
-        for name in ('output.mp4','render-command.json','render-version.json','part-outputs.json'):
-            if (directory/name).exists():shutil.copy2(directory/name,archive/name)
-    write(directory/'render-command.json',cmd+video+tail)
-    emit('rendering','Rendering video on GPU (NVENC)' if video is NVENC_ARGS else 'Rendering video on CPU',90)
-    try:
-        run(cmd+video+tail,cwd=directory)
-        if video is NVENC_ARGS and frames_missing(directory/'output.mp4',meta,settings):
-            raise RuntimeError('NVENC output dropped frames')
-    except Cancelled:
-        raise
-    except RuntimeError:
-        if video is not NVENC_ARGS:
+    key_file = directory/'render-key.json'
+    key = render_key(directory, cmd+video+tail, ';'.join(graph), meta, list(paths))
+    reuse = ((directory/'output.mp4').is_file() and (read(key_file, None) or {}).get('key') == key
+             and not frames_missing(directory/'output.mp4', meta, settings))
+    if reuse:
+        emit('rendering','Render inputs unchanged; reusing output.mp4',95)
+    else:
+        key_file.unlink(missing_ok=True)  # an interrupted encode must not leave a key that matches a half-written output
+        if (directory/'output.mp4').exists():
+            archive=directory/'render-history'/uuid.uuid4().hex
+            archive.mkdir(parents=True)
+            for name in ('output.mp4','render-command.json','render-version.json','part-outputs.json'):
+                if (directory/name).exists():shutil.copy2(directory/name,archive/name)
+        write(directory/'render-command.json',cmd+video+tail)
+        emit('rendering','Rendering video on GPU (NVENC)' if video is NVENC_ARGS else 'Rendering video on CPU',90)
+        try:
+            run(cmd+video+tail,cwd=directory)
+            if video is NVENC_ARGS and frames_missing(directory/'output.mp4',meta,settings):
+                raise RuntimeError('NVENC output dropped frames')
+        except Cancelled:
             raise
-        # NVENC can refuse at run time (busy GPU, session limit) or drop frames; the CPU encoder always works
-        emit('rendering','NVENC failed; rendering video on CPU',90)
-        write(directory/'render-command.json',cmd+X264_ARGS+tail)
-        run(cmd+X264_ARGS+tail,cwd=directory)
-    # A successful mux is not evidence of an intact final encoded file.
-    run([ff,'-v','error','-xerror','-i',str(directory/'output.mp4'),'-f','null','-'],cwd=directory)
+        except RuntimeError:
+            if video is not NVENC_ARGS:
+                raise
+            # NVENC can refuse at run time (busy GPU, session limit) or drop frames; the CPU encoder always works
+            emit('rendering','NVENC failed; rendering video on CPU',90)
+            write(directory/'render-command.json',cmd+X264_ARGS+tail)
+            run(cmd+X264_ARGS+tail,cwd=directory)
+        # A successful mux is not evidence of an intact final encoded file.
+        run([ff,'-v','error','-xerror','-i',str(directory/'output.mp4'),'-f','null','-'],cwd=directory)
+        write(key_file, dict(key=key))
     write(directory/'render-version.json', {'version':'transparent-captions-v4'})
     parts = []
     for i,part in enumerate(read(directory/'parts.json',[])):

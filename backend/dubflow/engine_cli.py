@@ -1021,6 +1021,10 @@ def erase(directory, request):
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
 
 
+# Code that decides a take's audio and score; pipeline.take_code_hash hashes only these, so edits elsewhere (OCR, erase, logos) keep stored takes valid.
+TAKE_CODE=('decode','snapshot','load_asr','LazyWeights','lazy_weights','read_tensor','cpu_rope_tables','stream_load_state_dict','takes_missing',
+           'gen','gen_omni','text_match','token_distance','similarity','pick','_TONES','_Y_ONSET','_canon_token','tokens','apply_pronounce')
+
 STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)  # 'speakers' is added lazily by main
 
 
