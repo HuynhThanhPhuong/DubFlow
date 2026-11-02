@@ -3,7 +3,7 @@
 .studio-app .simple-header{height:66px;min-height:66px;padding:0 3vw;gap:22px}
 .studio-app .simple-header nav{gap:23px}.studio-app .simple-header .brand{font-size:25px}
 .studio-app .button:not(.media-button)>svg,.studio-app .mode-line button>svg{display:none}
-.studio-app .button:not(.media-button){gap:0}.studio-app .button{min-height:38px}
+.studio-app .button:not(.media-button){gap:0}.studio-app .button{min-height:var(--control-h)}
 .studio-app .title-edit-button{display:block;border:0;background:none;padding:0;text-align:left;max-width:100%;color:var(--ink)}
 .studio-app .title-edit-button:hover h1{color:var(--accent)}
 .editable-title{font-size:22px;font-weight:650;letter-spacing:-.6px;width:min(650px,100%);min-height:37px;padding:4px 8px;border-color:#aab5ef}
@@ -75,7 +75,7 @@
 .studio-app .studio-settings-panel .studio-option small { margin-top: 3px; }
 .studio-app .studio-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px; }
 .studio-app .studio-settings-footer > small { margin-right: auto; }
-.studio-app .studio-settings-footer > .button { flex: 0 0 auto; align-self: center; height: 38px; min-height: 38px; padding: 8px 16px; }
+.studio-app .studio-settings-footer > .button { flex: 0 0 auto; align-self: center; height: var(--control-h); min-height: var(--control-h); padding: 4px 16px; }
 @media(max-width:720px) { .studio-app .studio-settings-checks { grid-template-columns: 1fr; } }
 
 .studio-app .studio-settings-panel { gap: 10px; }

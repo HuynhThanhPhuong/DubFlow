@@ -17,6 +17,7 @@ import type {
   WorkspaceJob,
 } from "./workspaceApi";
 import "./studio-pages.css";
+import { Pagination } from "./Pagination";
 
 function Field({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
   return (
@@ -24,40 +25,6 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </label>
-  );
-}
-function Pagination({
-  total,
-  size,
-  page,
-  setPage,
-}: {
-  total: number;
-  size: number;
-  page: number;
-  setPage: (n: number) => void;
-}) {
-  const pages = Math.max(1, Math.ceil(total / size));
-  const current = Math.min(page, pages - 1);
-  return (
-    <nav className="studio-pagination" aria-label="Phân trang">
-      <span>
-        {total ? current * size + 1 : 0}–{Math.min((current + 1) * size, total)}{" "}
-        / {total}
-      </span>
-      <Button disabled={!current} onClick={() => setPage(current - 1)}>
-        Trước
-      </Button>
-      <b>
-        {current + 1} / {pages}
-      </b>
-      <Button
-        disabled={current + 1 >= pages}
-        onClick={() => setPage(current + 1)}
-      >
-        Sau
-      </Button>
-    </nav>
   );
 }
 function useCapacity(grid = false) {
@@ -79,9 +46,11 @@ function useCapacity(grid = false) {
         : new ResizeObserver(measure);
     observer?.observe(node);
     window.addEventListener("resize", measure);
+    document.addEventListener("fullscreenchange", measure);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", measure);
+      document.removeEventListener("fullscreenchange", measure);
     };
   }, [grid]);
   return { ref, size };
@@ -364,7 +333,7 @@ export function CollectionsPage({
         total={filtered.length}
         size={capacity.size}
         page={page}
-        setPage={setPage}
+        onChange={setPage}
       />
       {editing && (
         <CollectionEditor
@@ -789,7 +758,7 @@ export function VoicesPage({
             total={filtered.length}
             size={capacity.size}
             page={page}
-            setPage={setPage}
+            onChange={setPage}
           />
         </section>
         <aside className="studio-panel studio-voice-detail">

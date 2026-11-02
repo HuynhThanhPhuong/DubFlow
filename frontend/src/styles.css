@@ -13,6 +13,10 @@
   --line: #e3e9e8;
   --accent: #217b75;
   --tint: #eef6f4;
+  --control-h: 32px;
+  --control-font: 13px;
+  --radio-size: 15px;
+  --radio-gap: 6px;
 }
 * {
   box-sizing: border-box;
@@ -74,9 +78,10 @@ select {
   background: #fff;
   color: var(--ink);
   border-radius: 7px;
-  padding: 10px 12px;
+  padding: 4px 10px;
   max-width: 100%;
-  min-height: 42px;
+  min-height: var(--control-h);
+  font-size: var(--control-font);
 }
 textarea {
   resize: vertical;
@@ -139,9 +144,9 @@ progress {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 14px;
-  min-height: 42px;
-  font-size: 12px;
+  padding: 4px 12px;
+  min-height: var(--control-h);
+  font-size: var(--control-font);
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -1145,7 +1150,7 @@ progress::-moz-progress-bar {
 .toast .button { padding:4px; min-width:30px; min-height:30px; }
 .audio-input-row { display:flex; gap:10px; align-items:flex-end; }
 .audio-input-row .audio-file-field { flex:1; min-width:0; }
-.audio-input-row > .button { flex-shrink:0; min-height:42px; white-space:nowrap; }
+.audio-input-row > .button { flex-shrink:0; min-height:var(--control-h); white-space:nowrap; }
 @keyframes toast-in { from {opacity:0; transform:translateY(-8px)} to {opacity:1; transform:translateY(0)} }
 @media(max-width:900px) {
  .simple-work { grid-template-columns:minmax(0,1fr); }
@@ -1208,4 +1213,17 @@ progress::-moz-progress-bar {
  .button,.mode-line button,.toast,.toast-countdown i { transition:none; }
  .button.primary:hover:not(:disabled),.button.secondary:hover:not(:disabled),.button:not(.video-play-overlay):active:not(:disabled),.mode-line button:active:not(:disabled) { transform:none; }
  .toast.toast-closing { transform:none; }
+}
+
+/* Mat do dieu khien thong nhat: radio/checkbox dung kich thuoc goc, nhan cach 6px */
+input[type="radio"], input[type="checkbox"] { min-height: 0; padding: 0; width: var(--radio-size); height: var(--radio-size); margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+label:has(> input[type="radio"]), label:has(> input[type="checkbox"]) { flex-direction: row; align-items: center; gap: var(--radio-gap); font-size: var(--control-font); }
+.translate-panel .translate-scope legend { font-size: var(--control-font); }
+.studio-pagination .page-jump { display: inline-flex; align-items: center; gap: 4px; }
+.studio-pagination .page-jump input { width: 44px; min-height: 26px; padding: 2px 4px; text-align: center; font-size: var(--control-font); }
+.simple-player:fullscreen { overflow: hidden; }
+@media(max-width:480px) {
+ :root { --control-h: 36px; }
+ .studio-pagination .page-jump input { min-height: 36px; width: 52px; }
+ .studio-pagination > button, .button, .mode-line button { min-height: 36px; }
 }

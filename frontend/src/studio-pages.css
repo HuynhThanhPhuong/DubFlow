@@ -68,8 +68,8 @@
   background: #fff;
   border: 1px solid var(--studio-line);
   border-radius: 7px;
-  padding: 10px 12px;
-  min-height: 42px;
+  padding: 4px 10px;
+  min-height: var(--control-h);
   width: 100%;
   box-sizing: border-box;
 }
@@ -494,7 +494,7 @@
   color: #36795c;
 }
 .studio-page .button {
-  min-height: 40px;
+  min-height: var(--control-h);
 }
 .studio-page .button:focus-visible {
   outline: 2px solid var(--studio-blue);
