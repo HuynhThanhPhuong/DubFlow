@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { isBusy } from "./helpers";
 import type { Cue, Job, Mode, TranslateEstimate, TranslateScope } from "./types";
@@ -27,7 +27,9 @@ export function TranslatePanel({
   onCues,
   onError,
   onNotice,
+  importSlot,
 }: {
+  importSlot?: ReactNode;
   job: Job;
   providerLabel: string;
   ready: boolean;
@@ -133,6 +135,9 @@ export function TranslatePanel({
           )}
         </>
       )}
+      <fieldset className="translate-scope translate-import">
+      <legend>Dịch bằng AI chat / nhập file</legend>
+      <div className="translate-import-row">
       <a
         className="button secondary"
         href={`/api/jobs/${encodeURIComponent(job.id)}/source-subtitles.srt`}
@@ -155,8 +160,12 @@ export function TranslatePanel({
         aria-description="Khớp theo số thứ tự của file SRT Trung đã xuất"
         onClick={() => input.current?.click()}
       >
-        Nhập SRT Việt
+        Nhập bản dịch từ AI chat
       </Button>
+      </div>
+      <p className="muted small translate-hint">Bước 1: xuất SRT Trung kèm lệnh mẫu, gửi cho AI chat. Bước 2: nhập lại bản dịch AI trả về.</p>
+      {importSlot}
+      </fieldset>
       <input
         ref={input}
         className="sr-only"
@@ -226,10 +235,11 @@ export function TranslatePanel({
       {prompt !== null && (
         <Modal
           title="Lệnh mẫu cho AI"
-          description="SRT tiếng Trung đã được tải về. Gửi file đó cùng lệnh mẫu dưới đây cho AI chat, rồi nhập SRT Việt nhận được."
+          className="dialog-wide"
+          description="SRT tiếng Trung đã được tải về. Gửi file đó cùng lệnh mẫu dưới đây cho AI chat, rồi dùng nút “Nhập bản dịch từ AI chat” để nhập kết quả."
           onClose={() => setPrompt(null)}
         >
-          <textarea readOnly rows={12} aria-label="Lệnh mẫu" value={prompt} />
+          <textarea className="prompt-text" readOnly rows={12} aria-label="Lệnh mẫu" value={prompt} />
           <div className="dialog-foot">
             <Button
               onClick={() => {
@@ -240,9 +250,6 @@ export function TranslatePanel({
               }}
             >
               Sao chép
-            </Button>
-            <Button variant="primary" onClick={() => setPrompt(null)}>
-              Đóng
             </Button>
           </div>
         </Modal>

@@ -687,14 +687,17 @@ export default function App() {
                       <Save size={15} />
                       {busy ? "Đang lưu…" : "Lưu lời dịch"}
                     </Button>
+                    <TranslatePanel
+                      importSlot={<div className="translate-import-existing">
                     <Button
                       disabled={busy || isBusy(currentJob) || dirty}
+                      title="Ghép theo mốc thời gian — dùng cho file SRT tiếng Việt từ nguồn khác"
                       onClick={() => subtitleInput.current?.click()}
                     >
                       <Upload size={15} />
-                      Nhập SRT (khớp theo thời gian)
+                      Nhập SRT có sẵn
                     </Button>
-                    <TranslatePanel
+                    <span className="muted small import-hint">Ghép theo mốc thời gian, dùng cho SRT tiếng Việt từ nguồn khác.</span></div>}
                       job={currentJob}
                       providerLabel={providerLabels[studioSettings?.translation_provider ?? "gemini"]}
                       ready={health?.capabilities?.automatic_translation === true}

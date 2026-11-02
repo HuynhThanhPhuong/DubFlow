@@ -461,9 +461,6 @@ export function ProjectNotesDialog({
           </p>
         ))}
       </div>
-      <div className="dialog-foot">
-        <Button onClick={onClose}>Đóng</Button>
-      </div>
     </Modal>
   );
 }

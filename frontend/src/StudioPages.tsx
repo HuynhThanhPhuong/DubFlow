@@ -971,7 +971,6 @@ export function VoicesPage({
                     </div>
                   ))}
             </dl>
-            <Button onClick={() => setDetails(false)}>Đóng chi tiết</Button>
           </div>
         </Modal>
       )}

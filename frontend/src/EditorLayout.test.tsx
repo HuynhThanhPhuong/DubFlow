@@ -37,7 +37,7 @@ it("opens project notes in a modal dialog instead of expanding inline, and Escap
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText("Cảnh báo thử một")).toBeTruthy();
   expect(document.querySelector(".project-notes-content")).toBeNull();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Đóng" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Đóng hộp thoại" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   fireEvent.click(toggle);
   const again = await screen.findByRole("dialog");

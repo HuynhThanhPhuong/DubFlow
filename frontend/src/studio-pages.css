@@ -621,6 +621,27 @@
   margin: 0;
 }
 
+.translate-panel .translate-import { margin-top: 6px; }
+.translate-panel .translate-import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-basis: 100%; }
+.translate-panel .translate-import .translate-hint,
+.translate-panel .translate-import .import-hint { flex-basis: 100%; margin: 0; color: var(--muted); }
+.translate-panel .translate-import-existing { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 4px; }
+.dialog-content.dialog-wide { width: min(720px, calc(100vw - 32px)); }
+.dialog-content .prompt-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 260px;
+  max-height: 60vh;
+  overflow: auto;
+  resize: vertical;
+  padding: 11px;
+  font: 13.5px/1.55 ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+@media (max-width: 640px) { .dialog-content.dialog-wide { width: calc(100vw - 16px); padding: 16px; } }
+
 .delete-dialog { display: grid; gap: 10px; }
 .delete-dialog p { margin: 0; }
 .delete-list { margin: 0; padding-left: 18px; max-height: 140px; overflow: auto; font-size: 12px; }

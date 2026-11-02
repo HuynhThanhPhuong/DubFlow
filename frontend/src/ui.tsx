@@ -49,7 +49,9 @@ export function Modal({
   description,
   children,
   onClose,
+  className = "",
 }: {
+  className?: string;
   title: string;
   description?: string;
   children: ReactNode;
@@ -65,7 +67,7 @@ export function Modal({
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content
-          className="dialog-content"
+          className={`dialog-content ${className}`.trim()}
           aria-describedby={description ? "dialog-description" : undefined}
         >
           <div className="dialog-head">

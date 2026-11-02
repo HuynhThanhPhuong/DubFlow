@@ -113,7 +113,7 @@ it("shows the 422 message verbatim when importing a Vietnamese SRT fails", async
       : undefined,
   );
   render(<App />);
-  await screen.findByRole("button", { name: "Nhập SRT Việt" });
+  await screen.findByRole("button", { name: "Nhập bản dịch từ AI chat" });
   const file = new File(["x"], "vi.srt", { type: "text/plain" });
   fireEvent.change(screen.getByLabelText("Chọn file SRT Việt"), { target: { files: [file] } });
   await screen.findByText("Thiếu số 2, 3 trong file SRT.");
