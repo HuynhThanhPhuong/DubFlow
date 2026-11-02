@@ -126,3 +126,34 @@
 /* U7: o so trang luon la o chu thuan, khong co nut tang/giam. */
 .studio-pagination .page-jump input{-moz-appearance:textfield;appearance:textfield}
 .studio-pagination .page-jump input::-webkit-inner-spin-button,.studio-pagination .page-jump input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+
+/* P6 fix round 1: header gon (~110px) de nhuong chieu cao cho trinh phat. */
+.editor-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center;flex-shrink:0;margin-bottom:8px}
+.editor-head>.simple-title,.editor-head>.studio-workflow,.editor-head>.mode-notes-row.expanded{grid-column:1/-1}
+.editor-head>.editor-membership{grid-column:1;margin:0}
+.editor-head>.mode-notes-row{grid-column:2;margin:0}
+.editor-head>.studio-workflow{margin:0}
+@media(min-width:901px){
+ .studio-app .editor-head .simple-title{margin:0;min-height:34px}
+ .studio-app .editor-head .simple-title>div:first-child{display:flex;align-items:baseline;gap:4px 12px;flex-wrap:wrap}
+ .studio-app .editor-head .simple-title h1{font-size:19px;line-height:1.25}
+ .studio-app .editor-head .simple-title p{margin:0}
+ .studio-app .editor-head .modebar{margin:0;min-height:30px}
+ .studio-app .editor-head .mode-line button{min-height:28px;padding:4px 12px}
+ .studio-app .editor-head .studio-workflow>div{padding:3px 10px;display:flex;align-items:baseline;gap:6px;white-space:nowrap;overflow:hidden}
+ .studio-app .editor-head .studio-workflow b{display:inline;flex-shrink:0}
+ .studio-app .editor-head .studio-workflow small{display:inline;margin:0;overflow:hidden;text-overflow:ellipsis}
+ /* Trinh phat: gioi han chieu cao toi thieu tren chinh phan tu dung hinh. */
+ .studio-app .video-column{grid-template-rows:minmax(360px,1fr) auto}
+ .studio-app .simple-player{min-height:360px}
+ .studio-app .movie-frame{min-height:240px;flex:1 1 240px}
+ /* Dong thoi gian ~120px. */
+ .studio-app .timeline-tools{min-height:24px;padding:1px 10px}
+ .studio-app .timeline-tools .button{min-height:22px;padding:2px 7px}
+ .studio-app .timeline-body{padding:0 9px 4px}
+ .studio-app .ruler{padding:1px 0 2px}
+ .studio-app .film-lane{height:28px}
+ .studio-app .track{margin:2px 0}
+ .studio-app .cue-lane{height:22px}.studio-app .cue-lane button{height:18px}
+}
+@media(max-width:900px){.editor-head{grid-template-columns:minmax(0,1fr)}.editor-head>.editor-membership,.editor-head>.mode-notes-row{grid-column:1}}

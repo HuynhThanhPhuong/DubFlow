@@ -437,6 +437,7 @@ export default function App() {
         {route.page === "editor" &&
           (currentJob ? (
             <>
+              <div className="editor-head">
               <div className="simple-title">
                 <div>
                   <EditableTitle value={currentJob.title || currentJob.filename} disabled={busy||isBusy(currentJob)} onSave={title=>saveMetadata({title})}/>
@@ -518,6 +519,7 @@ export default function App() {
               {notesOpen&&<section id="project-notes-content" className="project-notes-content" aria-label="Lưu ý của dự án"><div className="project-notes-grid">{(projectWarnings.length?projectWarnings:['Hệ thống tự xử lý; bạn có thể sửa lời gốc, lời Việt và người nói ngay trong Lời dịch.']).slice(Math.min(notesPage,Math.max(0,Math.ceil(projectWarnings.length/4)-1))*4,(Math.min(notesPage,Math.max(0,Math.ceil(projectWarnings.length/4)-1))+1)*4).map((w,i)=><p key={i}>{vietnameseMessage(w)}</p>)}</div>{projectWarnings.length>4&&<Pagination total={projectWarnings.length} page={Math.min(notesPage,Math.ceil(projectWarnings.length/4)-1)} size={4} onChange={setNotesPage}/>}</section>}
               </div>
               <div className="studio-workflow"><div><b>Nhận dạng</b><small>{cues.length?`${cues.length} câu lời gốc`:"Chưa phân tích"}</small></div><div className={missing?"current":""}><b>Dịch tiếng Việt</b><small>{cues.length?`${cues.length-missing}/${cues.length} câu đã có lời Việt`:"Chưa có bản dịch"}</small></div><div><b>{currentJob.mode==="vietsub"?"Xem & sửa lời dịch":"Tạo giọng & kiểm tra"}</b><small>{currentJob.mode==="vietsub"?"Sửa ngay trong Lời dịch khi cần":`${currentJob.ready_count||0}/${cues.length} câu có giọng`}</small></div><div><b>Xuất video</b><small>{currentJob.exported_paths?.length?"Đã lưu vào thư mục":currentJob.status==="done"?"Có bản xem trước":"Chưa xuất"}</small></div></div>
+              </div>
               {isBusy(currentJob) && (
                 <div className="job-progress">
                   <span>
