@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -292,6 +293,44 @@ class Cancelled(Exception):
     """Người dùng yêu cầu dừng khi đang chờ."""
 
 
+class Abandoned(Cancelled):
+    """Đã bỏ chờ một request đang bay (đã gửi đi)."""
+
+
+STOP_POLL = 0.25            # giây; khi chờ HTTP, kiểm tra cờ dừng với nhịp này
+
+
+def call_cancellable(fn, stop, on_abandon=None, poll=STOP_POLL):
+    """Gọi fn() (một request HTTP đồng bộ) trong thread phụ và chờ kèm kiểm tra cờ dừng.
+
+    Trả kết quả / ném lại lỗi của fn. Khi stop() thành True trước khi fn xong: bỏ rơi thread (daemon), gọi
+    on_abandon() (đóng kết nối để request tự lỗi và giải phóng thread) rồi ném Cancelled ngay, không chờ
+    nhà cung cấp trả lời."""
+    box: dict = {}
+    done = threading.Event()
+
+    def target():
+        try:
+            box['value'] = fn()
+        except BaseException as exc:  # noqa: BLE001 - chuyển nguyên lỗi sang thread chính
+            box['error'] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=target, daemon=True, name='dubflow-translate-http').start()
+    while not done.wait(poll):
+        if stop():
+            if on_abandon is not None:
+                try:
+                    on_abandon()
+                except Exception:  # noqa: BLE001 - đóng client lỗi cũng không cản việc dừng
+                    pass
+            raise Abandoned()
+    if 'error' in box:
+        raise box['error']
+    return box['value']
+
+
 class _Pause(Exception):
     def __init__(self, reason: str):
         self.reason = reason
@@ -357,8 +396,13 @@ class _Run:
                     raise _Pause('cancelled')
                 if self.limiter is not None:
                     self.limiter.acquire(self.stop)
-                reply = self.provider.generate(self.system, user, SCHEMA, self.prefs.max_output_tokens)
+                reply = call_cancellable(
+                    lambda: self.provider.generate(self.system, user, SCHEMA, self.prefs.max_output_tokens),
+                    self.stop, getattr(self.provider, 'abort', None))
                 break
+            except Abandoned:
+                self.requests += 1  # đã gửi nhưng bỏ chờ: có thể đã bị tính phí, token không rõ
+                raise _Pause('cancelled') from None
             except Cancelled:
                 raise _Pause('cancelled') from None
             except QuotaExhausted:

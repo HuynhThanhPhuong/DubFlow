@@ -183,10 +183,10 @@ class RegionsApiTests(unittest.TestCase):
         self.client.post(f"/api/jobs/{c['id']}/analyze")
         running = self.store.claim_next()  # the worker took the first one
         self.assertEqual(running['job_id'], a['id'])
-        with patch('dubflow.pipeline.kill_children', return_value=2) as kill:
+        with patch('dubflow.pipeline.kill_children_report', return_value=dict(killed=2, failed=1, failed_pids=[7])) as kill:
             r = self.client.post('/api/tasks/stop-all')
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json(), dict(cancelled=3, queued=2, running=1, jobs=3, processes_killed=2))
+        self.assertEqual(r.json(), dict(cancelled=3, queued=2, running=1, jobs=3, processes_killed=2, processes_failed=1))
         kill.assert_called_once()
         for j in (a, b, c):
             self.assertEqual(self.store.get_job(j['id'])['status'], 'cancelled')
@@ -220,47 +220,71 @@ class RegionsApiTests(unittest.TestCase):
 
 
 class IdleMonitorTests(unittest.TestCase):
+    """Policy (see lifecycle.py): the last tab's `bye` + 30 s stops the server even with tasks; heartbeat silence alone
+    stops it only after 10 min and only with no running or queued task."""
+
     def setUp(self):
         self.clock = Clock()
-        self.idle = lifecycle.IdleMonitor(timeout=30, grace=30, clock=self.clock)
+        self.idle = lifecycle.IdleMonitor(timeout=30, grace=30, silence=600, clock=self.clock)
 
     def test_never_idle_before_a_first_heartbeat(self):
         self.clock.now += 3600
-        self.assertFalse(self.idle.expired())
+        self.assertIsNone(self.idle.verdict())
         self.idle.bye('x')
-        self.assertFalse(self.idle.expired())
+        self.assertIsNone(self.idle.verdict())
 
-    def test_idle_after_30_seconds_without_heartbeat(self):
+    def test_silence_alone_never_stops_a_busy_server(self):
         self.idle.heartbeat('a')
-        self.clock.now += 29.9
-        self.assertFalse(self.idle.expired())
+        self.clock.now += 3 * 3600  # a throttled hidden tab sends nothing for hours
+        self.assertIsNone(self.idle.verdict(busy=True))
+        self.assertEqual(self.idle.verdict(busy=False), 'silence')
+
+    def test_short_silence_stops_nothing(self):
         self.idle.heartbeat('a')
-        self.clock.now += 29.9
-        self.assertFalse(self.idle.expired())
-        self.clock.now += .2
-        self.assertTrue(self.idle.expired())
+        self.clock.now += 31  # the old policy killed everything here
+        self.assertIsNone(self.idle.verdict(busy=False))
+        self.assertIsNone(self.idle.verdict(busy=True))
+        self.clock.now += 600 - 31 - 1
+        self.assertIsNone(self.idle.verdict(busy=False))
+        self.clock.now += 2
+        self.assertEqual(self.idle.verdict(busy=False), 'silence')
 
     def test_one_live_tab_keeps_the_server_up(self):
         self.idle.heartbeat('a')
         self.idle.heartbeat('b')
-        for _ in range(5):
+        for _ in range(60):
             self.clock.now += 20
             self.idle.heartbeat('b')
-        self.assertFalse(self.idle.expired())
-        self.clock.now += 31
-        self.assertTrue(self.idle.expired())
+        self.assertIsNone(self.idle.verdict(busy=False))  # 'a' is silent, 'b' beats
 
-    def test_bye_of_the_last_tab_waits_the_grace_period_for_a_reload(self):
+    def test_bye_of_the_last_tab_waits_the_grace_then_stops_even_with_tasks(self):
         self.idle.heartbeat('a')
         self.clock.now += 5
         self.idle.bye('a')
         self.clock.now += 29
-        self.assertFalse(self.idle.expired())  # a reloaded page has 30 s to come back
-        self.idle.heartbeat('a2')
-        self.clock.now += 29
-        self.assertFalse(self.idle.expired())
+        self.assertIsNone(self.idle.verdict(busy=True))  # a reloaded page has 30 s to come back
         self.clock.now += 2
-        self.assertTrue(self.idle.expired())
+        self.assertEqual(self.idle.verdict(busy=True), 'bye')  # explicit leave: tasks are cancelled with the server
+        self.assertEqual(self.idle.verdict(busy=False), 'bye')
+
+    def test_a_heartbeat_after_bye_cancels_the_shutdown(self):
+        self.idle.heartbeat('a')
+        self.idle.bye('a')
+        self.clock.now += 29
+        self.idle.heartbeat('a')  # reload / page restored from the back-forward cache
+        self.clock.now += 60
+        self.assertIsNone(self.idle.verdict(busy=True))
+
+    def test_a_new_tab_id_after_reload_replaces_the_old_one(self):
+        self.idle.heartbeat('a')
+        self.idle.bye('a')
+        self.clock.now += 10
+        self.idle.heartbeat('a2')
+        self.clock.now += 60
+        self.assertIsNone(self.idle.verdict(busy=True))  # 'a' is gone, 'a2' is silent but not gone
+        self.idle.bye('a2')
+        self.clock.now += 31
+        self.assertEqual(self.idle.verdict(busy=True), 'bye')
 
     def test_bye_does_not_stop_the_server_while_another_tab_is_alive(self):
         self.idle.heartbeat('a')
@@ -268,39 +292,76 @@ class IdleMonitorTests(unittest.TestCase):
         self.idle.bye('a')
         self.clock.now += 31
         self.idle.heartbeat('b')
-        self.assertFalse(self.idle.expired())
+        self.assertIsNone(self.idle.verdict(busy=False))
+        self.assertIsNone(self.idle.verdict(busy=True))
 
     def test_bye_without_a_tab_id_ends_every_tab_after_the_grace(self):
         self.idle.heartbeat('a')
         self.idle.heartbeat('b')
         self.idle.bye()
         self.clock.now += 30.1
-        self.assertTrue(self.idle.expired())
+        self.assertEqual(self.idle.verdict(busy=True), 'bye')
 
-    def test_an_open_stream_counts_as_a_live_tab_only_after_a_first_heartbeat(self):
-        self.idle.touch('stream')
-        self.assertFalse(self.idle.seen)
+    def test_an_open_stream_is_a_sign_of_life_and_cancels_a_pending_shutdown(self):
+        self.idle.touch('s1')
+        self.assertFalse(self.idle.seen)  # a stream counts only after a first heartbeat
         self.idle.heartbeat('a')
-        self.clock.now += 25
-        self.idle.touch('stream')
-        self.clock.now += 25
-        self.assertFalse(self.idle.expired())
+        self.idle.bye('a')
+        self.clock.now += 40
+        self.idle.touch('s1')
+        self.assertIsNone(self.idle.verdict(busy=False))  # the page still has a stream open
+        self.clock.now += 3600
+        self.idle.touch('s1')
+        self.assertIsNone(self.idle.verdict(busy=False))
+        self.idle.release('s1')
+        self.assertEqual(self.idle.verdict(busy=False), 'bye')
 
-    def test_watch_calls_on_idle_once_with_an_injected_clock(self):
+    def test_a_stream_that_stopped_touching_expires(self):
+        self.idle.heartbeat('a')
+        self.idle.touch('s1')
+        self.clock.now += 700
+        self.assertEqual(self.idle.verdict(busy=False), 'silence')
+
+    def test_watch_stops_on_a_pending_bye_even_while_busy_and_not_on_silence_while_busy(self):
         calls = []
-        self.idle.heartbeat('a')
 
-        class Ticker:  # every wait() is one 2 s poll; here it moves the injected clock by 20 s instead of sleeping
+        class Ticker:  # every wait() is one poll; here it moves the injected clock by 20 s instead of sleeping
             n = 0
 
             def wait(ticker, interval=None):
                 ticker.n += 1
                 self.clock.now += 20
+                return ticker.n > 100
+
+        self.idle.heartbeat('a')
+        ticker = Ticker()
+        lifecycle.watch(self.idle, ticker, lambda: calls.append(1), busy=lambda: True)
+        self.assertEqual((calls, ticker.n), ([], 101))  # 2000 s of silence with a running task: nothing happens
+        self.idle.bye('a')
+        ticker.n = 0
+        lifecycle.watch(self.idle, ticker, lambda: calls.append(self.clock.now), busy=lambda: True)
+        self.assertEqual((len(calls), ticker.n), (1, 2))  # bye + 30 s, tasks or not
+
+    def test_watch_stops_on_silence_only_without_tasks_and_treats_an_unreadable_queue_as_busy(self):
+        calls = []
+
+        class Ticker:
+            n = 0
+
+            def wait(ticker, interval=None):
+                ticker.n += 1
+                self.clock.now += 100
                 return ticker.n > 20
 
+        def broken():
+            raise RuntimeError('db locked')
+
+        self.idle.heartbeat('a')
+        lifecycle.watch(self.idle, Ticker(), lambda: calls.append(1), busy=broken)
+        self.assertEqual(calls, [])
         ticker = Ticker()
-        lifecycle.watch(self.idle, ticker, lambda: calls.append(self.clock.now))
-        self.assertEqual((len(calls), ticker.n), (1, 2))  # 40 s after the heartbeat, not before
+        lifecycle.watch(self.idle, ticker, lambda: calls.append(1), busy=lambda: False)
+        self.assertEqual((len(calls), ticker.n), (1, 1))
 
     def test_watch_ends_when_the_server_stops_first(self):
         calls, stop = [], threading.Event()
@@ -322,7 +383,8 @@ class IdleMonitorTests(unittest.TestCase):
                 order.append('join')
 
         stop = threading.Event()
-        with patch('dubflow.pipeline.kill_children', side_effect=lambda: order.append('children') or 0):
+        report = lambda: order.append('children') or dict(killed=0, failed=0, failed_pids=[])
+        with patch('dubflow.pipeline.kill_children_report', side_effect=report):
             lifecycle.shutdown_server(Store(), Path('.'), stop, Worker(), kill_tree=lambda pid: order.append(('tree', pid)), exit_process=lambda code: order.append(('exit', code)))
         self.assertTrue(stop.is_set())
         self.assertEqual(order, ['tasks', 'children', 'join', 'children', ('tree', os.getpid()), ('exit', 0)])

@@ -130,6 +130,10 @@ class _Base:
         if self._owns_client:
             self.client.close()
 
+    def abort(self) -> None:
+        """Cắt request đang chờ (gọi từ thread khác khi người dùng dừng): đóng kết nối của client do provider tạo."""
+        self.close()
+
     def __enter__(self):
         return self
 

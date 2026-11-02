@@ -1,5 +1,6 @@
 """Studio management routes; no GPU or model runtime imports."""
 from pathlib import Path
+import logging
 import os
 import stat
 import threading
@@ -14,7 +15,9 @@ from .publisher import publish, PublishConflict
 from .voices import get_voice
 
 
+log=logging.getLogger(__name__)
 BUSY_STATUSES={'queued','processing','separating','transcribing','synthesizing','rendering'}
+TRASH='.trash'  # quarantine folder inside the jobs root: a rename on the same volume is atomic and cheap
 _REPARSE=0x400
 
 
@@ -97,14 +100,68 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
         folder=settings.jobs_dir/job_id
         return tree_size(folder) if folder.is_dir() else 0
 
+    trash=settings.jobs_dir/TRASH
+
+    def sweep_trash():
+        """Finish interrupted deletions: quarantined folders whose DB rows are gone are removed now (best effort)."""
+        if not trash.is_dir(): return
+        for entry in list(trash.iterdir()):
+            jid=entry.name.split('.')[0]
+            if store.get_job(jid): continue  # still owned by a job record: recover() decides
+            try: safe_rmtree(entry,settings.jobs_dir)
+            except (OSError,ValueError) as exc: log.warning('Không dọn được thư mục xóa dở %s: %s',entry.name,exc)
+
+    def recover_deletions():
+        """A crash between marking a job `deleting` and removing it must not leave an undeletable ghost."""
+        for job in store.list_jobs():
+            if not job.get('deleting'): continue
+            jid=job['id']
+            folder=settings.jobs_dir/jid
+            held=[e for e in trash.iterdir() if e.name.split('.')[0]==jid] if trash.is_dir() else []
+            if not os.path.lexists(folder) and held:
+                store.remove_job(jid)  # the folder was already quarantined: finish the deletion
+            else:
+                store.abort_delete(jid)  # nothing was moved: the job is a normal job again
+        sweep_trash()
+    try: recover_deletions()
+    except OSError: log.warning('Không kiểm tra được các lần xóa dở.',exc_info=True)
+
+    class DeleteFailed(Exception):
+        """The job could not be deleted and is still a normal job (Vietnamese reason)."""
+
     def purge_job(job,outputs):
+        """Delete a job: (1) check idle + mark `deleting` in one transaction, (2) move its folder into the quarantine
+        (fails, and changes nothing, when Windows holds a handle on it), (3) drop the DB rows, (4) delete the quarantine.
+        DeleteFailed when steps 1-2 cannot be done; the job is then visible and retryable. A failure in step 4 only leaves a
+        quarantined folder that the next sweep removes."""
         jid=job['id']
         files=job_outputs(job) if outputs else []
         root=output_root()
-        store.remove_job(jid)
+        try: store.begin_delete(jid)
+        except KeyError: raise HTTPException(404,'Không tìm thấy dự án.') from None
+        except ValueError as exc: raise DeleteFailed(str(exc)) from None
         folder=settings.jobs_dir/jid
-        if os.path.lexists(folder):
-            safe_rmtree(folder,settings.jobs_dir)
+        held=None
+        try:
+            if os.path.lexists(folder):
+                trash.mkdir(exist_ok=True)
+                held=trash/f'{jid}.{uuid.uuid4().hex[:8]}'
+                os.rename(folder,held)
+        except OSError as exc:
+            store.abort_delete(jid)
+            log.warning('Không chuyển được thư mục dự án %s để xóa: %s',jid,exc)
+            raise DeleteFailed('Không xóa được dữ liệu của video (có tệp đang được chương trình khác dùng hoặc không đủ quyền). Dự án vẫn còn nguyên, hãy đóng chương trình đang mở tệp rồi thử xóa lại.') from None
+        try:
+            store.remove_job(jid)
+        except Exception:
+            if held is not None:
+                try: os.rename(held,folder)
+                except OSError: log.error('Không khôi phục được thư mục dự án %s từ %s',jid,held)
+            store.abort_delete(jid)
+            raise
+        if held is not None:
+            try: safe_rmtree(held,settings.jobs_dir)
+            except (OSError,ValueError) as exc: log.warning('Chưa xóa hết thư mục tạm %s (%s); sẽ dọn lại sau.',held.name,exc)
         for o in files:
             p=Path(o['path'])
             try:
@@ -122,7 +179,8 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
         job=store.get_job(job_id)
         if not job: raise HTTPException(404,'Không tìm thấy dự án.')
         if is_busy(job): raise HTTPException(409,'Video đang được xử lý. Hãy dừng tác vụ trước khi xóa.')
-        purge_job(job,outputs)
+        try: purge_job(job,outputs)
+        except DeleteFailed as exc: raise HTTPException(409,str(exc)) from None
 
     @app.get('/api/collections/{cid}/delete-preview')
     def collection_delete_preview(cid: str):
@@ -216,7 +274,16 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
             busy=[j.get('title') or j['id'] for j in members if is_busy(j)]
             if busy:
                 raise HTTPException(409,'Có video đang được xử lý: '+', '.join(busy)+'. Hãy dừng tác vụ trước khi xóa.')
-            for j in members: purge_job(j,outputs)
+            removed,failed=0,[]
+            for j in members:
+                try:
+                    purge_job(j,outputs); removed+=1
+                except DeleteFailed as exc:
+                    failed.append(f"{j.get('title') or j['id']} ({exc})")
+                except HTTPException:  # already gone: nothing left to delete
+                    removed+=1
+            if failed:  # keep the collection and the videos that are still here so the user can retry
+                raise HTTPException(409,f'Đã xóa {removed}/{len(members)} video. Không xóa được: '+'; '.join(failed)+'. Bộ sưu tập được giữ lại, hãy thử lại.')
         store.unlink_collection(cid)
         if c.get('cover_file'):
             (settings.data_dir/'covers'/Path(c['cover_file']).name).unlink(missing_ok=True)

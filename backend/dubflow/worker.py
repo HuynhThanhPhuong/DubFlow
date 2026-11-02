@@ -151,6 +151,8 @@ def run_task(task, settings, store):
             store.event(jid, restore['stage'], message, restore['progress'])
         else:
             from .review import require_export
+            if pipeline.regions_stale(folder, job):  # regions saved after the last analysis: never export old masks / clean video
+                raise pipeline.NeedsReview(pipeline.REGIONS_STALE)
             try:
                 require_export(folder,job,job.get('export_kind','draft'))
             except ValueError as exc:
@@ -181,15 +183,16 @@ def run_task(task, settings, store):
             store.event(jid, 'done', 'Đã xuất bản nháp, cần duyệt nội dung và chất lượng.' if job.get('export_kind','draft')=='draft' else 'Đã xuất bản được duyệt. Hãy kiểm tra video cuối.', 100)
         store.finish_task(task['id'])
     except (JobCancelled, KeyboardInterrupt):
-        if store.get_job(jid):
-            store.update_job(jid, status='cancelled', stage='cancelled', error=None, **idle)
+        latest = store.get_job(jid)
+        if latest:
+            store.update_job(jid, status='cancelled', stage='cancelled', error=None, activity=push_activity(latest, 'Đã dừng.'), **idle)
         store.finish_task(task['id'], 'cancelled')
     except Exception as exc:
         # Cancellation from a subprocess is represented by the same persisted flag.
         latest = store.get_job(jid)
         if not latest or (folder / 'cancel.request').exists() or latest['status'] == 'cancelled':
             if latest:
-                store.update_job(jid, status='cancelled', stage='cancelled', error=None)
+                store.update_job(jid, status='cancelled', stage='cancelled', error=None, activity=push_activity(latest, 'Đã dừng.'))
             store.finish_task(task['id'], 'cancelled')
             return
         from .translate_run import TranslateFailed

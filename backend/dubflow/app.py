@@ -30,7 +30,7 @@ from . import logos as logo_lib
 from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
 from . import analysis_regions, lifecycle
-from .pipeline import erase_current, erases_static
+from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale
 from .store import Store, push_activity
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
@@ -62,9 +62,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
             thread = threading.Thread(target=worker_loop, args=(settings, stop), daemon=True, name='dubflow-worker')
             thread.start()
         if start_worker and os.getenv('DUBFLOW_NO_IDLE_SHUTDOWN') != '1':
-            # no web tab for 30 s: cancel the tasks, end the engine processes, the worker and this server
+            # the last tab said bye (+30 s), or every tab silent for 10 min with nothing running: see lifecycle.py
             threading.Thread(target=lifecycle.watch, daemon=True, name='dubflow-idle',
-                             args=(idle, stop, lambda: lifecycle.shutdown_server(store, settings.jobs_dir, stop, thread))).start()
+                             args=(idle, stop, lambda: lifecycle.shutdown_server(store, settings.jobs_dir, stop, thread)),
+                             kwargs=dict(busy=lambda: bool(store.active_tasks()))).start()
         yield
         stop.set()
         if thread:
@@ -103,6 +104,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     def writable(job_id):
         job = job_or_404(job_id)
+        if job.get('deleting'):
+            raise HTTPException(409, 'Dự án đang được xóa.')
         if job['status'] in BUSY:
             raise HTTPException(409, 'Tạm dừng tác vụ trước khi sửa dự án.')
         return job
@@ -122,7 +125,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['dry_url'] = base + '/audio' if (folder / 'dry.wav').exists() else None
         clean = folder / 'clean.mp4'
         value['clean_url'] = None
-        if clean.is_file() and job.get('source_path') and erase_current(folder, job['source_path'], full=False):
+        value['regions_stale'] = regions_stale(folder, job)  # regions saved after the last analysis: old clean video / masks are not current
+        value['stopping'] = job.get('status') == 'cancelled' and job['id'] in store.running_job_ids()  # stop requested, worker not out yet
+        if clean.is_file() and job.get('source_path') and not value['regions_stale'] and erase_current(folder, job['source_path'], full=False):
             value['clean_url'] = f'{base}/clean?v={clean.stat().st_mtime_ns}'
         value['overlays'] = job.get('overlays', [])
         value['translation_usage'] = translate_run.read_usage(folder)
@@ -763,6 +768,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
     @app.post('/api/jobs/{job_id}/render')
     def render_job(job_id: str, body: RenderRequest | None = None):
         job = writable(job_id)
+        if regions_stale(job_dir(job_id), job):
+            raise HTTPException(409, REGIONS_STALE)
         cs = sorted([Cue(**c) for c in read_json(job_dir(job_id) / 'cues.json')],key=lambda c:(c.start,c.end))
         if not cs:
             raise HTTPException(409, 'Chưa có lời dịch. Phân tích video hoặc nhập SRT trước.')
@@ -779,8 +786,11 @@ def create_app(settings: Settings | None = None, start_worker=True):
     def cancel_job(job_id: str):
         job_or_404(job_id)
         (job_dir(job_id) / 'cancel.request').touch()
+        running = job_id in store.running_job_ids()
         store.cancel(job_id)
         store.event(job_id, 'cancelled', 'Đã yêu cầu dừng. Worker sẽ giải phóng tác vụ hiện tại.', 0)
+        if running:
+            store.mark_stopping(job_id)
         return public_job(store.get_job(job_id))
 
     @app.post('/api/tasks/stop-all')
@@ -816,22 +826,26 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job_or_404(job_id)
         async def stream():
             previous = ''
-            idle = 0
-            while not await request.is_disconnected():
-                idle.touch('stream:' + job_id)  # an open stream is a live tab even when the browser throttles its timers
-                current = store.get_job(job_id)
-                if not current:
-                    return  # job was deleted: end the stream quietly
-                snapshot = json.dumps(public_job(current), ensure_ascii=False)
-                if snapshot != previous:
-                    yield f'data: {snapshot}\n\n'
-                    previous = snapshot
-                    idle = 0
-                else:
-                    idle += 1
-                    if idle % 10 == 0:
-                        yield ': keepalive\n\n'
-                await asyncio.sleep(1)
+            quiet = 0
+            sid = f'{job_id}:{uuid.uuid4().hex[:8]}'  # one id per open stream: two tabs on one job do not release each other
+            try:
+                while not await request.is_disconnected():
+                    idle.touch(sid)  # an open stream is a live tab even when the browser throttles its timers
+                    current = store.get_job(job_id)
+                    if not current:
+                        return  # job was deleted: end the stream quietly
+                    snapshot = json.dumps(public_job(current), ensure_ascii=False)
+                    if snapshot != previous:
+                        yield f'data: {snapshot}\n\n'
+                        previous = snapshot
+                        quiet = 0
+                    else:
+                        quiet += 1
+                        if quiet % 10 == 0:
+                            yield ': keepalive\n\n'
+                    await asyncio.sleep(1)
+            finally:
+                idle.release(sid)
         return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get('/api/jobs/{job_id}/source')
@@ -846,7 +860,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
     def clean_video(job_id: str):
         j = job_or_404(job_id)
         path = job_dir(job_id) / 'clean.mp4'
-        if not path.is_file() or not j.get('source_path') or not erase_current(job_dir(job_id), j['source_path'], full=False):
+        if (not path.is_file() or not j.get('source_path') or regions_stale(job_dir(job_id), j)
+                or not erase_current(job_dir(job_id), j['source_path'], full=False)):
             raise HTTPException(404, 'Chưa có video đã xóa sub gốc.')
         return FileResponse(path, media_type='video/mp4')
 

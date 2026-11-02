@@ -19,11 +19,14 @@ import shutil
 if __package__:
     from .messages import translate_message
     from .textcheck import needs_translation, screen_text_noise
-    from . import analysis_regions
+    from . import analysis_regions, procjob
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
     from textcheck import needs_translation, screen_text_noise
     import analysis_regions
+    import procjob
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -172,33 +175,105 @@ def check_cancel(directory):
     if directory and (Path(directory)/'cancel.request').exists():
         raise Cancelled('Pipeline cancelled')
 
+_JOBS = {}  # Popen -> procjob.ProcessJob (Windows): owns the process and everything it starts
+
+def adopt(process):
+    """Put a freshly started engine / ffmpeg process into its own Job Object so its whole tree can be ended for certain."""
+    if os.name != 'nt' or process in _JOBS:
+        return
+    try:
+        job = procjob.ProcessJob()
+    except OSError:
+        log.warning('Không tạo được Job Object; dùng taskkill để dừng tiến trình.', exc_info=True)
+        return
+    if job.assign(process):
+        _JOBS[process] = job
+    else:
+        job.close()
+
+def _taskkill_tree(process):
+    """taskkill /T /F fallback; every descendant is looked up first and checked afterwards. -> True when all are gone."""
+    kids = procjob.descendants(process.pid)
+    done = subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True)
+    if done.returncode:
+        log.warning('taskkill pid %s trả mã %s: %s', process.pid, done.returncode, (done.stderr or b'').decode('utf-8',errors='replace').strip()[:300])
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired: pass
+    left = [pid for pid in kids if procjob.pid_alive(pid)]
+    for pid in left:  # one more try on the survivors, individually
+        subprocess.run(['taskkill','/PID',str(pid),'/F'],capture_output=True)
+    deadline = time.monotonic() + 2
+    while left and time.monotonic() < deadline:
+        time.sleep(.1)
+        left = [pid for pid in left if procjob.pid_alive(pid)]
+    if left:
+        log.error('Không dừng được tiến trình con %s của pid %s', left, process.pid)
+    return process.poll() is not None and not left
+
 def stop(process):
-    if process.poll() is None:
-        if os.name == 'nt':
-            subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True)
-        else:
-            import signal
-            os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill(); process.wait()
+    """End the process and everything it started. -> True only when that is verified, False when something survived."""
+    if os.name == 'nt':
+        job = _JOBS.pop(process, None)
+        if job is not None:
+            try:
+                if job.active() == 0:  # exited by itself, nothing left behind
+                    return process.poll() is not None
+                ok = job.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: ok = False
+                if not ok: log.error('Job Object của pid %s vẫn còn tiến trình sau khi dừng.', process.pid)
+                return ok and process.poll() is not None
+            finally:
+                job.close()
+        if process.poll() is not None:
+            return True
+        return _taskkill_tree(process)
+    if process.poll() is not None:
+        return True
+    import signal
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except OSError: process.kill()
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired: return False
+    return True
 
 LIVE_PROCESSES = set()  # engine / ffmpeg processes this worker waits on, so a server-wide stop can end them at once
 _LIVE_LOCK = threading.Lock()
 
-def kill_children():
-    """Kill every process wait_owned is waiting on (with its own children); -> how many were still running."""
+def kill_children_report():
+    """End every process wait_owned is waiting on (with its own children). -> dict(killed, failed, failed_pids):
+    `killed` counts the trees verified gone, `failed` those where something is still alive."""
     with _LIVE_LOCK:
         procs = list(LIVE_PROCESSES)
-    running = [p for p in procs if p.poll() is None]
+    running = [p for p in procs if p.poll() is None or p in _JOBS]
+    killed, failed = 0, []
     for p in running:
-        stop(p)
-    return len(running)
+        if stop(p):
+            killed += 1
+        else:
+            failed.append(p.pid)
+            log.error('Không dừng hết được cây tiến trình của pid %s.', p.pid)
+    return dict(killed=killed, failed=len(failed), failed_pids=failed)
+
+def kill_children():
+    """Like kill_children_report; -> how many process trees were really ended."""
+    return kill_children_report()['killed']
 
 def wait_owned(process, directory, poll=None):
     with _LIVE_LOCK:
         LIVE_PROCESSES.add(process)
+    adopt(process)
     try:
         while True:
             check_cancel(directory)
@@ -614,6 +689,36 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings, accept_fa
         return
     warnings.extend((read(stamp, {}) or {}).get('warnings') or [])
 
+REGIONS_APPLIED = 'regions-applied.json'
+REGIONS_STALE = 'Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.'
+
+def regions_key(cfg):
+    """Hash of the whole applied analysis_regions (subtitle band, logos, screen text)."""
+    return cache_key(dict(v=1, no_hard_subs=cfg['no_hard_subs'], subtitle=cfg['subtitle'], logos=cfg['logos'], screen_text=cfg['screen_text']))
+
+def regions_stale(directory, job):
+    """True when the job's saved analysis_regions differ from the ones regions.json / subtrack.json / clean.mp4 were built
+    from (they were saved after the last analysis). A job without regions, or never analysed, is never stale.
+    Artefacts made before the stamp existed are compared through their own per-part keys instead."""
+    directory = Path(directory)
+    cfg = analysis_regions.usable((job or {}).get('analysis_regions'))
+    if cfg is None or not (directory/'regions.json').exists():
+        return False
+    applied = read(directory/REGIONS_APPLIED, None)
+    if isinstance(applied, dict) and applied.get('key'):
+        return applied['key'] != regions_key(cfg)
+    marker = read(directory/'ocr-complete.json', {}) or {}
+    if not marker.get('region_mode'):
+        return True  # built by the old automatic search, not from these regions
+    built = read(directory/'source-build.json', {}) or {}
+    try:
+        logos = [[int(round(float(r[k]))) for k in ('x', 'y', 'width', 'height')] for r in read(directory/'regions.json', []) or []
+                 if str(r.get('id', '')).startswith('userlogo-')]
+    except (KeyError, TypeError, ValueError):
+        return True
+    return not (marker.get('screen_key') == analysis_regions.screen_key(cfg)
+                and built.get('source_key') == analysis_regions.source_key(cfg) and logos == cfg['logos'])
+
 def region_rows(directory, source, meta, settings, emit, warnings, cfg):
     """regions.json for a job with user-drawn regions.
 
@@ -662,6 +767,7 @@ def region_rows(directory, source, meta, settings, emit, warnings, cfg):
             row.update({k: before[k] for k in ('enabled', 'label', 'translation') if k in before})
         rows.append(row)
     write(directory/'regions.json', rows)
+    write(directory/REGIONS_APPLIED, dict(key=regions_key(cfg)))  # the stamp of the regions regions.json / subtrack.json now match
     write(directory/'ocr-complete.json', dict(mask_version=2, region_mode=True, screen_key=skey, warnings=[]))
     (directory/'logo-candidates.json').unlink(missing_ok=True)
 
@@ -1120,13 +1226,19 @@ def render_key(directory, command, graph_text, meta, mask_files=()):
         else:
             stamps[name] = file_hash(path)
     size = dict(width=meta.get('width'), height=meta.get('height'), fps=meta.get('fps'), duration=meta.get('duration'))
-    return cache_key(dict(version=1, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size))
+    key = dict(version=1, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size)
+    applied = (read(directory/REGIONS_APPLIED, None) or {}).get('key')
+    if applied:  # the analysis regions the masks / clean.mp4 were built from (absent for jobs without drawn regions)
+        key['regions'] = applied
+    return cache_key(key)
 
 def render(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     cues = read(directory/'cues.json', [])
     if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
+    if regions_stale(directory, job):
+        raise NeedsReview(REGIONS_STALE)
     mode = job.get('mode','dub')
     # Every cheap check runs before OCR refinement, erase and encode: a blocked export fails in seconds, not minutes.
     if job.get('export_kind'):

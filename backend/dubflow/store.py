@@ -11,6 +11,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+BUSY_STATUSES = ('queued', 'processing', 'separating', 'transcribing', 'synthesizing', 'rendering')
 ACTIVITY_LIMIT = 20
 
 
@@ -82,6 +83,35 @@ class Store:
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
         return job
 
+    def begin_delete(self, job_id):
+        """Atomically (one BEGIN IMMEDIATE transaction) check that the job is idle, has no pending/running task and mark
+        it `deleting`. From then on enqueue/claim/begin_processing refuse it, so nothing can start between the check and the
+        removal. KeyError: no such job. ValueError: busy, or already being deleted (Vietnamese message)."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT body FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            job = json.loads(row['body'])
+            if job.get('deleting'):
+                raise ValueError('Dự án đang được xóa.')
+            busy = job.get('status') in BUSY_STATUSES or db.execute(
+                "SELECT 1 FROM tasks WHERE job_id=? AND state IN ('pending','running') LIMIT 1", (job_id,)).fetchone()
+            if busy:
+                raise ValueError('Video đang được xử lý. Hãy dừng tác vụ trước khi xóa.')
+            job.update(deleting=True, updated_at=now())
+            db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
+        return job
+
+    def abort_delete(self, job_id):
+        """The deletion could not be carried out: the job is a normal, visible job again."""
+        try:
+            job = self.get_job(job_id)
+            if job and job.get('deleting'):
+                self.update_job(job_id, deleting=False)
+        except KeyError:
+            pass
+
     def remove_job(self, job_id):
         with self.connect() as db:
             db.execute('DELETE FROM events WHERE job_id=?', (job_id,))
@@ -106,6 +136,8 @@ class Store:
             row = db.execute('SELECT body FROM jobs WHERE id=?', (job_id,)).fetchone()
             if not row:
                 raise KeyError(job_id)
+            if json.loads(row['body']).get('deleting'):
+                raise ValueError('Dự án đang được xóa.')
             try:
                 cursor = db.execute('INSERT INTO tasks(job_id,action,state,created_at,updated_at) VALUES (?,?,?,?,?)',
                                     (job_id, action, 'pending', now(), now()))
@@ -134,16 +166,24 @@ class Store:
             running = db.execute("SELECT 1 FROM tasks WHERE state='running' LIMIT 1").fetchone() is not None
         return dict(position=ahead + 1, running_ahead=running)
 
+    def _claimable(self, db, row):
+        """A pending task whose job is gone or being deleted is cancelled instead of started."""
+        record = db.execute('SELECT body FROM jobs WHERE id=?', (row['job_id'],)).fetchone()
+        if record and not json.loads(record['body']).get('deleting'):
+            return True
+        db.execute("UPDATE tasks SET state='cancelled',updated_at=? WHERE id=?", (now(), row['id']))
+        return False
+
     def claim_next(self):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM tasks WHERE state='running' LIMIT 1").fetchone():
                 return None
-            row = db.execute("SELECT * FROM tasks WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
-            if not row:
-                return None
-            db.execute("UPDATE tasks SET state='running',updated_at=? WHERE id=?", (now(), row['id']))
-            return dict(row)
+            for row in db.execute("SELECT * FROM tasks WHERE state='pending' ORDER BY id").fetchall():
+                if self._claimable(db, row):
+                    db.execute("UPDATE tasks SET state='running',updated_at=? WHERE id=?", (now(), row['id']))
+                    return dict(row)
+        return None
 
     def claim_task(self, task_id):
         with self.connect() as db:
@@ -151,7 +191,7 @@ class Store:
             if db.execute("SELECT 1 FROM tasks WHERE state='running'").fetchone():
                 return None
             row = db.execute("SELECT * FROM tasks WHERE id=? AND state='pending'", (task_id,)).fetchone()
-            if row:
+            if row and self._claimable(db, row):
                 db.execute("UPDATE tasks SET state='running',updated_at=? WHERE id=?", (now(), task_id))
                 return dict(row)
         return None
@@ -165,7 +205,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT body FROM jobs WHERE id=?', (job_id,)).fetchone()
             job = json.loads(row['body']) if row else None
-            if not job or job['status'] == 'cancelled':
+            if not job or job['status'] == 'cancelled' or job.get('deleting'):
                 return False
             job.update(status='processing', stage='processing', progress=0, error=None, stage_step=None, stage_started_at=None, stage_detail=None,
                        activity=push_activity(job, 'Máy xử lý đã nhận tác vụ.'), updated_at=now())
@@ -177,6 +217,20 @@ class Store:
             # A running subprocess still owns the GPU until its worker confirms exit.
             db.execute("UPDATE tasks SET state='cancelled',updated_at=? WHERE job_id=? AND state='pending'", (now(), job_id))
         return self.update_job(job_id, status='cancelled', stage='cancelled', error=None)
+
+    def running_job_ids(self):
+        """Jobs whose task is still running (a cancelled one among them is not stopped until its worker confirms)."""
+        with self.connect() as db:
+            return {r['job_id'] for r in db.execute("SELECT job_id FROM tasks WHERE state='running'").fetchall()}
+
+    def mark_stopping(self, job_id):
+        """Tell the user the stop was requested but the running task has not ended yet."""
+        try:
+            job = self.get_job(job_id)
+            if job:
+                self.update_job(job_id, activity=push_activity(job, 'Đang dừng… chờ tác vụ đang chạy kết thúc.'))
+        except KeyError:
+            pass
 
     def recover(self):
         """Called once by the single worker after acquiring its process lock."""
