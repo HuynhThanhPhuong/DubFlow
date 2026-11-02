@@ -1005,7 +1005,14 @@ def render(job_dir, settings, emit):
         from .subtitle_style import FONTS_DIR, ffmpeg_filter_path
     else:
         from subtitle_style import FONTS_DIR, ffmpeg_filter_path
-    graph.append(f"[{last}]ass=captions.ass:fontsdir='{ffmpeg_filter_path(FONTS_DIR)}'{scale}[vout]")
+    overlays = job.get('overlays') or []
+    logo_files = []
+    for o in overlays:  # checked before ffmpeg starts so a deleted file is a clear review message, not an opaque exit code
+        path = Path(getattr(settings,'data_dir','.'))/'logos'/f"{o['logo_id']}.png"
+        if not re.fullmatch(r'[0-9a-f]{64}',str(o['logo_id'])) or not path.is_file():
+            raise NeedsReview('Không tìm thấy file logo đã gắn vào video. Chọn lại logo hoặc gỡ logo khỏi dự án.')
+        logo_files.append(path)
+    graph.append(f"[{last}]ass=captions.ass:fontsdir='{ffmpeg_filter_path(FONTS_DIR)}'[sub]")
     if mode == 'vietsub':
         amap = '0:a:0?'
     else:
@@ -1024,6 +1031,15 @@ def render(job_dir, settings, emit):
         cmd += ['-i',str(directory/'clean.mp4')]
         clean_index = 1 + mask_inputs + (2 if mode == 'dub' else 0 if mode == 'vietsub' else 1)
         graph.insert(0, f'[{clean_index}:v]null[cleanv]')
+    # Logos go last so they sit above captions; coordinates are source pixels, so the output scale comes after them
+    first_logo = 1 + mask_inputs + (2 if mode == 'dub' else 0 if mode == 'vietsub' else 1) + (1 if use_clean else 0)
+    last = 'sub'
+    for i,(o,path) in enumerate(zip(overlays,logo_files)):
+        cmd += ['-i',str(path)]
+        graph.append(f"[{first_logo+i}:v]format=rgba,scale={max(1,round(o['width']))}:{max(1,round(o['height']))},colorchannelmixer=aa={float(o['opacity']):g}[logo{i}]")
+        graph.append(f"[{last}][logo{i}]overlay={round(o['x'])}:{round(o['y'])}:enable='between(t,{float(o['start']):g},{float(o['end']):g})'[ov{i}]")
+        last = f'ov{i}'
+    graph.append(f"[{last}]{scale[1:] or 'null'}[vout]")
     # Keep the graph off the Windows command line (WinError 206 on OCR-heavy clips).
     (directory/'render-filter.txt').write_text(';'.join(graph),encoding='utf-8')
     cmd += ['-filter_complex_script','render-filter.txt','-map','[vout]','-map',amap,'-t',str(meta['duration']),'-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-movflags','+faststart','output.mp4']

@@ -25,7 +25,8 @@ from . import translate_run
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
-from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
+from . import logos as logo_lib
+from .schemas import OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
 from .pipeline import erase_current, erases_static
 from .store import Store
@@ -114,6 +115,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['clean_url'] = None
         if clean.is_file() and job.get('source_path') and erase_current(folder, job['source_path'], full=False):
             value['clean_url'] = f'{base}/clean?v={clean.stat().st_mtime_ns}'
+        value['overlays'] = job.get('overlays', [])
         value['translation_usage'] = translate_run.read_usage(folder)
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
@@ -176,6 +178,13 @@ def create_app(settings: Settings | None = None, start_worker=True):
         store.event(job_id, 'queued', 'Đã đưa vào hàng đợi.', 0)
         return public_job(store.get_job(job_id))
 
+    def default_overlays(prefs, metadata):
+        pref = prefs.get('default_overlay')
+        logo = store.get_record('logo', pref['logo_id']) if pref else None
+        if not logo or not (settings.data_dir / 'logos' / f"{logo['id']}.png").is_file():
+            return []
+        return [logo_lib.default_overlay(pref, logo, metadata['width'], metadata['height'], metadata['duration'])]
+
     @app.get('/api/health')
     def health():
         cache = Path(settings.model_cache)
@@ -233,8 +242,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
         except (ValueError, OSError, TimeoutError) as e:
             temp.unlink(missing_ok=True)
             raise HTTPException(400, str(e))
+        overlays = default_overlays(prefs, metadata)
         job = store.create_job(dict(title=title.strip() or Path(name).stem[:200], collection_id=collection_id or None, episode=episode, filename=name, mode=mode, voice_id=voice_id or None,
-                                   source_url=source_url, rights_confirmed=True, **metadata))
+                                   source_url=source_url, rights_confirmed=True, overlays=overlays, **metadata))
         folder = settings.jobs_dir / job['id']
         folder.mkdir()
         source = folder / ('source' + suffix)
@@ -490,6 +500,75 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if not decision_only:  # ticking or relabelling a box changes neither what is erased nor drawn: keep status and output
             invalidate(job_id)
         return decorate_regions(job_id,j,[dict(v) for v in values])
+
+    def logo_or_404(logo_id):
+        record = store.get_record('logo', logo_id) if logo_lib.LOGO_ID.match(logo_id) else None
+        if not record or not (settings.data_dir / 'logos' / f'{logo_id}.png').is_file():
+            raise HTTPException(404, 'Không tìm thấy logo.')
+        return record
+
+    @app.post('/api/logos', status_code=201)
+    async def upload_logo(file: UploadFile = File(...), name: str = Form('')):
+        raw = await file.read(logo_lib.MAX_BYTES + 1)
+        label = (name.strip() or Path((file.filename or 'logo').replace('\\', '/')).stem or 'logo')[:100]
+        try:
+            return await asyncio.to_thread(logo_lib.save, raw, label, settings, store)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.post('/api/logos/text', status_code=201)
+    async def create_text_logo(body: TextLogoIn):
+        # Editing a text logo is a new POST (a new id); overlays keep the old one until changed, and the old entry can be deleted once unused.
+        def make():
+            png, text, style = logo_lib.render_text(body.text, body.style, settings)
+            return logo_lib.save(png, body.name.strip()[:100] or text, settings, store, 'text', dict(text=text, style=style))
+        try:
+            return await asyncio.to_thread(make)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get('/api/logos')
+    def list_logos():
+        return [logo_lib.public(r) for r in store.list_records('logo') if (settings.data_dir / 'logos' / f"{r['id']}.png").is_file()]
+
+    @app.get('/api/logos/{logo_id}/image')
+    def logo_image(logo_id: str):
+        logo_or_404(logo_id)
+        return FileResponse(settings.data_dir / 'logos' / f'{logo_id}.png', media_type='image/png', headers={'Cache-Control': 'private, max-age=86400'})
+
+    @app.delete('/api/logos/{logo_id}', status_code=204)
+    def delete_logo(logo_id: str):
+        logo_or_404(logo_id)
+        used = [j for j in store.list_jobs() if any(o.get('logo_id') == logo_id for o in j.get('overlays', []))]
+        if used:
+            raise HTTPException(409, f'Logo đang được dùng trong {len(used)} dự án. Gỡ logo khỏi các dự án đó trước khi xoá.')
+        (settings.data_dir / 'logos' / f'{logo_id}.png').unlink(missing_ok=True)
+        store.delete_record('logo', logo_id)
+        prefs = preferences(store, settings)
+        if (prefs.get('default_overlay') or {}).get('logo_id') == logo_id:  # a default that points nowhere would only fail new jobs
+            store.put_record('settings', 'main', dict(prefs, default_overlay=None))
+        return Response(status_code=204)
+
+    @app.put('/api/jobs/{job_id}/overlays')
+    def put_overlays(job_id: str, body: OverlaysIn):
+        j = writable(job_id)
+        W, H, D = float(j.get('width') or 0), float(j.get('height') or 0), float(j.get('duration') or 0)
+        values = []
+        for o in body.overlays:
+            logo_or_404(o.logo_id)
+            end = min(o.end if o.end is not None else D, D)
+            if o.start >= end:
+                raise HTTPException(422, 'Thời gian hiển thị logo phải nằm trong thời lượng video.')
+            x, y, w, h = logo_lib.clamp_box(o.x, o.y, o.width, o.height, W, H)
+            values.append(dict(id=o.id or uuid.uuid4().hex[:12], logo_id=o.logo_id, x=x, y=y, width=w, height=h, opacity=o.opacity, start=o.start, end=end))
+        if len({v['id'] for v in values}) != len(values):
+            raise HTTPException(422, 'ID logo bị trùng.')
+        if values != j.get('overlays', []):
+            j = store.update_job(job_id, overlays=values)
+            save_job_file(j)
+            if j['status'] == 'done':  # the exported file no longer matches; clean.mp4 is untouched (its signature ignores overlays)
+                invalidate(job_id)
+        return values
 
     @app.get('/api/jobs/{job_id}/parts')
     def get_parts(job_id: str):

@@ -30,7 +30,7 @@ class Settings:
 
     def ensure(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        for name in ('jobs', 'voices', 'tmp'):
+        for name in ('jobs', 'voices', 'tmp', 'logos'):
             (self.data_dir / name).mkdir(exist_ok=True)
         return self
 

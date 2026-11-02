@@ -3,6 +3,15 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 from typing import Literal
 
+class DefaultOverlay(BaseModel):
+    """Logo placed on every new job; fractions of the frame (top-left corner, width), height from the logo's aspect."""
+    model_config = ConfigDict(extra='forbid')
+    logo_id: str = Field(pattern=r'^[0-9a-f]{64}$')
+    fx: FiniteFloat = Field(ge=0, le=1)
+    fy: FiniteFloat = Field(ge=0, le=1)
+    fw: FiniteFloat = Field(gt=0, le=1)
+    opacity: FiniteFloat = Field(default=1, ge=0, le=1)
+
 class Preferences(BaseModel):
     model_config = ConfigDict(extra='forbid')
     output_dir: str
@@ -34,6 +43,7 @@ class Preferences(BaseModel):
     original_gain: FiniteFloat = Field(default=.32, ge=0, le=1)
     max_takes: int = Field(default=24, ge=4, le=24)
     fallback_takes: int = Field(default=8, ge=0, le=24)  # extra takes of the second engine, only for lines the first engine could not pass
+    default_overlay: DefaultOverlay | None = None
     toast_success_ms: int = Field(default=3000, ge=500, le=60000)
     toast_error_ms: int = Field(default=5000, ge=500, le=60000)
 

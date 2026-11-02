@@ -183,6 +183,10 @@ class Store:
             db.execute('INSERT INTO studio_records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body', (kind, record_id, json.dumps(value, ensure_ascii=False)))
         return value
 
+    def delete_record(self, kind, record_id):
+        with self.connect() as db:
+            db.execute('DELETE FROM studio_records WHERE kind=? AND id=?', (kind, record_id))
+
     def unlink_collection(self, collection_id):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')

@@ -114,6 +114,28 @@ class Region(BaseModel):
     label: str = Field(default='', max_length=100)
 
 
+class OverlayIn(BaseModel):
+    id: str | None = Field(default=None, max_length=100)
+    logo_id: str = Field(max_length=64)
+    x: FiniteFloat
+    y: FiniteFloat
+    width: FiniteFloat = Field(gt=0)
+    height: FiniteFloat = Field(gt=0)
+    opacity: FiniteFloat = Field(default=1, ge=0, le=1)
+    start: FiniteFloat = Field(default=0, ge=0)
+    end: FiniteFloat | None = Field(default=None, gt=0)  # None: until the end of the video
+
+
+class TextLogoIn(BaseModel):
+    name: str = Field(default='', max_length=200)
+    text: str = Field(max_length=500)  # the 60-character rule is checked with a Vietnamese message in logos.render_text
+    style: dict = Field(default_factory=dict)
+
+
+class OverlaysIn(BaseModel):
+    overlays: list[OverlayIn] = Field(max_length=20)
+
+
 class DetectLogosRequest(BaseModel):
     pass
 
