@@ -8,7 +8,7 @@ except ImportError:  # backend venv has no cv2
     cv2 = None
 if cv2 is not None:
     from dubflow.subtitle_erase import (LAMA_SIZE, SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow,
-                                        glyph_mask, lama_inpaint, open_lama, shadow_field)
+                                        bright_strokes, fill_weak_cells, glyph_mask, lama_inpaint, open_lama, shadow_field)
     from dubflow.subtitle_erase import LamaBatch, LamaJobs, Pending
 
 
@@ -444,7 +444,7 @@ class EraseStageTest(unittest.TestCase):
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual(done['version'], 8)
+            self.assertEqual(done['version'], 9)
             self.assertEqual((done['static_hash'], done['static_ids']), ('', []))
             self.assertEqual((done['fill'], done['provider']), ('smooth', None))
             self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
@@ -452,7 +452,7 @@ class EraseStageTest(unittest.TestCase):
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (8, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (9, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile
@@ -520,7 +520,7 @@ class StaticEraseStageTest(unittest.TestCase):
             ff, d = self._erase(tmp, [region])  # no subtitle segments at all: clean.mp4 is still produced
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (8, 'sh', ['logo']))
+            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (9, 'sh', ['logo']))
             self.assertEqual(done['frames_touched'], 0)
             self.assertEqual(done['static_frames'], 25)  # 0.5 s .. 1.5 s at 25 fps
             frames = self._frames(ff, d / 'clean.mp4')
@@ -654,7 +654,7 @@ class BandEraseStageTest(unittest.TestCase):
             # two readings of the same sentence 0.2 s apart: the windows are bridged, the dim frames in between are erased too
             ff, src, d = self._erase(tmp, [dict(s=.6, e=1.2, x0=300, y0=630, x1=560, y1=690, text='a'), dict(s=1.4, e=1.8, x0=300, y0=630, x1=560, y1=690, text='b')])
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((done['version'], done['windows']), (8, 2))
+            self.assertEqual((done['version'], done['windows']), (9, 2))
             before, after = self._frames(ff, src), self._frames(ff, d / 'clean.mp4')
             text = (slice(630, 700), slice(290, 580))
             for n in range(int(.6 * self.FPS), int(1.8 * self.FPS)):
@@ -918,6 +918,70 @@ class OddBandEraseStageTest(BandEraseStageTest):
             done = json.loads((d / 'erase.json').read_text())
             self.assertGreater(done['frames_touched'], 20)
             self.assertIn('text_box_frames', done)
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class WeakCellTest(unittest.TestCase):
+    """White text on a bright patch: some characters found, others not. The share of the whole box looks fine, so the whole
+    box is not masked; the characters the detector missed are filled cell by cell (the residue at 80 s / 90 s of test2)."""
+
+    @staticmethod
+    def part(found):
+        part = np.zeros((40, 400), bool)
+        for i in range(10):  # ten character cells of the 40 px box height
+            if i in found:
+                part[8:32:2, i * 40 + 6:i * 40 + 34] = True  # strokes: about 25% of the cell
+        return part
+
+    def test_cells_without_strokes_are_filled_whole_and_good_cells_are_left_alone(self):
+        part = self.part({0, 1, 2, 5, 6, 7, 8, 9})  # cells 3 and 4 missed
+        before = part.copy()
+        self.assertEqual(fill_weak_cells(part, (0, 0, 400, 40)), 2)
+        self.assertTrue(part[:, 120:200].all())
+        self.assertTrue((part[:, :120] == before[:, :120]).all() and (part[:, 200:] == before[:, 200:]).all())
+
+    def test_a_complete_detection_changes_nothing(self):
+        part = self.part(set(range(10)))
+        before = part.copy()
+        self.assertEqual(fill_weak_cells(part, (0, 0, 400, 40)), 0)
+        self.assertTrue((part == before).all())
+
+    def test_a_line_found_nowhere_is_left_to_the_whole_box_rule(self):
+        part = self.part(set())
+        self.assertEqual(fill_weak_cells(part, (0, 0, 400, 40)), 0)
+        self.assertFalse(part.any())
+
+    def test_a_few_dense_cells_among_missed_ones_still_fill_the_rest(self):
+        # a bright patch hid most characters (found: 3 of 10), the whole-box share is above the whole-box limit
+        part = self.part({4, 5, 6})
+        part[:, 160:280] = True  # dense on the characters that were found
+        self.assertEqual(fill_weak_cells(part, (0, 0, 400, 40)), 7)
+        self.assertTrue(part.all())
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class BrightStrokesTest(unittest.TestCase):
+    """White text on a pale patch has no dark outline (glyph_mask finds nothing) but is a few levels brighter than the picture."""
+
+    @staticmethod
+    def pale_text():
+        gray = np.full((58, 400), 212, np.uint8)
+        gray[:, 200:] = 190
+        cv2.putText(gray, "TEXT", (30, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.3, 236, 3, cv2.LINE_8)
+        return gray
+
+    def test_low_contrast_strokes_are_found_where_the_outline_detector_sees_nothing(self):
+        gray = self.pale_text()
+        self.assertLess(glyph_mask(gray, 2 / 3).mean(), .003)
+        mask = bright_strokes(gray, 2 / 3, (0, 0, 400, 58))
+        self.assertGreater(mask[:, 25:150].mean(), .15)
+        self.assertLess(mask[:, 200:].mean(), .01)
+
+    def test_only_the_given_box_is_looked_at_and_a_flat_picture_gives_nothing(self):
+        gray = self.pale_text()
+        mask = bright_strokes(gray, 2 / 3, (150, 0, 400, 58))
+        self.assertFalse(mask[:, :150].any())
+        self.assertFalse(bright_strokes(np.full((58, 400), 230, np.uint8), 2 / 3, (0, 0, 400, 58)).any())
 
 
 @unittest.skipUnless(cv2 is not None, "cv2 not available")

@@ -4,7 +4,7 @@ The fragments are the real readings of the live job "test2" (1280x720, Chinese h
 import unittest
 
 from dubflow.subtitle_lines import (build_source_cues_primary, clean_line, compatible, erase_windows, line_key, lines_from_samples,
-                                    merge_fragments, subtitle_lines)
+                                    merge_fragments, pick_text, subtitle_lines)
 
 # (start, end, text) of the per-segment OCR readings of test2 that produced duplicate cues
 FRAGMENTS = [
@@ -280,6 +280,86 @@ class AsrBesideOcrTest(unittest.TestCase):
         self.assertTrue(asr['source_partial'])
         self.assertLess(len(asr['original']), len('完全不同的一句话还有后半句内容'))
         self.assertEqual(asr['status'], 'needs_review')
+
+
+class DisplayedLineVariantsTest(unittest.TestCase):
+    """OCR variants of one displayed line ('师尊' read '师拿' on some frames, found on the real e2e of test2) are one cue when the
+    text box stays where it was; a sentence with an inserted character (different width) or a line shown again after an empty
+    band stays apart."""
+
+    @staticmethod
+    def rows(*items, miss=None):
+        out = []
+        for i, (text, box) in enumerate(items):
+            row = dict(t=round(i * .4, 3), text=text)
+            if box:
+                row['box'] = box
+            elif miss is not None:
+                row['miss'] = miss
+            out.append(row)
+        return out
+
+    A, B = '古晋见过师尊 见过两位师兄', '古晋见过师拿 见过两位师兄了'
+    BOX = (425, 667, 875, 700)
+
+    def test_variants_with_the_same_text_box_are_one_line_with_the_majority_reading(self):
+        items = [(self.A, self.BOX)] * 3 + [(self.B, (429, 668, 875, 700))] * 2 + [(self.A, self.BOX)] * 2 + [('', None)]
+        lines = subtitle_lines(self.rows(*items, miss=False), 20)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]['text'], self.A)
+        self.assertEqual((lines[0]['s'], lines[0]['e']), (0.0, 2.6))
+
+    def test_one_line_misread_in_one_character_votes_per_character(self):
+        a, b, c = '你就当一辈子的废柴二世祖吧', '你就当一辈子的废柴二世租吧', '你就当一辈子的废柴二世租吧了'
+        items = [(a, self.BOX)] * 2 + [(b, self.BOX)] * 3 + [(c, self.BOX)] + [('', None)]
+        text = subtitle_lines(self.rows(*items, miss=False), 20)[0]['text']
+        self.assertEqual(text, b)
+        self.assertEqual(pick_text({'你就当一辈子的废柴二世祖吧': 2, '你就当一辈子的废柴二世租吧': 3, '你就当一辈子的废柴二世吕吧': 1})[0], b)
+
+    def test_an_inserted_character_changes_the_box_width_so_the_lines_stay_apart(self):
+        items = [('我喜欢你', (500, 667, 620, 700))] * 3 + [('我不喜欢你', (485, 667, 635, 700))] * 3 + [('', None)]
+        lines = subtitle_lines(self.rows(*items, miss=False), 20)
+        self.assertEqual([l['text'] for l in lines], ['我喜欢你', '我不喜欢你'])
+
+    def test_without_a_box_there_is_no_evidence_and_the_lines_stay_apart(self):
+        items = [(self.A, None)] * 3 + [(self.B, None)] * 3 + [('', None)]
+        self.assertEqual(len(subtitle_lines(self.rows(*items, miss=False), 20)), 2)
+
+    def test_the_same_line_after_a_confirmed_empty_band_is_still_a_second_cue(self):
+        items = [(self.A, self.BOX)] * 3 + [('', None)] + [(self.B, self.BOX)] * 3 + [('', None)]
+        self.assertEqual(len(subtitle_lines(self.rows(*items, miss=False), 20)), 2)
+
+    def test_a_flash_to_white_between_identical_readings_does_not_split_the_line(self):
+        items = [(self.A, self.BOX)] * 3 + [('', None)] + [(self.A, self.BOX)] * 3 + [('', None)]
+        rows = self.rows(*items, miss=None)  # unknown: the band went flat white, nothing is known about the line
+        self.assertEqual(len(subtitle_lines(rows, 20)), 1)
+
+
+class AsrHygieneTest(unittest.TestCase):
+    def asr(self, start, end, text, i=None):
+        return dict(id=i or f'a{start}', start=start, end=end, speaker='s', original=text, text='')
+
+    def build(self, asr, lines=()):
+        return build_source_cues_primary(list(lines), asr, 60)
+
+    def test_one_character_fragments_are_dropped_unless_long_and_alone(self):
+        burst = [self.asr(10 + i, 11 + i, '你') for i in range(5)]
+        self.assertEqual(self.build(burst), [])  # a burst of 1 s fillers: neighbours of each other
+        self.assertEqual(self.build([self.asr(10, 10.3, '世')]), [])  # short
+        self.assertEqual(len(self.build([self.asr(10, 11, '世')])), 1)  # one second, alone
+        self.assertEqual(self.build([self.asr(10, 11, '世'), self.asr(12, 12.5, '完全不同的话')]).__len__(), 1)  # a neighbour within 1.5 s
+
+    def test_the_same_words_heard_in_a_row_become_one_cue(self):
+        cues = self.build([self.asr(86, 87, '阿姨', 'x'), self.asr(87, 89, '阿姨', 'y'), self.asr(95, 96, '阿姨', 'z')])
+        self.assertEqual([(c['start'], c['end'], c['id']) for c in cues], [(86, 89, 'x'), (95, 96, 'z')])
+        self.assertEqual(cues[0]['source_ids'], ['x', 'y'])
+
+    def test_asr_repeating_the_line_beside_it_is_dropped_and_a_repeat_further_away_stays(self):
+        line = dict(s=10, e=12, text='大泽山永远支持你')
+        near = self.asr(13, 14, '大泽山永远支持你')  # 1 s after the line
+        far = self.asr(14, 15, '大泽山永远支持你')  # 2 s after it
+        self.assertEqual([c['source'] for c in self.build([near], [line])], ['ocr'])
+        self.assertEqual([c['source'] for c in self.build([far], [line])], ['ocr', 'asr'])
 
 
 if __name__ == '__main__':

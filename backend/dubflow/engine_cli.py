@@ -673,6 +673,7 @@ def subtrack(directory, request):
 
 
 MISS_DIFF = 2.5  # band change (mean gray levels at 1/4 size) under which an unread sample counts as an OCR miss of the same line
+FLASH_STD, FLASH_MEAN = 3.0, 200  # a band this flat and bright is a white flash: the line is hidden, not gone
 BLIP_DIFF, BLIP_MARGIN = 1.0, .7  # a frame between two samples that differs this much from both and more than they differ from each other is read
 
 
@@ -730,8 +731,12 @@ def subband(directory, request):
 
     def empty_sample(t, small):
         """A sample nothing was read from. miss: the band still looks like the last one that had a line, so the OCR missed
-        it (the line is probably still there); False: the band changed to something without a line (really empty)."""
-        return dict(t=t, text='', box=None, miss=text_small is not None and distance(small, text_small) < MISS_DIFF)
+        it (the line is probably still there); False: the band changed to something without a line (really empty); None: no
+        evidence (a flat white band is a flash / fade to white that washes the burned-in line out too)."""
+        miss = text_small is not None and distance(small, text_small) < MISS_DIFF
+        if not miss and float(small.std()) < FLASH_STD and float(small.mean()) > FLASH_MEAN:
+            miss = None
+        return dict(t=t, text='', box=None, miss=miss)
 
     try:
         i = 0
@@ -1013,7 +1018,7 @@ def erase(directory, request):
     import subprocess
     import cv2
     import numpy as np
-    from subtitle_erase import LAMA_CTX, LAMA_REUSE_TOL, STATIC_TOL, LamaBatch, Pending, erase_frame, glyph_mask, open_lama
+    from subtitle_erase import LAMA_CTX, LAMA_REUSE_TOL, STATIC_TOL, LamaBatch, Pending, bright_strokes, erase_frame, fill_weak_cells, glyph_mask, open_lama
     directory = Path(directory)
     started = time.monotonic()  # includes opening the model (CUDA start-up can take seconds)
     lama, lama_warning, provider = None, None, None
@@ -1113,7 +1118,7 @@ def erase(directory, request):
         shutil.rmtree(refs_dir, ignore_errors=True)
         raise
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
-    box_frames, text_box_frac = 0, float(request.get('erase_text_box_frac', TEXT_BOX_FRAC))
+    box_frames, cell_frames, text_box_frac = 0, 0, float(request.get('erase_text_box_frac', TEXT_BOX_FRAC))
     loaded, style = (None, None), {}
     lama_ctx = int(round(LAMA_CTX * k))
     crop_m = lama_ctx + int(round(40 * k)) + 8  # columns around a line: model context + the reference alignment's reach
@@ -1165,7 +1170,8 @@ def erase(directory, request):
                                   min(width, int(s['x1'] + box_grow)), min(height, int(s['y1'] + box_grow)))
                 if x1 <= x0 or y1 <= y0:
                     continue
-                part = glyph_mask(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY), k)
+                gray_crop = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+                part = glyph_mask(gray_crop, k)
                 if foot is not None and foot[seg_index[id(s)]] is not None and foot[seg_index[id(s)]].shape == part.shape:
                     part = part | foot[seg_index[id(s)]]  # the line's whole footprint, also on frames the detector missed
                 tb = s.get('tb')
@@ -1173,10 +1179,16 @@ def erase(directory, request):
                     # white text on a bright picture has no dark outline for the detector: when the strokes found cover only
                     # a sliver of where the OCR read the line, the whole text box is the mask (the model rebuilds it)
                     ta, tc, td, te = tb[0] - x0, tb[1] - y0, tb[2] - x0, tb[3] - y0
-                    if td > ta and te > tc and part[tc:te, ta:td].mean() < text_box_frac:
-                        part = part.copy()
-                        part[tc:te, ta:td] = True
-                        box_frames += 1
+                    if td > ta and te > tc:
+                        part = part | bright_strokes(gray_crop, k, (ta, tc, td, te))  # low-contrast strokes: no outline to find
+                        if part[tc:te, ta:td].mean() < text_box_frac:
+                            part = part.copy()
+                            part[tc:te, ta:td] = True
+                            box_frames += 1
+                        else:  # some characters found, others missed (bright patch under the text): fill those cells whole
+                            part = part.copy()
+                            if fill_weak_cells(part, (ta, tc, td, te)):
+                                cell_frames += 1
                 # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
                 if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
                     continue
@@ -1272,11 +1284,11 @@ def erase(directory, request):
     lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
                     mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
                     cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
-    write(directory/'erase.json', dict(version=8, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
+    write(directory/'erase.json', dict(version=9, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
-                                       frames_touched=touched, text_box_frames=box_frames, seconds=round(time.monotonic() - started, 3), windows=len(segs) if band_box else None,
+                                       frames_touched=touched, text_box_frames=box_frames, weak_cell_frames=cell_frames, seconds=round(time.monotonic() - started, 3), windows=len(segs) if band_box else None,
                                        static_hash=request.get('static_hash', ''), static_ids=[r['id'] for r in statics],
                                        static_frames=static_frames, static_fills=static_fills,
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))

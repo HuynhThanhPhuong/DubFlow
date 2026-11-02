@@ -568,7 +568,7 @@ def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
     detect_logos(directory, source, meta, settings, emit, warnings)
     return True
 
-ERASE_VERSION = 8
+ERASE_VERSION = 9
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
 def erases_static(r):

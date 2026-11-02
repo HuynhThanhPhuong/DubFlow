@@ -30,6 +30,57 @@ def glyph_mask(gray_crop: np.ndarray, scale: float) -> np.ndarray:
     return grown > 0
 
 
+BRIGHT_STROKE = 14  # a thin stroke this much brighter than its surroundings (gray levels) is text, with or without an outline
+BRIGHT_MIN = 200  # ... and at least this bright (white text)
+
+
+def bright_strokes(gray_crop: np.ndarray, scale: float, box: tuple) -> np.ndarray:
+    """Bool mask (shape of gray_crop) of thin bright strokes inside box (x0, y0, x1, y1): the text the outline-based
+    glyph_mask cannot see on a pale picture (white shirt, flowers: no dark pixel beside the strokes, only a +15..+30 step
+    up from the background). A white top-hat: the pixels that an opening wider than a stroke removes, i.e. strokes
+    narrower than about 13 px at 1080p. Only meant for the place where the OCR read a line; elsewhere the same test
+    also picks up folds and edges of the picture."""
+    x0, y0, x1, y1 = (max(0, int(v)) for v in box)
+    out = np.zeros(gray_crop.shape, bool)
+    sub = gray_crop[y0:y1, x0:x1]
+    if sub.size == 0:
+        return out
+    r = _odd(13.5 * scale)
+    opened = cv2.morphologyEx(sub, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r, r)))
+    found = ((sub.astype(np.int16) - opened) >= BRIGHT_STROKE) & (sub >= BRIGHT_MIN)
+    g = 2 * int(round(1.5 * scale)) + 1
+    out[y0:y1, x0:x1] = cv2.dilate(found.astype(np.uint8), np.ones((g, g), np.uint8)) > 0
+    return out
+
+
+WEAK_CELL = .10  # a character cell whose stroke share is under this was missed by the detector (found characters: .12-.5)
+WEAK_FOUND = .15  # some cell of the line must be at least this dense (the line is found somewhere), else the whole-box rule decides
+
+
+def fill_weak_cells(part: np.ndarray, box: tuple) -> int:
+    """Mask the character cells of a text box where the stroke detector found (almost) nothing -> number of cells filled.
+
+    part: bool stroke mask, edited in place; box (x0, y0, x1, y1) in part coordinates: where the OCR read the line. White
+    text on a bright patch of the picture has no dark outline, so some characters of a line are found and others are not;
+    the share of the whole box then looks fine while a few characters stay on screen. The box is cut into square cells
+    (one character wide); a cell whose share of stroke pixels is under WEAK_CELL is filled whole (the model rebuilds the
+    picture there) when another cell of the line is dense (WEAK_FOUND): a line found nowhere is left to the whole-box rule."""
+    x0, y0, x1, y1 = box
+    h = y1 - y0
+    if h < 4 or x1 <= x0:
+        return 0
+    cells = [(x, min(x + h, x1)) for x in range(x0, x1, h)]
+    share = [float(part[y0:y1, a:b].mean()) for a, b in cells]
+    if max(share) < WEAK_FOUND:
+        return 0
+    filled = 0
+    for (a, b), sh in zip(cells, share):
+        if sh < WEAK_CELL:
+            part[y0:y1, a:b] = True
+            filled += 1
+    return filled
+
+
 _rng = np.random.default_rng(12345)
 
 

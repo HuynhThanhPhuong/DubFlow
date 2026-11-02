@@ -107,7 +107,28 @@ def pick_text(votes):
     best = max(groups, key=lambda k: (round(score(k), 6), len(k), weight[k]))
     text = max(groups[best], key=lambda t: t[1])[0]
     agree = sum(wo for o, wo in weight.items() if compatible(o, best))
-    return clean_line(text), round(agree / total, 3) if total else 0.0
+    return _vote_characters(clean_line(text), best, weight), round(agree / total, 3) if total else 0.0
+
+
+def _vote_characters(text, best, weight):
+    """Per-character majority over the readings of the same length as `best` (OCR variants of one line: '师尊' read
+    '师拿' on a few frames): a character that more of them agree on replaces the one in the chosen reading."""
+    same = {k: w for k, w in weight.items() if len(k) == len(best) and k != best}
+    if not same:
+        return text
+    letters = [i for i, c in enumerate(text) if unicodedata.category(c)[0] in 'LN']
+    if len(letters) != len(best):
+        return text
+    chars = list(text)
+    for pos, i in enumerate(letters):
+        count = {}
+        for k, w in weight.items():
+            if len(k) == len(best):
+                count[k[pos]] = count.get(k[pos], 0.0) + w
+        top = max(count, key=lambda c: (count[c], c == best[pos]))
+        if top != best[pos] and count[top] > count.get(best[pos], 0.0):
+            chars[i] = top
+    return ''.join(chars)
 
 
 def flicker(prev, sg, short=.5):
@@ -217,6 +238,25 @@ def _bridgeable(kinds, ka, kb):
     return len(kinds) <= (3 if (ka == kb and len(kb) >= 4) else 1)
 
 
+def same_display(boxes, box, length_a, length_b):
+    """Image evidence that two stable readings of similar text are one displayed line: the OCR text boxes agree.
+
+    boxes: boxes (x0, y0, x1, y1) of the stable readings of the line so far; box: the box of the new reading. A static
+    burned-in line keeps its position and width on every frame (a bracket mis-read moves an end by about half a
+    character), whereas another sentence that differs by an inserted or removed character is a character narrower or
+    wider and shifted by half of it. The readings must have the same length +-2, and the new box must match one of the
+    last few boxes of the line in width and centre within 0.55 text heights. False without a box on either side (no
+    evidence: they stay two lines)."""
+    if not boxes or not box or abs(length_a - length_b) > 2:
+        return False
+    height = max(box[3] - box[1], 1)
+    tol = max(.55 * height, 10)
+    for b in boxes[-4:]:
+        if abs((b[2] - b[0]) - (box[2] - box[0])) <= tol and abs((b[0] + b[2] - box[0] - box[2]) / 2) <= tol:
+            return True
+    return False
+
+
 def lines_from_samples(samples, duration, step=.4, min_chars=2):
     """OCR samples [{t, text, box?, miss?}] (text '' = nothing read) -> raw lines [{s, e, text, votes, readings, x0..y1}].
 
@@ -251,6 +291,8 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
             if stable[i] and cur['stable']:
                 join = any(same_line(sk, k) for sk in cur['stable'])
                 brk = not join and (compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k))
+                if brk and same_display(cur['boxes'], sm.get('box'), len(line_key(cur['best'])), len(k)):
+                    join, brk = True, False  # an OCR variant of the line on screen (same place, same width), not another sentence
             else:
                 join = compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k)
             if join and not _bridgeable(gap, cur['last_key'], k):
@@ -261,10 +303,13 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
             cur['votes'][sm['text']] = cur['votes'].get(sm['text'], 0.0) + 1
             if stable[i]:
                 cur['stable'].add(k)
+                if sm.get('box'):
+                    cur['boxes'].append(sm['box'])
             if len(k) > len(line_key(cur['best'])):
                 cur['best'] = sm['text']
         else:
-            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: 1.0}, stable={k} if stable[i] else set(), brk=brk)
+            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: 1.0}, stable={k} if stable[i] else set(), brk=brk,
+                       boxes=[sm['box']] if stable[i] and sm.get('box') else [])
             lines.append(cur)
         gap = []
     out = []
@@ -466,6 +511,53 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
                 new['source_uncertain'] = True  # the cut was made by time only: check the words against the video
                 new['status'] = 'needs_review'
         out.append(new)
+    out, tidied = tidy_asr_cues(sorted(out, key=lambda c: (c['start'], c['end'])))
     if stats is not None:
-        stats.update(ocr_unreadable=0, asr_dropped=dropped)
-    return sorted(out, key=lambda c: (c['start'], c['end']))
+        stats.update(ocr_unreadable=0, asr_dropped=dropped + tidied)
+    return out
+
+
+def tidy_asr_cues(cues, near=1.5, min_isolated=.8, repeat=.8, dup_cover=.5):
+    """Hygiene of the ASR gap-fill (sorted cues, OCR and ASR) -> (cues, number of ASR cues removed or folded away).
+
+    1. A cue with at most one meaningful character (filler characters like 你 / 我 do not count) is a mis-hear or a
+       fragment: dropped unless it lasts `min_isolated` s and no other cue lies within `near` s of it.
+    2. Consecutive ASR cues with the same or nearly the same text (similarity >= `repeat`) at most `near` s apart, with no
+       OCR cue between them, are one utterance heard repeatedly: they become one cue from the first start to the last end.
+    3. An ASR cue that repeats (han_cover >= `dup_cover`) the text of an OCR cue ending / starting at most `near` s away is the
+       speech of that line, not a new sentence. The same words further away are another utterance and stay."""
+    removed = 0
+    keep = []
+    for i, c in enumerate(cues):
+        if c['source'] != 'asr':
+            keep.append(c)
+            continue
+        han = chinese(c['original'])
+        if len(han) <= 1 or (len(han) <= 2 and all(ch in _STOP for ch in han)):
+            alone = all(o is c or o['end'] <= c['start'] - near or o['start'] >= c['end'] + near for o in cues)
+            if not (c['end'] - c['start'] >= min_isolated - 1e-9 and alone):
+                removed += 1
+                continue
+        keep.append(c)
+    out = []
+    for c in keep:
+        prev = out[-1] if out else None
+        if c['source'] == 'asr' and prev is not None and prev['source'] == 'asr' and c['start'] - prev['end'] <= near + 1e-9:
+            a, b = chinese(prev['original']), chinese(c['original'])
+            if a and b and SequenceMatcher(None, a, b, autojunk=False).ratio() >= repeat:
+                prev['end'] = max(prev['end'], c['end'])
+                prev['source_ids'] = list(prev.get('source_ids') or [prev['id']]) + list(c.get('source_ids') or [c['id']])
+                removed += 1
+                continue
+        out.append(dict(c) if c['source'] == 'asr' else c)
+    ocr = [c for c in out if c['source'] != 'asr']
+    final = []
+    for c in out:
+        if c['source'] == 'asr':
+            han = chinese(c['original'])
+            beside = [o for o in ocr if o['start'] < c['end'] + near and o['end'] > c['start'] - near]
+            if han and any(han_cover(han, chinese(o['original'])) >= dup_cover for o in beside):
+                removed += 1
+                continue
+        final.append(c)
+    return final, removed
