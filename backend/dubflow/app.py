@@ -123,6 +123,15 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['stage_started_at'] = job.get('stage_started_at')
         value['stage_detail'] = job.get('stage_detail')
         value['eta_seconds'] = timing.eta_seconds(job, est)
+        value['activity'] = job.get('activity') or []
+        value['queue'] = None
+        if job.get('status') == 'queued':
+            info = store.queue_info(job['id'])
+            if info:
+                beat = read_json(settings.data_dir / 'worker-heartbeat.json', {}) or {}
+                # the heartbeat is only refreshed between tasks, so a running task also proves the worker is alive
+                info['worker_alive'] = info['running_ahead'] or (isinstance(beat.get('time'), (int, float)) and time.time() - beat['time'] < 15)
+                value['queue'] = info
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
 
@@ -215,7 +224,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.get('/api/jobs')
     def jobs():
-        return [public_job(j) for j in store.list_jobs()]
+        return [{**public_job(j), 'activity': []} for j in store.list_jobs()]
 
     @app.post('/api/jobs', status_code=201)
     async def upload_job(file: UploadFile = File(...), mode: Literal['dub', 'tm', 'vietsub'] | None = Form(None),

@@ -11,6 +11,19 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+ACTIVITY_LIMIT = 20
+
+
+def push_activity(job, message):
+    """Return the job's recent worker messages with `message` appended (ring buffer, newest last).
+    A message identical to the previous one is not repeated (stages re-emit the same text every tick)."""
+    rows = [r for r in ((job or {}).get('activity') or []) if isinstance(r, dict)]
+    text = str(message or '').strip()[:240]
+    if text and (not rows or rows[-1].get('msg') != text):
+        rows.append(dict(t=now(), msg=text))
+    return rows[-ACTIVITY_LIMIT:]
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -111,6 +124,16 @@ class Store:
             rows = db.execute("SELECT job_id,action,state FROM tasks WHERE state IN ('pending','running')").fetchall()
         return [dict(r) for r in rows]
 
+    def queue_info(self, job_id):
+        """Place of the job's pending task in the queue (1 = next), and whether another task is running now."""
+        with self.connect() as db:
+            mine = db.execute("SELECT id FROM tasks WHERE job_id=? AND state='pending' ORDER BY id LIMIT 1", (job_id,)).fetchone()
+            if not mine:
+                return None
+            ahead = db.execute("SELECT COUNT(*) FROM tasks WHERE state='pending' AND id<?", (mine['id'],)).fetchone()[0]
+            running = db.execute("SELECT 1 FROM tasks WHERE state='running' LIMIT 1").fetchone() is not None
+        return dict(position=ahead + 1, running_ahead=running)
+
     def claim_next(self):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -144,7 +167,8 @@ class Store:
             job = json.loads(row['body']) if row else None
             if not job or job['status'] == 'cancelled':
                 return False
-            job.update(status='processing', stage='processing', progress=0, error=None, stage_step=None, stage_started_at=None, stage_detail=None, updated_at=now())
+            job.update(status='processing', stage='processing', progress=0, error=None, stage_step=None, stage_started_at=None, stage_detail=None,
+                       activity=push_activity(job, 'Máy xử lý đã nhận tác vụ.'), updated_at=now())
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
         return True
 

@@ -186,3 +186,9 @@
 .studio-app .studio-workflow .step-progress::-webkit-progress-bar{background:#e4e9f7;border-radius:2px}
 .studio-app .studio-workflow .step-progress::-webkit-progress-value{background:#4658db;border-radius:2px}
 .studio-app .studio-workflow .step-progress::-moz-progress-bar{background:#4658db;border-radius:2px}
+.studio-app .job-activity{margin:0 0 8px;font-size:11px;flex-shrink:0}
+.job-activity-live{margin:0;padding:2px 10px}
+.job-activity.is-stuck .job-activity-live{color:#b42318}
+.job-activity-log summary{cursor:pointer;color:var(--muted);padding:2px 10px;width:max-content}
+.job-activity-log ol{margin:4px 0 0;padding:6px 10px 6px 30px;max-height:180px;overflow:auto;background:white;border:1px solid var(--line);border-radius:8px;font-size:10px}
+.job-activity time{color:var(--muted);font-variant-numeric:tabular-nums}

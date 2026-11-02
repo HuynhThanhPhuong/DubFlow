@@ -39,6 +39,7 @@ import { Button, Empty, Toast } from "./ui";
 import { vietnameseMessage } from "./messages";
 import { Player, Timeline } from "./Player";
 import { PipelineSteps } from "./PipelineSteps";
+import { JobActivity } from "./JobActivity";
 import './editor-interactions.css';
 import {
   ImportDialog,
@@ -535,6 +536,7 @@ export default function App() {
                   </Button>
                 </div>
               )}
+              <JobActivity job={currentJob} />
               <div className="simple-work">
                 <div className="video-column" ref={videoColumn}>
                 <Player

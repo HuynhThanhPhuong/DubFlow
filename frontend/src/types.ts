@@ -8,6 +8,21 @@ export interface StageDetail {
   done: number;
   total: number;
   unit: string;
+  /** translate only: batch k of n, its size, and a short live note ("Gemini lỗi 503, thử lại lần 2/4…") */
+  batch?: number;
+  batches?: number;
+  batch_size?: number;
+  note?: string;
+}
+export interface JobActivityRow {
+  /** ISO time the worker reported the message */
+  t: string;
+  msg: string;
+}
+export interface JobQueueInfo {
+  position: number;
+  running_ahead: boolean;
+  worker_alive: boolean;
 }
 export interface Job {
   collection_id?: string | null;
@@ -28,6 +43,10 @@ export interface Job {
   stage_started_at?: string | null;
   stage_detail?: StageDetail | null;
   eta_seconds?: number | null;
+  /** last ~20 worker messages for this job, newest last */
+  activity?: JobActivityRow[];
+  /** only while status is queued */
+  queue?: JobQueueInfo | null;
   stage_estimates?: Partial<Record<StageStep, StageEstimate>> | null;
   error: string | null;
   duration: number | null;

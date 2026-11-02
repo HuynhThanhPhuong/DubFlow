@@ -11,7 +11,7 @@ from pathlib import Path
 from .messages import translate_message
 from .config import Settings
 from .media import atomic_json, read_json
-from .store import Store
+from .store import Store, push_activity
 
 
 class JobCancelled(Exception):
@@ -92,7 +92,7 @@ def run_task(task, settings, store):
         extra = clock.enter(stage)
         if detail is not None:
             extra['stage_detail'] = detail
-        update_active(status='processing', stage=stage, progress=max(0, min(99, int(progress))), **extra)
+        update_active(status='processing', stage=stage, progress=max(0, min(99, int(progress))), activity=push_activity(current, message), **extra)
         store.event(jid, stage, message, progress)
 
     try:
@@ -123,6 +123,7 @@ def run_task(task, settings, store):
             if auto.get('status')=='failed':summaries.append('Bước suy luận ngữ cảnh tự động chưa đạt; bản dịch vẫn cần xem lại.')
             clock.finish()
             update_active(status='awaiting_review', stage='awaiting_review', progress=45, cue_count=len(cues), **idle,
+                             activity=push_activity(store.get_job(jid), 'Xong; nội dung sẵn sàng để duyệt.'),
                              warnings=[translate_message(w) for w in result.get('warnings', job.get('warnings', []))]+summaries)
             store.event(jid, 'awaiting_review', 'Nội dung đã sẵn sàng để duyệt.', 45)
         elif task['action'] == 'detect_logos':
@@ -191,14 +192,15 @@ def run_task(task, settings, store):
                 store.update_job(jid, status='cancelled', stage='cancelled', error=None)
             store.finish_task(task['id'], 'cancelled')
             return
-        review = isinstance(exc, pipeline.NeedsReview)
+        from .translate_run import TranslateFailed
+        review = isinstance(exc, (pipeline.NeedsReview, TranslateFailed))
         message = translate_message(str(exc))
         if message == str(exc) and not any(ord(c) > 127 for c in message):
             message = 'Không thể hoàn tất tác vụ. Hãy kiểm tra last-error.log, cấu hình và tệp nguồn rồi thử lại.'
         (folder / 'last-error.log').write_text(traceback.format_exc(), encoding='utf-8')
         cues = read_json(folder / 'cues.json')
         store.update_job(jid, status='awaiting_review' if review else 'failed', stage='awaiting_review' if review else 'failed',
-                         error=message, cue_count=len(cues), **idle, progress=45 if review else latest['progress'])
+                         error=message, cue_count=len(cues), activity=push_activity(latest, message), **idle, progress=45 if review else latest['progress'])
         store.event(jid, 'awaiting_review' if review else 'failed', message, 45 if review else 0)
         store.finish_task(task['id'], 'review' if review else 'failed')
 

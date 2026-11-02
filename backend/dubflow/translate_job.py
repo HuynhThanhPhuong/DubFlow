@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .textcheck import needs_translation
-from .translate_api import ProviderError, QuotaExhausted, RateLimited, Usage
+from .translate_api import LABELS, ProviderError, QuotaExhausted, RateLimited, ServerBusy, Usage
 
 PROMPT_VERSION = 'p3-4'
 CACHE_FILE = 'translation-cache-v2.json'
@@ -34,6 +34,7 @@ OUT_BUDGET = 0.6            # chỉ dùng 60% max_output_tokens cho bản dịch
 SPLIT_WINDOW = 0.15         # tìm khoảng lặng lớn nhất trong ±15% quanh điểm chia đều
 SYLLABLES_PER_SEC = 4.5
 RATE_BACKOFF = (10, 30, 60)  # giây, khi 429 không có retry_after
+BUSY_BACKOFF = (5, 15, 30)   # giây, thử lại khi nhà cung cấp báo lỗi tạm thời 5xx (quá tải)
 PACIFIC_FALLBACK = timezone(timedelta(hours=-8))
 THINKING_OUT_FACTOR = 1.0   # token suy nghĩ ước tính = 1,0 x đầu ra (0 khi thinking=low); tính theo giá đầu ra
 OVERRUN_REJECT = 1.5        # vượt giới hạn cứng quá 1,5 lần thì coi là hỏng, không cache
@@ -298,7 +299,7 @@ class _Pause(Exception):
 
 class _Run:
     def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-                 spent_before=0.0, should_stop=None, on_progress=None):
+                 spent_before=0.0, should_stop=None, on_progress=None, on_event=None):
         _need_mode(mode)
         self.dir, self.mode, self.prefs, self.provider = Path(directory), mode, prefs, provider
         self.limiter, self.terminology, self.allow, self.sleep = limiter, terminology, allow_over_cap, sleep
@@ -320,6 +321,10 @@ class _Run:
         self.chunk_keys: dict[str, str] = {}
         self.n_chunks = 0
         self.on_progress = on_progress
+        self.on_event = on_event
+        self.label = getattr(provider, 'label', None) or LABELS.get(getattr(provider, 'name', ''), 'Nhà cung cấp dịch')
+        self.ctx: dict = {}  # lô đang chạy: done, total, unit, batch, batches, batch_size
+        self.prefix = ''
 
     def key(self, payload_items: list[dict]) -> str:
         raw = json.dumps([PROMPT_VERSION, getattr(self.provider, 'name', ''), self.model, self.mode,
@@ -344,7 +349,9 @@ class _Run:
             if self.before + self.spent + est > self.prefs.cost_cap_usd:
                 raise _Pause('cost_cap')
         user = _user(payload, self.terminology, self.context)
-        for attempt in range(len(RATE_BACKOFF) + 1):
+        rate_try = busy_try = 0
+        self.say(f'đang gửi tới {self.label}, chờ trả lời…')
+        while True:
             try:
                 if self.stop():
                     raise _Pause('cancelled')
@@ -357,9 +364,19 @@ class _Run:
             except QuotaExhausted:
                 raise _Pause('quota') from None
             except RateLimited as e:
-                if attempt >= len(RATE_BACKOFF):
+                if rate_try >= len(RATE_BACKOFF):
                     raise
-                self.wait(e.retry_after if e.retry_after is not None else RATE_BACKOFF[attempt])
+                wait = e.retry_after if e.retry_after is not None else RATE_BACKOFF[rate_try]
+                rate_try += 1
+                self.say(f'{self.label} giới hạn tốc độ (429), thử lại lần {rate_try + 1}/{len(RATE_BACKOFF) + 1} sau {wait:g} giây…')
+                self.wait(wait)
+            except ServerBusy as e:
+                if busy_try >= len(BUSY_BACKOFF):
+                    raise ProviderError(f'{e} Đã thử {busy_try + 1} lần; hãy bấm Dịch lại sau ít phút.') from None
+                wait = BUSY_BACKOFF[busy_try]
+                busy_try += 1
+                self.say(f'{self.label} lỗi {e.code or "5xx"}, thử lại lần {busy_try + 1}/{len(BUSY_BACKOFF) + 1} sau {wait:g} giây…')
+                self.wait(wait)
             except ProviderError as e:
                 if e.sent:  # đã gửi nhưng không có kết quả: server có thể đã tính phí, token không rõ
                     self.requests += 1
@@ -374,6 +391,15 @@ class _Run:
         data = reply.data if isinstance(reply.data, dict) else {}
         self.context = _merge_context(self.context, data.get('context'))
         return reply
+
+    def say(self, note: str) -> None:
+        """Báo trạng thái đang chạy cho worker (hiện ở thanh tiến độ và nhật ký); không bao giờ làm hỏng lần dịch."""
+        if not self.on_event:
+            return
+        try:
+            self.on_event(f'{self.prefix}{note}', {**self.ctx, 'note': note, 'since': datetime.now(timezone.utc).isoformat()})
+        except Exception:  # noqa: BLE001 - chỉ để hiển thị; hủy được xử lý qua should_stop
+            pass
 
     def accept(self, reply, part: list[Item]) -> tuple[dict[str, str], list[str]]:
         good, bad = _check(reply, part, self.mode, self.prefs)
@@ -392,16 +418,22 @@ class _Run:
             self.texts.update(cached)
             self.context = _merge_context(self.context, hit.get('context'))
             self.failed += [i for i in ids if i not in cached]
+            self.ctx['done'] = self.ctx.get('done', 0) + len(ids)
+            self.say('lấy từ bộ nhớ đệm, không gọi API.')
             return
         reply = self.request(part)
         good, bad = self.accept(reply, part)
         self.failed += bad
+        self.ctx['done'] = self.ctx.get('done', 0) + len(ids)
+        self.say(f'đã nhận bản dịch {len(good)}/{len(part)} câu.')
         self.cache[key] = {'items': good, 'context': self.context}
         _atomic_json(self.dir / CACHE_FILE, self.cache)
 
     def retry(self) -> None:
         wanted = set(self.failed)
         part = [i for i in self.items if i.id in wanted]
+        self.ctx = {k: v for k, v in self.ctx.items() if k in ('done', 'total', 'unit')}
+        self.prefix = 'Dịch lại câu lỗi: '
         for sub in _split(part, self.mode, self.prefs, self.terminology):
             reply = self.request(sub)
             good, _ = self.accept(reply, sub)
@@ -417,8 +449,12 @@ class _Run:
         self.n_chunks = len(chunks)
         total, done = len(self.items), 0
         try:
+            self.ctx = dict(done=0, total=total, unit='câu', batches=len(chunks))
+            self.say(f'chia {total} câu thành {len(chunks)} lô.')
             self.report(0, total)
-            for part in chunks:
+            for idx, part in enumerate(chunks, 1):
+                self.ctx = dict(done=done, total=total, unit='câu', batch=idx, batches=len(chunks), batch_size=len(part))
+                self.prefix = f'Lô {idx}/{len(chunks)} ({len(part)} câu): '
                 self.run_chunk(part)
                 done += len(part)
                 self.report(done, total)
@@ -448,9 +484,9 @@ class _Run:
 
 def run_translation(directory: Path, items: list[Item], mode: str, prefs, provider, *, limiter,
                     terminology: str = '', allow_over_cap: bool = False, sleep=time.sleep,
-                    spent_before: float = 0.0, should_stop=None, on_progress=None) -> Outcome:
+                    spent_before: float = 0.0, should_stop=None, on_progress=None, on_event=None) -> Outcome:
     run = _Run(directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-               spent_before, should_stop, on_progress)
+               spent_before, should_stop, on_progress, on_event)
     Path(directory).mkdir(parents=True, exist_ok=True)
     error = None
     try:

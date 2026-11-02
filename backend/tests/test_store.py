@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dubflow.store import Store
+from dubflow.store import ACTIVITY_LIMIT, Store, push_activity
 
 
 class StoreTests(unittest.TestCase):
@@ -72,6 +72,37 @@ class StoreTests(unittest.TestCase):
         self.store.cancel(job['id'])
         self.assertFalse(self.store.begin_processing(job['id']))
         self.assertEqual(self.store.get_job(job['id'])['status'],'cancelled')
+
+    def test_activity_is_a_capped_ring_without_consecutive_duplicates(self):
+        job = {}
+        for n in range(ACTIVITY_LIMIT + 7):
+            job['activity'] = push_activity(job, f'bước {n}')
+            job['activity'] = push_activity(job, f'bước {n}')
+        rows = job['activity']
+        self.assertEqual(len(rows), ACTIVITY_LIMIT)
+        self.assertEqual(rows[-1]['msg'], f'bước {ACTIVITY_LIMIT + 6}')
+        self.assertEqual(rows[0]['msg'], 'bước 7')
+        self.assertTrue(rows[0]['t'])
+        self.assertEqual(push_activity({}, '   '), [])
+
+    def test_begin_processing_records_activity_and_keeps_history(self):
+        job = self.store.create_job({'title': 'x', 'mode': 'dub', 'activity': [{'t': 'a', 'msg': 'cũ'}]})
+        self.store.enqueue(job['id'], 'translate')
+        self.store.claim_next()
+        self.assertTrue(self.store.begin_processing(job['id']))
+        msgs = [r['msg'] for r in self.store.get_job(job['id'])['activity']]
+        self.assertEqual(msgs, ['cũ', 'Máy xử lý đã nhận tác vụ.'])
+
+    def test_queue_info_positions(self):
+        a, b, c = (self.store.create_job({'title': t, 'mode': 'dub'}) for t in 'abc')
+        for j in (a, b, c):
+            self.store.enqueue(j['id'], 'analyze')
+        self.assertEqual(self.store.queue_info(a['id']), {'position': 1, 'running_ahead': False})
+        self.assertEqual(self.store.queue_info(c['id']), {'position': 3, 'running_ahead': False})
+        self.store.claim_next()
+        self.assertIsNone(self.store.queue_info(a['id']))
+        self.assertEqual(self.store.queue_info(b['id']), {'position': 1, 'running_ahead': True})
+        self.assertEqual(self.store.queue_info(c['id']), {'position': 2, 'running_ahead': True})
 
 
 if __name__ == '__main__':

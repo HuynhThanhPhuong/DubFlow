@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 
-from dubflow.translate_api import (ProviderError, QuotaExhausted, RateLimited, Usage,
+from dubflow.translate_api import (ProviderError, QuotaExhausted, RateLimited, ServerBusy, Usage,
                                    make_provider)
 
 KEY = 'SECRET-xyz-123'
@@ -224,6 +224,20 @@ class TranslateApiTest(unittest.TestCase):
         r = gem(lambda req: httpx.Response(200, json=ok_body([{'text': 'không phải json'}]))).generate('s', 'u', SCHEMA, 10)
         self.assertIsNone(r.data)
         self.assertEqual(r.text, 'không phải json')
+
+
+    def test_5xx_is_server_busy_with_code_and_vietnamese_message(self):
+        for code in (500, 502, 503, 504):
+            with self.assertRaises(ServerBusy) as c:
+                gem(lambda req, code=code: httpx.Response(code, text='x')).generate('s', 'u', SCHEMA, 10)
+            self.assertEqual(c.exception.code, code)
+            self.assertIn(f'HTTP {code}', str(c.exception))
+            self.assertIn('quá tải', str(c.exception))
+
+    def test_other_4xx_stays_plain_provider_error(self):
+        with self.assertRaises(ProviderError) as c:
+            gem(lambda req: httpx.Response(418, text='x')).generate('s', 'u', SCHEMA, 10)
+        self.assertNotIsInstance(c.exception, ServerBusy)
 
 
 if __name__ == '__main__':

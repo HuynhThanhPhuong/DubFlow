@@ -32,6 +32,14 @@ class RateLimited(ProviderError):
         self.retry_after = retry_after
 
 
+class ServerBusy(ProviderError):
+    """Lỗi tạm thời phía nhà cung cấp (5xx, thường là quá tải); gửi lại sau một lúc thường được."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
+
+
 class QuotaExhausted(ProviderError):
     """Hết hạn mức theo ngày."""
 
@@ -153,6 +161,8 @@ class _Base:
             self._rate(resp)
         if code in (400, 401, 403):
             raise ProviderError(f'Key {self.label} không hợp lệ hoặc không có quyền dùng model {self.model}.')
+        if code in (500, 502, 503, 504):
+            raise ServerBusy(f'{self.label} đang quá tải hoặc tạm lỗi (HTTP {code}).', code)
         raise ProviderError(f'{self.label} trả lỗi HTTP {code}.')
 
     def _rate(self, resp: httpx.Response) -> None:

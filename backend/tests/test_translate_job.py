@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from dubflow.translate_api import QuotaExhausted, RateLimited, Reply, Usage
+from dubflow.translate_api import QuotaExhausted, RateLimited, Reply, ServerBusy, Usage
 from dubflow.translate_job import Cancelled, Item, RateLimiter, plan_translation, run_translation
 
 KEY = 'SECRET-key-999'
@@ -194,6 +194,53 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(out.error, '429')
         self.assertEqual(out.texts, {})
         self.assertEqual(sum(waits), 100)
+
+    def test_server_busy_503_is_retried_and_reported(self):
+        waits, events = [], []
+        f = Fake(script=[ServerBusy('Gemini đang quá tải hoặc tạm lỗi (HTTP 503).', 503)] * 2)
+        out = run(self.d, make_items(3), fake=f, sleep=waits.append, on_event=lambda m, d: events.append((m, d)))
+        self.assertEqual(len(out.texts), 3)
+        self.assertIsNone(out.error)
+        self.assertEqual(sum(waits), 5 + 15)
+        retries = [m for m, _ in events if 'lỗi 503' in m]
+        self.assertEqual(len(retries), 2)
+        self.assertIn('thử lại lần 2/4 sau 5 giây', retries[0])
+        self.assertIn('thử lại lần 3/4 sau 15 giây', retries[1])
+        self.assertTrue(all(d['note'] for _, d in events))
+
+    def test_server_busy_gives_up_with_clear_message(self):
+        waits = []
+        f = Fake(script=[ServerBusy('Gemini đang quá tải hoặc tạm lỗi (HTTP 503).', 503)] * 5)
+        out = run(self.d, make_items(3), fake=f, sleep=waits.append)
+        self.assertEqual(out.texts, {})
+        self.assertEqual(len(f.calls), 4)
+        self.assertIn('HTTP 503', out.error)
+        self.assertIn('Đã thử 4 lần', out.error)
+        self.assertEqual(sum(waits), 5 + 15 + 30)
+
+    def test_server_busy_wait_is_cancellable(self):
+        f = Fake(script=[ServerBusy('503', 503)] * 5)
+        out = run(self.d, make_items(3), fake=f, sleep=lambda s: None, should_stop=lambda: len(f.calls) >= 1)
+        self.assertEqual(out.paused, 'cancelled')
+
+    def test_events_report_each_batch_with_detail(self):
+        events = []
+        items = [Item(f'c{i}', '这是一句很长的中文台词用来测试分块' * 2, i * 3, i * 3 + 2, 'A', 'cue') for i in range(6)]
+        out = run(self.d, items, p=prefs(max_output_tokens=256), on_event=lambda m, d: events.append((m, d)))
+        self.assertEqual(len(out.texts), 6)
+        batches = events[0][1]['batches']
+        self.assertGreater(batches, 1)
+        waiting = [(m, d) for m, d in events if 'chờ trả lời' in m]
+        self.assertEqual([d['batch'] for _, d in waiting], list(range(1, batches + 1)))
+        self.assertTrue(waiting[0][0].startswith(f'Lô 1/{batches} ('))
+        self.assertEqual(waiting[0][1]['total'], 6)
+        self.assertEqual(events[-1][1]['done'], 6)
+
+    def test_failing_event_callback_never_breaks_translation(self):
+        def boom(m, d):
+            raise RuntimeError('ui')
+        out = run(self.d, make_items(3), on_event=boom)
+        self.assertEqual(len(out.texts), 3)
 
     def test_cost_cap_pauses_before_exceeding(self):
         p = prefs(tier='paid', cost_cap_usd=0.0001)

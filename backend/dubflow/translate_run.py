@@ -23,6 +23,10 @@ PREF_KEYS = ('rate_rpm', 'rate_rpd', 'price_in_per_mtok',
              'price_out_per_mtok', 'cost_cap_usd', 'vietsub_cps', 'max_output_tokens', 'max_input_tokens', 'thinking')
 
 
+class TranslateFailed(Exception):
+    """Lần dịch không dịch được câu nào. Thông điệp tiếng Việt, không chứa key; worker đưa dự án về trạng thái cần xử lý."""
+
+
 def _get(values, key):
     return values[key] if isinstance(values, dict) else getattr(values, key)
 
@@ -143,13 +147,15 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     items = collect_items(folder, scope)
     if not items:
         return dict(warnings=['Không có câu nào cần dịch.'])
-    message = 'Đang dịch lời gốc và chữ trên hình sang tiếng Việt'
-    emit('translating', message, 45)
+    total = len(items)
+    emit('translating', f'Chuẩn bị dịch {total} câu bằng {label}…', 45,
+         {'done': 0, 'total': total, 'unit': 'câu', 'note': 'chuẩn bị'})
 
-    def on_progress(done, total):
+    def on_event(text, detail):
         # progress 45..49 (analyze already ends at 45); the UI should prefer stage_detail
+        done, count = detail.get('done', 0), max(1, detail.get('total', total))
         try:
-            emit('translating', message, 45 + (4 * done // max(1, total)), {'done': done, 'total': total, 'unit': 'câu'})
+            emit('translating', text, 45 + (4 * done // count), detail)
         except Exception:  # noqa: BLE001 - best effort; cancellation is handled via should_stop so paid usage is still recorded
             pass
     prefs = prefs_ns(settings)
@@ -161,9 +167,9 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow,
                                   spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
-                                  should_stop=stop_file.exists, on_progress=on_progress)
+                                  should_stop=stop_file.exists, on_event=on_event)
     except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
-        return dict(warnings=[scrub(str(exc), key)])
+        raise TranslateFailed(scrub(str(exc), key)) from None
     finally:
         if provider is not None:
             provider.close()
@@ -176,6 +182,10 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     if not cancelled:
         _set_paused(folder, outcome.paused)
     check_cancel()
+    if not outcome.texts and not outcome.paused:
+        # Zero translated of N must never look like a success. (A quota or cost-cap pause keeps its own
+        # explicit warning and the "Dịch tiếp" flow.)
+        raise TranslateFailed(_no_result_message(outcome, label, total, prefs, key))
     warnings = []
     if outcome.error:
         warnings.append(scrub(outcome.error, key))
@@ -186,6 +196,14 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
         warnings.append(f'Tạm dừng – sắp vượt mức trần chi phí {prefs.cost_cap_usd:g} USD cho video này. '
                         'Bấm "Dịch tiếp, cho phép vượt trần" nếu muốn chạy tiếp.')
     return dict(warnings=warnings)
+
+
+def _no_result_message(outcome, label: str, total: int, prefs, key: str) -> str:
+    if outcome.error:
+        reason = scrub(outcome.error, key)
+    else:
+        reason = f'{label} không trả bản dịch hợp lệ cho câu nào'
+    return f'Chưa dịch được câu nào trong {total} câu: {reason.rstrip(".")}. Hãy thử lại sau hoặc dịch tay.'
 
 
 def estimate(folder: Path, scope: str, mode: str, values, terminology: str) -> dict | None:

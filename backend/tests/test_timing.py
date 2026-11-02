@@ -75,7 +75,10 @@ class WorkerTimingTest(Base):
 
         with patch.object(self.store, 'update_active_job', spy):
             job = self.run_translate(FlowFake())
-        self.assertEqual([d for _, d in seen][-1], dict(done=3, total=3, unit='câu'))
+        last = [d for _, d in seen][-1]
+        self.assertEqual({k: last[k] for k in ('done', 'total', 'unit', 'batch', 'batches', 'batch_size')},
+                         dict(done=3, total=3, unit='câu', batch=1, batches=1, batch_size=3))
+        self.assertTrue(last['note'])
         self.assertTrue(all(45 <= p <= 49 for p, _ in seen))
         lines = [json.loads(x) for x in timing.stats_file(self.cfg.data_dir).read_text(encoding='utf-8').splitlines()]
         self.assertEqual([r['stage'] for r in lines], ['translate'])

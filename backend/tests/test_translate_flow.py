@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 from dubflow import pipeline as p
 from dubflow.app import create_app
 from dubflow.config import Settings
-from dubflow.translate_api import ProviderError, QuotaExhausted, Reply, Usage
+from dubflow.translate_api import ProviderError, QuotaExhausted, Reply, ServerBusy, Usage
 from dubflow.worker import run_task
 
 KEY = 'AIza-SECRET-KEY-123456'
@@ -364,19 +365,70 @@ class RunTests(Base):
         self.assertEqual(r.status_code, 422)
         self.assertFalse((self.folder / 'translate-request.json').exists())
 
-    def test_provider_error_does_not_fail_job_and_hides_key(self):
+    def test_provider_error_with_zero_translated_is_a_clear_error_and_hides_key(self):
         self.configure()
         self.make_job()
         fake = Fake(error=ProviderError('Key Gemini không hợp lệ hoặc không có quyền dùng model gemini-x.'))
+        before = self.cue_texts()
         job = self.run_translate(fake)
-        self.assertEqual(job['status'], 'awaiting_review')
-        self.assertIsNone(job['error'])
-        self.assertTrue(any('Key Gemini không hợp lệ' in w for w in job['warnings']))
+        self.assertEqual(job['status'], 'awaiting_review')  # needs attention, cues stay editable
+        self.assertTrue(job['error'].startswith('Chưa dịch được câu nào trong 3 câu: Key Gemini không hợp lệ'))
+        self.assertEqual(self.cue_texts(), before)
+        self.assertEqual(job['activity'][-1]['msg'], job['error'])
         self.assertTrue(fake.closed)
+        self.assertEqual(self.client.get(self.base).json()['error'], job['error'])
+        ev = self.store.events(self.jid)[-1]
+        self.assertEqual((ev['stage'], ev['message']), ('awaiting_review', job['error']))
         blobs = [json.dumps(job), json.dumps(self.store.events(self.jid)), json.dumps(self.client.get(self.base).json())]
         blobs += [f.read_bytes().decode('utf-8', 'ignore') for f in self.folder.rglob('*') if f.is_file()]
         blobs += [f.read_bytes().decode('utf-8', 'ignore') for f in (self.cfg.data_dir).glob('*.json') if f.is_file()]
         self.assertFalse([b for b in blobs if KEY in b])
+
+    def test_503_after_retries_is_reported_not_silent(self):
+        self.configure()
+        self.make_job()
+        fake = Fake(error=ServerBusy('Gemini đang quá tải hoặc tạm lỗi (HTTP 503).', 503))
+        with patch('dubflow.translate_job._Run.wait'):
+            job = self.run_translate(fake)
+        self.assertIn('HTTP 503', job['error'])
+        self.assertIn('Đã thử 4 lần', job['error'])
+        self.assertEqual(len(fake.sent), 4)
+        msgs = [r['msg'] for r in job['activity']]
+        self.assertTrue(any('lỗi 503, thử lại lần 2/4' in m for m in msgs), msgs)
+        self.assertEqual(self.cue_texts(), {'c1': 'Đã có sẵn', 'c2': '', 'c3': ''})
+
+    def test_reply_without_any_valid_text_is_an_error(self):
+        self.configure()
+        self.make_job()
+        job = self.run_translate(Fake(omit={'c2', 'c3', 'region:r1'}))
+        self.assertEqual(job['status'], 'awaiting_review')
+        self.assertIn('không trả bản dịch hợp lệ cho câu nào', job['error'])
+        self.assertIsNone(job['stage_step'])
+
+    def test_success_records_batch_activity_and_clears_error(self):
+        self.configure()
+        self.make_job()
+        job = self.run_translate(Fake())
+        self.assertIsNone(job['error'])
+        msgs = [r['msg'] for r in job['activity']]
+        self.assertTrue(any(m.startswith('Lô 1/1 (3 câu)') and 'chờ trả lời' in m for m in msgs), msgs)
+        self.assertEqual(msgs[0], 'Máy xử lý đã nhận tác vụ.')
+        self.assertEqual(msgs[-1], 'Xong; nội dung sẵn sàng để duyệt.')
+        self.assertLessEqual(len(msgs), 20)
+
+    def test_queued_job_reports_position_and_worker_state(self):
+        self.configure()
+        self.make_job()
+        r = self.client.post(self.base + '/translate', json={})
+        self.assertEqual(r.status_code, 200, r.text)
+        queue = self.client.get(self.base).json()['queue']
+        self.assertEqual((queue['position'], queue['running_ahead'], queue['worker_alive']), (1, False, False))
+        (self.cfg.data_dir / 'worker-heartbeat.json').write_text(json.dumps(dict(pid=1, time=time.time())))
+        self.assertTrue(self.client.get(self.base).json()['queue']['worker_alive'])
+        self.assertEqual(self.client.get('/api/jobs').json()[0]['activity'], [])
+        self.store.claim_next()
+        self.store.begin_processing(self.jid)
+        self.assertIsNone(self.client.get(self.base).json()['queue'])
 
     def test_unexpected_error_leaves_job_not_running_and_closes_provider(self):
         self.configure()
