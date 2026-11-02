@@ -103,3 +103,14 @@ it("editor: Vùng phân tích reopens the picker prefilled when regions exist", 
   await screen.findByRole("region", { name: "Chọn vùng phân tích" });
   expect(screen.getByTestId("rp-subtitle-0")).toBeTruthy();
 });
+
+it("queue: lists awaiting_regions jobs with their status chip and an open button", async () => {
+  location.hash = "#queue";
+  const waiting = { ...base, id: "c", title: "Chờ vùng", filename: "c.mp4", status: "awaiting_regions", stage: "awaiting_regions" };
+  stub([], [waiting]);
+  render(<App />);
+  await screen.findByText("Chờ vùng");
+  expect(screen.getByText("Chờ chọn vùng sub")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Mở biên tập" })).toBeTruthy();
+  expect(screen.queryByText("Không có tác vụ đang chờ hoặc cần xử lý.")).toBeNull();
+});

@@ -439,7 +439,7 @@ export default function App() {
     ["settings", "Cài đặt"],
   ] as const;
   const safeCuePage=Math.min(cuePage,Math.max(0,Math.ceil(cues.length/cueCapacity)-1));
-  const queueJobs=jobs.filter(j=>isBusy(j)||["error","failed","awaiting_review"].includes(j.status));
+  const queueJobs=jobs.filter(j=>isBusy(j)||["error","failed","awaiting_review","awaiting_regions"].includes(j.status));
   const safeQueuePage=Math.min(queuePage,Math.max(0,Math.ceil(queueJobs.length/queueCapacity)-1));
   const pickerVisible = !!currentJob && (pickerOpen || (currentJob.status === "awaiting_regions" && pickerDismissed !== currentJob.id));
   const missing=cues.filter(c=>!c.text.trim()).length;
@@ -895,7 +895,7 @@ export default function App() {
                         )}
                       </div>
                       <span
-                        className={`badge ${["error", "failed", "awaiting_review"].includes(j.status) ? "warn" : ""}`}
+                        className={`badge ${["error", "failed", "awaiting_review", "awaiting_regions"].includes(j.status) ? "warn" : ""}`}
                       >
                         {statusLabels[j.status] || j.status}
                         {isBusy(j) ? ` · ${j.progress || 0}%` : ""}
@@ -940,7 +940,7 @@ export default function App() {
                 !jobs.some(
                   (j) =>
                     isBusy(j) ||
-                    ["error", "failed", "awaiting_review"].includes(j.status),
+                    ["error", "failed", "awaiting_review", "awaiting_regions"].includes(j.status),
                 ) && <Empty>Không có tác vụ đang chờ hoặc cần xử lý.</Empty>}
             </div>
             <Pagination total={queueJobs.length} page={safeQueuePage} size={queueCapacity} onChange={setQueuePage}/>
