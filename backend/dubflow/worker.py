@@ -69,6 +69,9 @@ def run_task(task, settings, store):
     if not job or job['status'] == 'cancelled' or (folder / 'cancel.request').exists():
         store.finish_task(task['id'], 'cancelled')
         return
+    if not folder.is_dir():
+        store.finish_task(task['id'], 'cancelled')
+        return
     atomic_json(folder / 'job.json', job)
     if not store.begin_processing(jid):
         store.finish_task(task['id'], 'cancelled')
@@ -79,7 +82,8 @@ def run_task(task, settings, store):
             raise JobCancelled('Đã dừng tác vụ.')
 
     def emit(stage, message, progress):
-        if store.get_job(jid)['status'] == 'cancelled':
+        current = store.get_job(jid)
+        if not current or current['status'] == 'cancelled':
             raise JobCancelled('Đã dừng tác vụ.')
         update_active(status='processing', stage=stage, progress=max(0, min(99, int(progress))))
         store.event(jid, stage, message, progress)
@@ -151,7 +155,7 @@ def run_task(task, settings, store):
             result = pipeline.render(folder, settings, emit) or {}
             if not (folder / 'output.mp4').is_file():
                 raise RuntimeError('Worker chưa tạo được file output.mp4.')
-            if store.get_job(jid)['status'] == 'cancelled' or (folder / 'cancel.request').exists():
+            if (store.get_job(jid) or {}).get('status', 'cancelled') == 'cancelled' or (folder / 'cancel.request').exists():
                 raise JobCancelled()
             publish(store, settings, jid, rendering=True, render_values={k:getattr(settings,k) for k in ('resolution','blur_original','original_gain')})
             cues = read_json(folder / 'cues.json')
@@ -167,12 +171,15 @@ def run_task(task, settings, store):
             store.event(jid, 'done', 'Đã xuất bản nháp, cần duyệt nội dung và chất lượng.' if job.get('export_kind','draft')=='draft' else 'Đã xuất bản được duyệt. Hãy kiểm tra video cuối.', 100)
         store.finish_task(task['id'])
     except (JobCancelled, KeyboardInterrupt):
-        store.update_job(jid, status='cancelled', stage='cancelled', error=None)
+        if store.get_job(jid):
+            store.update_job(jid, status='cancelled', stage='cancelled', error=None)
         store.finish_task(task['id'], 'cancelled')
     except Exception as exc:
         # Cancellation from a subprocess is represented by the same persisted flag.
-        if (folder / 'cancel.request').exists() or store.get_job(jid)['status'] == 'cancelled':
-            store.update_job(jid, status='cancelled', stage='cancelled', error=None)
+        latest = store.get_job(jid)
+        if not latest or (folder / 'cancel.request').exists() or latest['status'] == 'cancelled':
+            if latest:
+                store.update_job(jid, status='cancelled', stage='cancelled', error=None)
             store.finish_task(task['id'], 'cancelled')
             return
         review = isinstance(exc, pipeline.NeedsReview)
@@ -182,7 +189,7 @@ def run_task(task, settings, store):
         (folder / 'last-error.log').write_text(traceback.format_exc(), encoding='utf-8')
         cues = read_json(folder / 'cues.json')
         store.update_job(jid, status='awaiting_review' if review else 'failed', stage='awaiting_review' if review else 'failed',
-                         error=message, cue_count=len(cues), progress=45 if review else store.get_job(jid)['progress'])
+                         error=message, cue_count=len(cues), progress=45 if review else latest['progress'])
         store.event(jid, 'awaiting_review' if review else 'failed', message, 45 if review else 0)
         store.finish_task(task['id'], 'review' if review else 'failed')
 

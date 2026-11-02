@@ -1,5 +1,7 @@
 """Studio management routes; no GPU or model runtime imports."""
 from pathlib import Path
+import os
+import stat
 import threading
 import uuid
 from fastapi import Body, File, HTTPException, UploadFile
@@ -12,9 +14,122 @@ from .publisher import publish, PublishConflict
 from .voices import get_voice
 
 
+BUSY_STATUSES={'queued','processing','separating','transcribing','synthesizing','rendering'}
+_REPARSE=0x400
+
+
+def is_link(path):
+    """True for symlinks and Windows junctions (reparse points); never follows them."""
+    try:
+        st=os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st,'st_file_attributes',0)&_REPARSE)
+
+
+def tree_size(folder):
+    total=0
+    stack=[folder]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    try:
+                        if is_link(e.path): continue
+                        if e.is_dir(follow_symlinks=False): stack.append(e.path)
+                        else: total+=e.stat(follow_symlinks=False).st_size
+                    except OSError: pass
+        except OSError: pass
+    return total
+
+
+def safe_rmtree(folder,root):
+    """Delete folder recursively, only if it lies inside root; links are unlinked, never descended."""
+    folder=Path(folder); root=Path(root).resolve()
+    if is_link(folder):
+        # The folder itself is a link: drop the link only, leave its target alone.
+        (os.rmdir if os.path.isdir(folder) else os.unlink)(folder)
+        return
+    real=folder.resolve()
+    if real==root or not real.is_relative_to(root):
+        raise ValueError('Đường dẫn không hợp lệ.')
+    def walk(p):
+        with os.scandir(p) as it:
+            entries=list(it)
+        for e in entries:
+            if is_link(e.path):
+                try: os.unlink(e.path)
+                except OSError: os.rmdir(e.path)
+            elif e.is_dir(follow_symlinks=False):
+                walk(e.path)
+            else:
+                try: os.unlink(e.path)
+                except PermissionError:
+                    os.chmod(e.path,stat.S_IWRITE); os.unlink(e.path)
+        os.rmdir(p)
+    if real.is_dir(): walk(real)
+
+
 def install_routes(app,settings,store,public_job,writable,save_upload):
     dialog_lock=threading.Lock()
     settings_lock=threading.Lock()
+
+    def is_busy(job):
+        return job['status'] in BUSY_STATUSES or any(t['job_id']==job['id'] for t in store.active_tasks())
+
+    def output_root():
+        return Path(preferences(store,settings)['output_dir']).resolve()
+
+    def job_outputs(job):
+        root=output_root()
+        found=[]
+        for p in job.get('exported_paths') or []:
+            try:
+                path=Path(p)
+                if is_link(path): continue
+                real=path.resolve()
+                if real.is_relative_to(root) and real!=root and real.is_file():
+                    found.append(dict(path=str(real),bytes=real.stat().st_size))
+            except (OSError,ValueError): pass
+        return list({o['path']:o for o in found}.values())
+
+    def job_data_bytes(job_id):
+        folder=settings.jobs_dir/job_id
+        return tree_size(folder) if folder.is_dir() else 0
+
+    def purge_job(job,outputs):
+        jid=job['id']
+        files=job_outputs(job) if outputs else []
+        root=output_root()
+        store.remove_job(jid)
+        folder=settings.jobs_dir/jid
+        if os.path.lexists(folder):
+            safe_rmtree(folder,settings.jobs_dir)
+        for o in files:
+            p=Path(o['path'])
+            try:
+                if not is_link(p) and p.resolve().is_relative_to(root) and p.is_file(): p.unlink()
+            except OSError: pass
+
+    @app.get('/api/jobs/{job_id}/delete-preview')
+    def job_delete_preview(job_id: str):
+        job=store.get_job(job_id)
+        if not job: raise HTTPException(404,'Không tìm thấy dự án.')
+        return dict(id=job_id,title=job.get('title',''),busy=is_busy(job),data_bytes=job_data_bytes(job_id),outputs=job_outputs(job))
+
+    @app.delete('/api/jobs/{job_id}',status_code=204)
+    def delete_job(job_id: str,outputs: bool=False):
+        job=store.get_job(job_id)
+        if not job: raise HTTPException(404,'Không tìm thấy dự án.')
+        if is_busy(job): raise HTTPException(409,'Video đang được xử lý. Hãy dừng tác vụ trước khi xóa.')
+        purge_job(job,outputs)
+
+    @app.get('/api/collections/{cid}/delete-preview')
+    def collection_delete_preview(cid: str):
+        c=collection(cid)
+        jobs=[j for j in store.list_jobs() if j.get('collection_id')==cid]
+        return dict(id=cid,name=c.get('name',''),videos=[dict(id=j['id'],title=j.get('title',''),busy=is_busy(j)) for j in jobs],
+                    data_bytes=sum(job_data_bytes(j['id']) for j in jobs))
     def collection(cid):
         c=store.get_record('collection',cid)
         if not c: raise HTTPException(404,'Không tìm thấy bộ sưu tập.')
@@ -94,9 +209,17 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
         return public_collection(c)
 
     @app.delete('/api/collections/{cid}',status_code=204)
-    def delete_collection(cid: str):
-        collection(cid)
+    def delete_collection(cid: str,videos: bool=False,outputs: bool=False):
+        c=collection(cid)
+        if videos:
+            members=[j for j in store.list_jobs() if j.get('collection_id')==cid]
+            busy=[j.get('title') or j['id'] for j in members if is_busy(j)]
+            if busy:
+                raise HTTPException(409,'Có video đang được xử lý: '+', '.join(busy)+'. Hãy dừng tác vụ trước khi xóa.')
+            for j in members: purge_job(j,outputs)
         store.unlink_collection(cid)
+        if c.get('cover_file'):
+            (settings.data_dir/'covers'/Path(c['cover_file']).name).unlink(missing_ok=True)
 
     @app.post('/api/collections/{cid}/cover')
     async def cover(cid: str,file: UploadFile=File(...)):

@@ -719,7 +719,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
             previous = ''
             idle = 0
             while not await request.is_disconnected():
-                snapshot = json.dumps(public_job(job_or_404(job_id)), ensure_ascii=False)
+                current = store.get_job(job_id)
+                if not current:
+                    return  # job was deleted: end the stream quietly
+                snapshot = json.dumps(public_job(current), ensure_ascii=False)
                 if snapshot != previous:
                     yield f'data: {snapshot}\n\n'
                     previous = snapshot
