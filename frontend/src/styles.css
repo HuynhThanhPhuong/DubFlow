@@ -1219,11 +1219,9 @@ progress::-moz-progress-bar {
 input[type="radio"], input[type="checkbox"] { min-height: 0; padding: 0; width: var(--radio-size); height: var(--radio-size); margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 label:has(> input[type="radio"]), label:has(> input[type="checkbox"]) { flex-direction: row; align-items: center; gap: var(--radio-gap); font-size: var(--control-font); }
 .translate-panel .translate-scope legend { font-size: var(--control-font); }
-.studio-pagination .page-jump { display: inline-flex; align-items: center; gap: 4px; }
-.studio-pagination .page-jump input { width: 44px; min-height: 26px; padding: 2px 4px; text-align: center; font-size: var(--control-font); }
 .simple-player:fullscreen { overflow: hidden; }
 @media(max-width:480px) {
  :root { --control-h: 36px; }
- .studio-pagination .page-jump input { min-height: 36px; width: 52px; }
- .studio-pagination > button, .button, .mode-line button { min-height: 36px; }
+ .studio-pagination .page-jump input, .studio-pagination button { height: 32px; min-height: 32px; }
+ .button, .mode-line button { min-height: 36px; }
 }

@@ -60,6 +60,8 @@ export type WorkspaceJob = Job & {
   episode?: string | null;
   exported_paths?: string[];
 };
+export type JobDeletePreview = { id: string; title: string; busy: boolean; data_bytes: number; outputs: { path: string; bytes: number }[] };
+export type CollectionDeletePreview = { id: string; name: string; videos: { id: string; title: string; busy: boolean }[]; data_bytes: number };
 const json = (method: string, data?: unknown): RequestInit => ({
   method,
   ...(data === undefined ? {} : { body: JSON.stringify(data) }),
@@ -97,5 +99,13 @@ export const workspaceApi = {
     request<{ models: string[] }>(`/settings/models?provider=${provider}`),
   publish: (key: string) =>
     request<WorkspaceJob>(`/jobs/${id(key)}/publish`, json("POST")),
+  jobDeletePreview: (key: string) =>
+    request<JobDeletePreview>(`/jobs/${id(key)}/delete-preview`),
+  deleteJob: (key: string, outputs: boolean) =>
+    request<void>(`/jobs/${id(key)}?outputs=${outputs}`, json("DELETE")),
+  collectionDeletePreview: (key: string) =>
+    request<CollectionDeletePreview>(`/collections/${id(key)}/delete-preview`),
+  deleteCollection: (key: string, videos: boolean, outputs = false) =>
+    request<void>(`/collections/${id(key)}?videos=${videos}${videos && outputs ? "&outputs=true" : ""}`, json("DELETE")),
 };
 

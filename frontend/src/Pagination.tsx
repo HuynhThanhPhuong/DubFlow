@@ -26,7 +26,7 @@ export function Pagination({total,page,size,onChange}:{total:number;page:number;
   if(next-1!==current)onChange(next-1);
  };
  return <nav className="studio-pagination" aria-label="Phân trang"><span>{total?`${current*size+1}–${Math.min((current+1)*size,total)}`:"0"} / {total}</span>
-  <Button disabled={current===0} onClick={()=>onChange(current-1)}>‹ Trước</Button>
+  <div className="page-controls"><Button disabled={current===0} onClick={()=>onChange(current-1)}>‹ Trước</Button>
   <span className="page-jump"><input type="text" inputMode="numeric" aria-label="Trang" value={draft} onChange={e=>setDraft(e.target.value)} onBlur={commit} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();commit();}}}/> / {pages}</span>
-  <Button disabled={current+1>=pages} onClick={()=>onChange(current+1)}>Sau ›</Button></nav>;
+  <Button disabled={current+1>=pages} onClick={()=>onChange(current+1)}>Sau ›</Button></div></nav>;
 }

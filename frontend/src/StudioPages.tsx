@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Play, Pause, Volume2, VolumeX } from "lucide-react";
+import { Play, Pause, Volume2, VolumeX, Trash2 } from "lucide-react";
 import { api, mediaUrl } from "./api";
-import { statusLabels } from "./helpers";
+import { isBusy, statusLabels } from "./helpers";
 const sourceName = (value: string) => ({system:"Giọng có sẵn",recorded:"Giọng đã thu",custom:"Giọng của tôi",upload:"Giọng đã tải"}[value] || value);
 const voiceStatus = (value: string) => ({available:"Sẵn sàng",unchecked:"Chưa kiểm tra",invalid:"Cần kiểm tra"}[value] || statusLabels[value] || value);
 const genderName = (value: string) => ({male:"Nam",female:"Nữ",unknown:"Chưa xác định"}[value] || value);
@@ -18,6 +18,7 @@ import type {
 } from "./workspaceApi";
 import "./studio-pages.css";
 import { Pagination } from "./Pagination";
+import { CollectionDeleteDialog, JobDeleteDialog } from "./DeleteDialogs";
 
 function Field({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
   return (
@@ -106,6 +107,8 @@ export function CollectionsPage({
     [page, setPage] = useState(0),
     [editing, setEditing] = useState<Collection | "new" | null>(null),
     [assign, setAssign] = useState<WorkspaceJob | null>(null),
+    [delJob, setDelJob] = useState<string | null>(null),
+    [delCol, setDelCol] = useState<string | null>(null),
     [busy, setBusy] = useState(false),
     [updates, setUpdates] = useState<Record<string, WorkspaceJob>>({});
   const capacity = useCapacity(!selected);
@@ -195,6 +198,11 @@ export function CollectionsPage({
         {current && (
           <Button onClick={() => setEditing(current)}>Sửa thông tin</Button>
         )}
+        {current && (
+          <Button className="icon-danger" onClick={() => setDelCol(current.id)}>
+            <Trash2 size={14} /> Xóa bộ sưu tập
+          </Button>
+        )}
         <Button variant="primary" onClick={() => setEditing("new")}>
           Tạo bộ sưu tập
         </Button>
@@ -279,6 +287,14 @@ export function CollectionsPage({
                   <span className="studio-pill">{statusLabels[job.status] || job.status}</span>
                   <Button onClick={() => setAssign(job)}>Xếp vào bộ</Button>
                   <Button onClick={() => onOpen(job.id)}>Mở biên tập</Button>
+                  <Button
+                    className="icon-danger"
+                    disabled={isBusy(job)}
+                    title={isBusy(job) ? "Video đang xử lý, không thể xóa" : "Xóa video vĩnh viễn"}
+                    onClick={() => setDelJob(job.id)}
+                  >
+                    <Trash2 size={14} /> Xóa video
+                  </Button>
                   {(job.exported_paths?.length ?? 0) > 0 && (
                     <Button
                       disabled={busy}
@@ -296,9 +312,9 @@ export function CollectionsPage({
             )
           : slicePage(filtered as Collection[], page, capacity.size).map(
               (c) => (
+                <div className="studio-collection-wrap" key={c.id}>
                 <button
                   className="studio-collection-card"
-                  key={c.id}
                   onClick={() => navigate(c.id)}
                 >
                   <div className="studio-cover">
@@ -326,6 +342,10 @@ export function CollectionsPage({
                     </div>
                   </div>
                 </button>
+                <Button className="icon-danger studio-collection-delete" onClick={() => setDelCol(c.id)}>
+                  <Trash2 size={14} /> Xóa bộ sưu tập
+                </Button>
+                </div>
               ),
             )}
       </div>
@@ -335,6 +355,26 @@ export function CollectionsPage({
         page={page}
         onChange={setPage}
       />
+      {delJob && (
+        <JobDeleteDialog
+          jobId={delJob}
+          onClose={() => setDelJob(null)}
+          onError={onError}
+          onDeleted={() => onChanged?.()}
+        />
+      )}
+      {delCol && (
+        <CollectionDeleteDialog
+          collectionId={delCol}
+          onClose={() => setDelCol(null)}
+          onError={onError}
+          onDeleted={(id) => {
+            if (selected === id) navigate("");
+            void load();
+            onChanged?.();
+          }}
+        />
+      )}
       {editing && (
         <CollectionEditor
           collection={editing}

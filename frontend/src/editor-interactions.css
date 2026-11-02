@@ -188,13 +188,6 @@
   grid-column: 1/-1;
 }
 .project-notes-grid p:last-child:nth-child(odd) { grid-column:1/-1; }
-.project-notes-content .studio-pagination {
-  padding: 3px 8px;
-  min-height: 29px;
-}
-.project-notes-content .studio-pagination button {
-  min-height: 23px;
-}
 .studio-app .script-footer {
   flex-wrap: wrap;
 }

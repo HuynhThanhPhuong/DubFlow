@@ -35,6 +35,13 @@ describe("Pagination", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(input.value).toBe("2");
   });
+  it("renders page input inline with the total in one nowrap group", () => {
+    const { input } = setup();
+    const jump = input.closest(".page-jump") as HTMLElement;
+    expect(jump.textContent).toContain("/ 5");
+    expect(jump.parentElement?.className).toBe("page-controls");
+    expect(jump.parentElement?.querySelectorAll("button").length).toBe(2);
+  });
   it("prev and next buttons work", () => {
     const { onChange } = setup();
     fireEvent.click(screen.getByText(/Trước/));

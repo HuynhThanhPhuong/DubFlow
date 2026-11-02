@@ -10,6 +10,7 @@ import {
   Save,
   Settings2,
   Subtitles,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { api, mediaUrl } from "./api";
@@ -31,6 +32,7 @@ import type { StudioSettings, Collection } from "./workspaceApi";
 import { EditableTitle } from "./EditableTitle";
 import { Pagination, useCapacity } from "./Pagination";
 import { Modal } from "./ui";
+import { JobDeleteDialog } from "./DeleteDialogs";
 import { TranslatePanel } from "./TranslatePanel";
 import { providerLabels } from "./TranslationSettings";
 import { Button, Empty, Toast } from "./ui";
@@ -70,6 +72,7 @@ export default function App() {
   const [modal, setModal] = useState<
     "import" | "regions" | "parts" | "voice" | null
   >(null);
+  const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [dropped, setDropped] = useState<File>();
   const [now, setNow] = useState(0);
   const [seek, setSeek] = useState({ time: 0, token: 0 });
@@ -461,7 +464,7 @@ export default function App() {
                 <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length} onClick={()=>setExportOpen(true)}>Xuất video</Button>
                 </div>
               </div>
-              <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><button className="project-notes-toggle" aria-expanded={notesOpen} aria-controls="project-notes-content" onClick={()=>{setNotesOpen(v=>!v);setNotesPage(0)}}>Lưu ý của dự án{projectWarnings.length?` · ${projectWarnings.length}`:''}<span aria-hidden="true">{notesOpen?'−':'+'}</span></button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
+              <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><Button className="icon-danger" title={isBusy(currentJob)?"Video đang xử lý, không thể xóa":"Xóa video vĩnh viễn"} disabled={isBusy(currentJob)} onClick={()=>setDeleteJobId(currentJob.id)}><Trash2 size={15}/>Xóa video</Button><button className="project-notes-toggle" aria-expanded={notesOpen} aria-controls="project-notes-content" onClick={()=>{setNotesOpen(v=>!v);setNotesPage(0)}}>Lưu ý của dự án{projectWarnings.length?` · ${projectWarnings.length}`:''}<span aria-hidden="true">{notesOpen?'−':'+'}</span></button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
               <div className={`mode-notes-row ${notesOpen?'expanded':''}`}>
               <div className="modebar">
                 <div
@@ -816,6 +819,16 @@ export default function App() {
                       <Button onClick={() => navigate("editor", j.id)}>
                         Mở biên tập
                       </Button>
+                      <Button
+                        className="icon-danger"
+                        aria-label={`Xóa ${j.title || j.filename}`}
+                        title={isBusy(j) ? "Video đang xử lý, không thể xóa" : "Xóa video"}
+                        disabled={isBusy(j)}
+                        onClick={() => setDeleteJobId(j.id)}
+                      >
+                        <Trash2 size={15} />
+                        Xóa
+                      </Button>
                       {isBusy(j) && (
                         <Button
                           disabled={busy}
@@ -849,6 +862,12 @@ export default function App() {
             <Pagination total={queueJobs.length} page={safeQueuePage} size={queueCapacity} onChange={setQueuePage}/>
           </>
         )}
+        {deleteJobId && <JobDeleteDialog jobId={deleteJobId} onClose={() => setDeleteJobId(null)} onError={showError} onDeleted={(id) => {
+          setNotice("Đã xóa video.");
+          if (selected.current === id) { setDirty(false); dirtyRef.current = false; navigate("queue"); }
+          void refresh();
+          void workspaceApi.collections().then(setCollections).catch(showError);
+        }} />}
         {(route.page==="collections"||route.page==="projects")&&<CollectionsPage jobs={jobs} onOpen={id=>navigate("editor",id)} onError={showError} onChanged={()=>{void refresh();void workspaceApi.collections().then(setCollections).catch(showError)}}/>}
         {route.page==="settings"&&<SettingsPage onError={showError} onSaved={value=>{setStudioSettings(value);setNotice("Đã lưu cài đặt.");void api.health().then(setHealth)}}/>}
         {route.page==="voices"&&(voicesLoaded?<VoicesPage voices={voices} onAdd={()=>setModal("voice")} onError={showError} onChoose={currentJob&&!isBusy(currentJob)?async voice=>{await updateJob({mode:"tm",voice_id:voice.id});navigate("editor",currentJob.id)}:undefined} onCheck={async voice=>{const updated=await api.checkVoice(voice.id);setVoices(rows=>rows.map(v=>v.id===updated.id?updated:v));setNotice("Đã kiểm tra mẫu giọng.")}}/>:<Empty>Đang tải thư viện giọng…</Empty>)}

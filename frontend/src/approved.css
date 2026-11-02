@@ -12,9 +12,9 @@
 .editor-membership label{display:flex;flex-direction:row;align-items:center;gap:5px}.editor-membership input{width:54px;min-height:27px;padding:3px 7px;font-size:10px}
 .spacer{margin-left:auto}.studio-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:9px;background:white;margin-bottom:10px;flex-shrink:0;overflow:hidden}
 .studio-workflow>div{padding:8px 13px;min-width:0}.studio-workflow>div+div{border-left:1px solid var(--line)}.studio-workflow b{display:block;font-size:11px;font-weight:600}.studio-workflow small{display:block;font-size:10px;color:var(--muted);margin-top:2px}.studio-workflow .current{background:#fafaff}
-.studio-pagination{display:flex;align-items:center;gap:9px;padding:8px 12px;flex-shrink:0;font-size:10px;color:#8996af;min-height:42px}
-.studio-pagination>span{margin-right:auto}.studio-pagination>button{border:1px solid #dfe5f2;background:white;color:#7483ad;border-radius:5px;font-size:10px;min-height:28px;padding:4px 9px;transition:background .15s}
-.studio-pagination>button:hover:not(:disabled){background:#eef2ff;color:var(--accent)}.studio-pagination b{font-weight:500}
+.studio-pagination{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-shrink:0;font-size:11px;color:#8996af;min-height:42px}
+.studio-pagination>span{margin-right:auto;white-space:nowrap}.studio-pagination .page-controls{display:inline-flex;align-items:center;gap:6px;margin-left:auto;flex-shrink:0}.studio-pagination button{border:1px solid #dfe5f2;background:white;color:#7483ad;border-radius:5px;font-size:11px;height:28px;min-height:28px;padding:0 9px;white-space:nowrap;transition:background .15s}
+.studio-pagination button:hover:not(:disabled){background:#eef2ff;color:var(--accent)}.studio-pagination b{font-weight:500}
 .simple-script>.studio-pagination{border-top:1px solid var(--line)}
 .studio-app .sentence{min-height:0;flex:1;padding:10px 12px;align-items:stretch}
 .studio-app .line-copy{display:flex;flex-direction:column;min-height:0}.studio-app .line-copy>textarea{flex:1;resize:none;min-height:32px;padding:3px 0;font-size:12px;line-height:1.65}
@@ -124,7 +124,7 @@
  .studio-app .studio-settings-nav .button{flex:0 0 auto;white-space:nowrap;scroll-snap-align:start}
 }
 /* U7: o so trang luon la o chu thuan, khong co nut tang/giam. */
-.studio-pagination .page-jump input{-moz-appearance:textfield;appearance:textfield}
+.studio-pagination .page-jump{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.studio-pagination .page-jump input{-moz-appearance:textfield;appearance:textfield;width:44px;min-width:0;height:28px;min-height:28px;padding:0 4px;text-align:center;font-size:11px;box-sizing:border-box}
 .studio-pagination .page-jump input::-webkit-inner-spin-button,.studio-pagination .page-jump input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 
 /* P6 fix round 1: header gon (~110px) de nhuong chieu cao cho trinh phat. */
