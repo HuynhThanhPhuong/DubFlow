@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Player, Timeline } from "./Player";
 import type { Job } from "./types";
@@ -249,5 +249,61 @@ describe("native player source selection", () => {
     expect(screen.getByLabelText("Video kết quả").getAttribute("src")).toBe(
       "/api/jobs/j/output",
     );
+  });
+});
+describe("fullscreen scroll restore", () => {
+  it("restores ancestor scroll offsets after fullscreen exits", () => {
+    const rafQueue: FrameRequestCallback[] = [];
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      });
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    let fsEl: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fsEl,
+    });
+    Object.defineProperty(Element.prototype, "requestFullscreen", {
+      configurable: true,
+      value: vi.fn(function (this: Element) {
+        fsEl = this;
+        return Promise.resolve();
+      }),
+    });
+    try {
+      render(
+        <div data-testid="wrap" style={{ overflow: "hidden", height: 200 }}>
+          <Player
+            job={job}
+            cues={[]}
+            onTime={vi.fn()}
+            seek={{ time: 0, token: 0 }}
+          />
+        </div>,
+      );
+      const wrap = screen.getByTestId("wrap");
+      wrap.scrollTop = 40;
+      fireEvent.click(screen.getByRole("button", { name: "Toàn màn hình" }));
+      expect(fsEl).not.toBeNull();
+      // Browser scrolls the clipped wrapper while in fullscreen.
+      wrap.scrollTop = 120;
+      fsEl = null;
+      act(() => {
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      act(() => {
+        rafQueue.splice(0).forEach((cb) => cb(0));
+      });
+      expect(wrap.scrollTop).toBe(40);
+      expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    } finally {
+      raf.mockRestore();
+      scrollTo.mockRestore();
+      Reflect.deleteProperty(document, "fullscreenElement");
+      Reflect.deleteProperty(Element.prototype, "requestFullscreen");
+    }
   });
 });

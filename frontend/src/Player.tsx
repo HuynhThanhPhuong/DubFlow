@@ -45,6 +45,11 @@ export function Player({
   const [drawing, setDrawing] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
+  const fullscreenScroll = useRef<{
+    x: number;
+    y: number;
+    nodes: [Element, number, number][];
+  } | null>(null);
   const togglePlay = async () => {
     if (!video.current) return;
     try {
@@ -166,6 +171,39 @@ export function Player({
       setNow(seek.time);
     }
   }, [seek]);
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (document.fullscreenElement) return;
+      const snapshot = fullscreenScroll.current;
+      fullscreenScroll.current = null;
+      requestAnimationFrame(() => {
+        if (snapshot) {
+          for (const [el, top, left] of snapshot.nodes) {
+            el.scrollTop = top;
+            el.scrollLeft = left;
+          }
+          window.scrollTo(snapshot.x, snapshot.y);
+          return;
+        }
+        // Fullscreen started outside the button (e.g. native video control):
+        // reset clipped ancestors that the browser may have scrolled.
+        for (
+          let el = video.current?.parentElement ?? null;
+          el;
+          el = el.parentElement
+        ) {
+          const overflow = getComputedStyle(el).overflow;
+          if (overflow.includes("hidden") || overflow.includes("clip")) {
+            el.scrollTop = 0;
+            el.scrollLeft = 0;
+          }
+        }
+      });
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
   return (
     <section className="simple-player">
       <div className="player-head">
@@ -363,10 +401,21 @@ export function Player({
           variant="ghost"
           aria-label="Toàn màn hình"
           onClick={() => {
-            void video.current
-              ?.closest(".simple-player")
-              ?.requestFullscreen?.()
-              .catch(() => setError("Không mở được toàn màn hình."));
+            const target = video.current?.closest(".simple-player");
+            if (!target?.requestFullscreen) return;
+            const nodes: [Element, number, number][] = [];
+            for (let el = target.parentElement; el; el = el.parentElement) {
+              nodes.push([el, el.scrollTop, el.scrollLeft]);
+            }
+            fullscreenScroll.current = {
+              x: window.scrollX,
+              y: window.scrollY,
+              nodes,
+            };
+            void target.requestFullscreen().catch(() => {
+              fullscreenScroll.current = null;
+              setError("Không mở được toàn màn hình.");
+            });
           }}
         >
           <Maximize size={18} />
