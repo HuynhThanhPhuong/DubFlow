@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JobActivity } from "./JobActivity";
 import { PipelineSteps } from "./PipelineSteps";
@@ -62,7 +62,7 @@ describe("liveLine", () => {
 describe("JobActivity", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(T0 + 30_000); });
 
-  it("ticks the elapsed time and lists the recent worker messages under Chi tiết", () => {
+  it("ticks the elapsed time and lists the worker messages (newest first) in the details popup", () => {
     const job = {
       ...base,
       stage_detail: { done: 0, total: 40, unit: "câu", batch: 1, batches: 1, batch_size: 40, note: "đang gửi tới Gemini, chờ trả lời…" },
@@ -75,9 +75,13 @@ describe("JobActivity", () => {
     expect(screen.getByRole("status").textContent).toContain("Đang dịch lô 1/1 (40 câu) · đang gửi tới Gemini, chờ trả lời… · 00:30 đã chạy");
     act(() => { vi.advanceTimersByTime(5000); });
     expect(screen.getByRole("status").textContent).toContain("00:35 đã chạy");
-    expect(screen.getByText("Chi tiết (2)")).toBeTruthy();
-    expect(screen.getByText(/Máy xử lý đã nhận tác vụ\./)).toBeTruthy();
-    expect(document.querySelectorAll(".job-activity-log li").length).toBe(2);
+    expect(document.querySelector("details")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByRole("tab", { name: "Hoạt động (2)" }).getAttribute("aria-selected")).toBe("true");
+    const items = [...document.querySelectorAll(".job-activity-log li")].map((li) => li.textContent ?? "");
+    expect(items.length).toBe(2);
+    expect(items[0]).toContain("Lô 1/1");
+    expect(items[1]).toContain("Máy xử lý đã nhận tác vụ.");
   });
 
   it("shows the queue position for a queued job and flags a dead worker", () => {
@@ -87,11 +91,11 @@ describe("JobActivity", () => {
     expect(container.querySelector(".job-activity.is-stuck")).not.toBeNull();
   });
 
-  it("keeps the log (collapsed) after the job finished, and renders nothing when there is none", () => {
+  it("keeps the details button after the job finished, and renders nothing when there is nothing to show", () => {
     const done = { ...base, status: "awaiting_review", stage_step: null, activity: [{ t: "2026-11-02T17:33:44Z", msg: "Xong." }] } as Job;
     const { container, rerender } = render(<JobActivity job={done} />);
     expect(screen.queryByRole("status")).toBeNull();
-    expect(container.querySelector("details")?.hasAttribute("open")).toBe(false);
+    expect(screen.getByRole("button", { name: /Xem chi tiết/ })).toBeTruthy();
     rerender(<JobActivity job={{ ...done, activity: [] } as Job} />);
     expect(container.firstChild).toBeNull();
   });

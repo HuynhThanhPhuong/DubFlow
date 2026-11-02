@@ -436,34 +436,6 @@ export function SettingsDialog({
     </Modal>
   );
 }
-export function ProjectNotesDialog({
-  notes,
-  onClose,
-}: {
-  notes: string[];
-  onClose: () => void;
-}) {
-  return (
-    <Modal
-      title="Lưu ý của dự án"
-      description="Các cảnh báo và lưu ý hệ thống ghi nhận cho video này."
-      onClose={onClose}
-    >
-      <div className="project-notes-list" role="list">
-        {(notes.length
-          ? notes
-          : [
-              "Hệ thống tự xử lý; bạn có thể sửa lời gốc, lời Việt và người nói ngay trong Lời dịch.",
-            ]
-        ).map((note, i) => (
-          <p key={i} role="listitem">
-            {note}
-          </p>
-        ))}
-      </div>
-    </Modal>
-  );
-}
 export function VoiceDialog({
   onClose,
   onError,

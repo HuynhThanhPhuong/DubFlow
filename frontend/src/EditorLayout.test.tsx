@@ -27,15 +27,18 @@ function stubFetch() {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); location.hash = ""; });
 
-it("opens project notes in a modal dialog instead of expanding inline, and Escape closes it", async () => {
+it("opens the details popup (activity + project notes tabs) instead of expanding inline, and Escape closes it", async () => {
   location.hash = "#editor?job=job1";
   stubFetch();
   render(<App />);
-  const toggle = await screen.findByRole("button", { name: /Lưu ý của dự án/ });
+  const toggle = await screen.findByRole("button", { name: /Xem chi tiết/ });
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(toggle);
   const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("tab", { name: "Hoạt động (0)" })).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Lưu ý của dự án (1)" }));
   expect(within(dialog).getByText("Cảnh báo thử một")).toBeTruthy();
+  expect(within(dialog).getAllByRole("button", { name: /Đóng/ }).length).toBe(1);
   expect(document.querySelector(".project-notes-content")).toBeNull();
   fireEvent.click(within(dialog).getByRole("button", { name: "Đóng hộp thoại" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -49,7 +52,7 @@ it("renders pipeline steps with a .step-meta status element", async () => {
   location.hash = "#editor?job=job1";
   stubFetch();
   render(<App />);
-  await screen.findByRole("button", { name: /Lưu ý của dự án/ });
+  await screen.findByRole("button", { name: /Xem chi tiết/ });
   const steps = document.querySelectorAll(".studio-workflow > div");
   expect(steps.length).toBe(4);
   steps.forEach((step) => expect(step.querySelector(".step-meta")).not.toBeNull());
@@ -65,7 +68,7 @@ it("updates the step bar from SSE pushes carrying the progress/ETA fields, witho
     constructor() { sources.push(this); }
   });
   render(<App />);
-  await screen.findByRole("button", { name: /Lưu ý của dự án/ });
+  await screen.findByRole("button", { name: /Xem chi tiết/ });
   await waitFor(() => expect(sources.length).toBeGreaterThan(0));
   act(() => {
     sources[sources.length - 1].onmessage?.({ data: JSON.stringify({

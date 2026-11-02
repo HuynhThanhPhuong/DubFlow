@@ -79,7 +79,7 @@ it("edits Vietnamese and saves exact cue array to real API contract", async () =
   const input = await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.queryByRole('button',{name:'Kiểm tra & duyệt'})).toBeNull();
   expect(screen.queryByRole('button',{name:'Thêm video'})).toBeNull();
-  expect(screen.getByRole('group',{name:'Thao tác video'}).textContent).toBe('Tuỳ chỉnhPhân tích videoPhân tích lại lời gốcXuất video');
+  expect(screen.getByRole('group',{name:'Thao tác video'}).textContent).toBe('Tuỳ chỉnhVùng phân tíchPhân tích videoPhân tích lại lời gốcXuất video');
   expect(screen.getByRole('link',{name:'Xuất SRT Trung + lệnh mẫu'}).getAttribute('href')).toBe('/api/jobs/job1/source-subtitles.srt');
   fireEvent.change(input, { target: { value: "Chào bạn" } });
   expect(screen.getByText("Chưa lưu")).toBeTruthy();

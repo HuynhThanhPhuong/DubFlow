@@ -24,7 +24,16 @@ export interface JobQueueInfo {
   running_ahead: boolean;
   worker_alive: boolean;
 }
+/** [x, y, w, h] in source-video pixels */
+export type RegionRect = [number, number, number, number];
+export interface AnalysisRegions {
+  no_hard_subs: boolean;
+  subtitle: RegionRect | null;
+  logos: RegionRect[];
+  screen_text: RegionRect[];
+}
 export interface Job {
+  analysis_regions?: AnalysisRegions | null;
   collection_id?: string | null;
   collection_name?: string | null;
   episode?: string;

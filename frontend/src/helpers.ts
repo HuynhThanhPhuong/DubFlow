@@ -51,6 +51,7 @@ export const statusLabels: Record<string, string> = {
   analyzing: "Đang phân tích",
   rendering: "Đang xuất",
   synthesizing: "Đang sinh giọng",
+  awaiting_regions: "Chờ chọn vùng sub",
   awaiting_review: "Sẵn sàng chỉnh sửa",
   ready: "Sẵn sàng",
   completed: "Hoàn tất",
