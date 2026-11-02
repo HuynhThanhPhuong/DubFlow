@@ -81,11 +81,18 @@ def run_task(task, settings, store):
         if (folder / 'cancel.request').exists() or not store.update_active_job(jid,**values):
             raise JobCancelled('Đã dừng tác vụ.')
 
-    def emit(stage, message, progress):
+    from . import timing
+    clock = timing.StageClock(settings.data_dir, store, jid, job, task['action'])
+    idle = dict(stage_step=None, stage_started_at=None, stage_detail=None)
+
+    def emit(stage, message, progress, detail=None):
         current = store.get_job(jid)
         if not current or current['status'] == 'cancelled':
             raise JobCancelled('Đã dừng tác vụ.')
-        update_active(status='processing', stage=stage, progress=max(0, min(99, int(progress))))
+        extra = clock.enter(stage)
+        if detail is not None:
+            extra['stage_detail'] = detail
+        update_active(status='processing', stage=stage, progress=max(0, min(99, int(progress))), **extra)
         store.event(jid, stage, message, progress)
 
     try:
@@ -114,7 +121,8 @@ def run_task(task, settings, store):
             auto=read_json(folder/'auto-context.json',{})
             if auto.get('status')=='automatic_candidate':summaries.append('Ngữ cảnh và xưng hô do máy suy luận; sửa trực tiếp ở Lời dịch nếu chưa đúng.')
             if auto.get('status')=='failed':summaries.append('Bước suy luận ngữ cảnh tự động chưa đạt; bản dịch vẫn cần xem lại.')
-            update_active(status='awaiting_review', stage='awaiting_review', progress=45, cue_count=len(cues),
+            clock.finish()
+            update_active(status='awaiting_review', stage='awaiting_review', progress=45, cue_count=len(cues), **idle,
                              warnings=[translate_message(w) for w in result.get('warnings', job.get('warnings', []))]+summaries)
             store.event(jid, 'awaiting_review', 'Nội dung đã sẵn sàng để duyệt.', 45)
         elif task['action'] == 'detect_logos':
@@ -160,7 +168,8 @@ def run_task(task, settings, store):
             publish(store, settings, jid, rendering=True, render_values={k:getattr(settings,k) for k in ('resolution','blur_original','original_gain')})
             cues = read_json(folder / 'cues.json')
             passed = sum(c.get('asr_edits') == 0 for c in cues) if job['mode'] != 'vietsub' else 0
-            update_active(status='done', stage='done', progress=100, error=None, cue_count=len(cues), ready_count=passed,
+            clock.finish()
+            update_active(status='done', stage='done', progress=100, error=None, cue_count=len(cues), ready_count=passed, **idle,
                              warnings=[translate_message(w) for w in result.get('warnings', job.get('warnings', []))])
             if settings.open_after_export:
                 from .native import open_folder
@@ -172,7 +181,7 @@ def run_task(task, settings, store):
         store.finish_task(task['id'])
     except (JobCancelled, KeyboardInterrupt):
         if store.get_job(jid):
-            store.update_job(jid, status='cancelled', stage='cancelled', error=None)
+            store.update_job(jid, status='cancelled', stage='cancelled', error=None, **idle)
         store.finish_task(task['id'], 'cancelled')
     except Exception as exc:
         # Cancellation from a subprocess is represented by the same persisted flag.
@@ -189,7 +198,7 @@ def run_task(task, settings, store):
         (folder / 'last-error.log').write_text(traceback.format_exc(), encoding='utf-8')
         cues = read_json(folder / 'cues.json')
         store.update_job(jid, status='awaiting_review' if review else 'failed', stage='awaiting_review' if review else 'failed',
-                         error=message, cue_count=len(cues), progress=45 if review else latest['progress'])
+                         error=message, cue_count=len(cues), **idle, progress=45 if review else latest['progress'])
         store.event(jid, 'awaiting_review' if review else 'failed', message, 45 if review else 0)
         store.finish_task(task['id'], 'review' if review else 'failed')
 

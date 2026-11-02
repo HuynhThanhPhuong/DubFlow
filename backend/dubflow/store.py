@@ -144,7 +144,7 @@ class Store:
             job = json.loads(row['body']) if row else None
             if not job or job['status'] == 'cancelled':
                 return False
-            job.update(status='processing', stage='processing', progress=0, error=None, updated_at=now())
+            job.update(status='processing', stage='processing', progress=0, error=None, stage_step=None, stage_started_at=None, stage_detail=None, updated_at=now())
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
         return True
 

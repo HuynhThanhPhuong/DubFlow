@@ -298,7 +298,7 @@ class _Pause(Exception):
 
 class _Run:
     def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-                 spent_before=0.0, should_stop=None):
+                 spent_before=0.0, should_stop=None, on_progress=None):
         _need_mode(mode)
         self.dir, self.mode, self.prefs, self.provider = Path(directory), mode, prefs, provider
         self.limiter, self.terminology, self.allow, self.sleep = limiter, terminology, allow_over_cap, sleep
@@ -319,6 +319,7 @@ class _Run:
         self.paused = None
         self.chunk_keys: dict[str, str] = {}
         self.n_chunks = 0
+        self.on_progress = on_progress
 
     def key(self, payload_items: list[dict]) -> str:
         raw = json.dumps([PROMPT_VERSION, getattr(self.provider, 'name', ''), self.model, self.mode,
@@ -414,13 +415,21 @@ class _Run:
     def execute(self) -> None:
         chunks = _split(self.items, self.mode, self.prefs, self.terminology) if self.items else []
         self.n_chunks = len(chunks)
+        total, done = len(self.items), 0
         try:
+            self.report(0, total)
             for part in chunks:
                 self.run_chunk(part)
+                done += len(part)
+                self.report(done, total)
             if self.failed:
                 self.retry()
         except _Pause as p:
             self.paused = p.reason
+
+    def report(self, done: int, total: int) -> None:
+        if self.on_progress:
+            self.on_progress(done, total)
 
     def log(self, error: str | None) -> None:
         d = self.dir / RUNS_DIR
@@ -439,9 +448,9 @@ class _Run:
 
 def run_translation(directory: Path, items: list[Item], mode: str, prefs, provider, *, limiter,
                     terminology: str = '', allow_over_cap: bool = False, sleep=time.sleep,
-                    spent_before: float = 0.0, should_stop=None) -> Outcome:
+                    spent_before: float = 0.0, should_stop=None, on_progress=None) -> Outcome:
     run = _Run(directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-               spent_before, should_stop)
+               spent_before, should_stop, on_progress)
     Path(directory).mkdir(parents=True, exist_ok=True)
     error = None
     try:

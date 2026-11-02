@@ -21,7 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
 from .preferences import preferences, translation_ready
-from . import translate_run
+from . import translate_run, timing
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
@@ -117,6 +117,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
             value['clean_url'] = f'{base}/clean?v={clean.stat().st_mtime_ns}'
         value['overlays'] = job.get('overlays', [])
         value['translation_usage'] = translate_run.read_usage(folder)
+        est = timing.estimates(settings.data_dir, job)
+        value['stage_estimates'] = est
+        value['stage_step'] = job.get('stage_step')
+        value['stage_started_at'] = job.get('stage_started_at')
+        value['stage_detail'] = job.get('stage_detail')
+        value['eta_seconds'] = timing.eta_seconds(job, est)
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
         return value
 

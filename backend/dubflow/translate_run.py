@@ -143,7 +143,15 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     items = collect_items(folder, scope)
     if not items:
         return dict(warnings=['Không có câu nào cần dịch.'])
-    emit('translating', 'Đang dịch lời gốc và chữ trên hình sang tiếng Việt', 45)
+    message = 'Đang dịch lời gốc và chữ trên hình sang tiếng Việt'
+    emit('translating', message, 45)
+
+    def on_progress(done, total):
+        # progress 45..49 (analyze already ends at 45); the UI should prefer stage_detail
+        try:
+            emit('translating', message, 45 + (4 * done // max(1, total)), {'done': done, 'total': total, 'unit': 'câu'})
+        except Exception:  # noqa: BLE001 - best effort; cancellation is handled via should_stop so paid usage is still recorded
+            pass
     prefs = prefs_ns(settings)
     provider = None
     stop_file = folder / 'cancel.request'
@@ -153,7 +161,7 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow,
                                   spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
-                                  should_stop=stop_file.exists)
+                                  should_stop=stop_file.exists, on_progress=on_progress)
     except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
         return dict(warnings=[scrub(str(exc), key)])
     finally:
