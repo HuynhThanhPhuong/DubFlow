@@ -51,7 +51,7 @@ export default function App() {
   const [cuePage,setCuePage]=useState(0);
   const [queuePage,setQueuePage]=useState(0);
   const sentenceArea=useRef<HTMLDivElement>(null),queueArea=useRef<HTMLDivElement>(null);
-  const cueCapacity=useCapacity(sentenceArea,126,3),queueCapacity=useCapacity(queueArea,88,6);
+  const cueCapacity=useCapacity(sentenceArea,104,3),queueCapacity=useCapacity(queueArea,88,6);
   const [route, setRoute] = useState(() => parseRoute(location.hash));
   const [jobs, setJobs] = useState<Job[]>([]);
   const [job, setJob] = useState<Job | null>(null);
@@ -139,6 +139,7 @@ export default function App() {
         setJobs(list);
         setLoaded(true);
         failures = 0;
+        setPollStopped(false);
         if (selected.current) {
           const pollingId = selected.current;
           const current = await api.job(pollingId, controller.signal);
@@ -151,11 +152,9 @@ export default function App() {
         showError(e);
       }
       if (stopped) return;
-      if (failures >= 5) {
-        setPollStopped(true);
-        return;
-      }
-      timer = setTimeout(poll, document.hidden ? 15000 : 3000);
+      if (failures >= 5) setPollStopped(true);
+      // Sau nhiều lỗi vẫn thử lại chậm; khi máy chủ trở lại, banner tự biến mất.
+      timer = setTimeout(poll, failures >= 5 || document.hidden ? 15000 : 3000);
     }
     void poll();
     return () => {

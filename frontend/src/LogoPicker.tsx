@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { ImagePlus, Trash2, Type } from "lucide-react";
 import { api } from "./api";
 import type { Logo } from "./types";
@@ -59,6 +60,32 @@ export function LogoPicker({
   const file = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
 
+  const [place, setPlace] = useState<CSSProperties | undefined>();
+  useLayoutEffect(() => {
+    const anchor = root.current?.parentElement;
+    if (!anchor) return;
+    const compute = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (vw <= 480) {
+        setPlace(undefined); // bottom sheet defined in CSS
+        return;
+      }
+      const r = anchor.getBoundingClientRect();
+      const width = Math.min(320, vw - 24);
+      const left = Math.min(Math.max(12, r.left), Math.max(12, vw - width - 12));
+      const below = vh - r.bottom - 4 - 16;
+      const above = r.top - 4 - 16;
+      if (below < 280 && above > below) {
+        setPlace({ position: "fixed", left, top: "auto", bottom: vh - r.top + 4, maxHeight: Math.max(120, above) });
+      } else {
+        setPlace({ position: "fixed", left, top: r.bottom + 4, maxHeight: Math.max(120, below) });
+      }
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, []);
   useEffect(() => {
     let live = true;
     api
@@ -122,7 +149,7 @@ export function LogoPicker({
     }, "Không xóa được logo.");
 
   return (
-    <div className="logo-popover" role="dialog" aria-label="Chèn logo" ref={root}>
+    <div className="logo-popover" role="dialog" aria-label="Chèn logo" ref={root} style={place}>
       <div className="logo-pop-head">
         <strong>Chèn logo</strong>
         <button type="button" className="logo-x" aria-label="Đóng" onClick={onClose}>

@@ -81,3 +81,48 @@
 .studio-app .studio-settings-panel { gap: 10px; }
 .studio-app .studio-settings-panel .studio-option:has(small) { align-items: flex-start; }
 .studio-app .studio-settings-panel .studio-option:has(small) > input[type="checkbox"] { margin-top: 1px; }
+
+/* P6 UI audit fixes (U1-U7) */
+/* U2: dong loi dich khong bao gio thap hon noi dung; vung chua cuon noi bo khi thieu cho. */
+.studio-app .sentences{overflow-y:auto;overflow-x:hidden}
+.studio-app .sentence{flex:1 0 auto;min-height:max-content}
+/* U1: trinh phat toi thieu 240px; thanh logo gon mot hang; cot video cuon noi bo neu man hinh thap. */
+@media(min-width:901px){
+ .studio-app .video-column{grid-template-rows:minmax(min-content,1fr) auto;overflow-y:auto;overflow-x:hidden}
+ .studio-app .movie-frame{min-height:240px}
+ .studio-app .region-tools{align-items:center;gap:4px 6px}
+ .studio-app .region-tools .button{min-height:28px;padding:3px 9px;font-size:11px}
+}
+.logo-editor{flex:1 1 340px;min-width:0;flex-wrap:nowrap;gap:4px 8px;padding:0 4px;font-size:11px;white-space:nowrap;overflow-x:auto}
+.logo-editor input[type=range]{width:64px}
+.logo-editor input[type=number]{width:52px;min-height:24px;padding:1px 4px;font-size:11px}
+.logo-editor .logo-default{flex-shrink:0}
+.logo-delete{flex-shrink:0;padding:2px 7px;font-size:11px}
+.logo-editor .region-error{white-space:normal}
+/* U3: popover gioi han trong khung nhin (vi tri do bang JS khi > 480px). */
+.logo-popover{max-height:calc(100dvh - 32px)}
+@media(max-width:480px){
+ .logo-popover{max-height:calc(100dvh - 24px);overflow-y:auto}
+}
+/* U4: tren man hinh hep, cac nut dau trang xuong hang rieng, tieu de giu du chieu rong. */
+@media(max-width:480px){
+ .simple-title:has(.title-actions){flex-wrap:wrap}
+ .simple-title:has(.title-actions) > div:first-child{flex:1 1 100%;min-width:0}
+ .simple-title .title-actions{flex:1 1 100%;justify-content:flex-start;gap:6px}
+ .simple-title .title-actions .button{white-space:nowrap}
+}
+/* U5: nut "Lam moi" khong xuong dong. */
+.simple-title > .button{white-space:nowrap;flex-shrink:0}
+.simple-title > div:first-child{min-width:0}
+/* U6: tab cai dat cuon ngang, co bong mo hai dau lam dau hieu. */
+@media(max-width:720px){
+ .studio-app .studio-settings-nav{display:flex;overflow-x:auto;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;padding-bottom:6px;
+  background:linear-gradient(to right,var(--bg) 30%,#f7f8fc00) left center/28px 100% no-repeat local,
+   linear-gradient(to left,var(--bg) 30%,#f7f8fc00) right center/28px 100% no-repeat local,
+   linear-gradient(to right,#27344920,#27344900) left center/12px 100% no-repeat scroll,
+   linear-gradient(to left,#27344920,#27344900) right center/12px 100% no-repeat scroll}
+ .studio-app .studio-settings-nav .button{flex:0 0 auto;white-space:nowrap;scroll-snap-align:start}
+}
+/* U7: o so trang luon la o chu thuan, khong co nut tang/giam. */
+.studio-pagination .page-jump input{-moz-appearance:textfield;appearance:textfield}
+.studio-pagination .page-jump input::-webkit-inner-spin-button,.studio-pagination .page-jump input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}

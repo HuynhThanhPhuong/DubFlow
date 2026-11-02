@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -137,4 +138,34 @@ it("labels the source of a cue and shows the heard text on mismatch", async () =
   await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.getByText("hình")).toBeTruthy();
   expect(screen.getByText(/Nghe được: 你们好/)).toBeTruthy();
+});
+
+it("clears the paused-updates banner once polling succeeds again", async () => {
+  location.hash = "#queue";
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let jobCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      let response: unknown = [];
+      if (path === "/api/health") response = { status: "ok", queue_backend: "sqlite", capabilities: {}, warnings: [] };
+      else if (path === "/api/settings") response = { output_dir: "D:/Exports", organize_by_collection: true };
+      else if (path === "/api/jobs") {
+        jobCalls++;
+        if (jobCalls <= 5) throw new Error("server down");
+        response = [job];
+      }
+      return new Response(JSON.stringify(response), { status: 200 });
+    }),
+  );
+  try {
+    render(<App />);
+    const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    for (let i = 0; i < 6; i++) await advance(3100);
+    expect(screen.queryByText(/Đã tạm dừng cập nhật tự động/)).not.toBeNull();
+    await advance(15500);
+    expect(screen.queryByText(/Đã tạm dừng cập nhật tự động/)).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });

@@ -309,14 +309,15 @@ export function LogoEditor({
           onKeyDown={enter}
         />
       </label>
-      <label className="logo-default">
+      <label className="logo-default" title="Tự chèn cho video mới">
         <input
           type="checkbox"
+          aria-label="Tự chèn cho video mới"
           checked={isDefault}
           disabled={disabled}
           onChange={(e) => onDefault(e.target.checked)}
         />
-        Tự chèn cho video mới
+        Tự chèn
       </label>
       <button
         type="button"
