@@ -1,5 +1,6 @@
 import random
 import unittest
+from unittest import mock
 
 try:
     import cv2
@@ -86,6 +87,41 @@ class DetectStaticTest(unittest.TestCase):
     def test_too_few_samples(self):
         frames, times = _sequence(n=3)
         self.assertEqual(detect_static(frames, times, 6., [], SCALE), [])
+        # a handful of samples cannot tell a logo from chance: fewer than HITS_MIN present samples are not enough
+        frames, times = _sequence(n=7)
+        self.assertEqual(detect_static(frames, times, 14., [], SCALE), [])
+
+    def _two_shots(self, n=40, logo=False):
+        """A cut drama in miniature: shots A and B alternate; each has its own fixed objects (a face, a bicycle...) at its own
+        place and a different background level, so the objects' edges are present in exactly half of the samples."""
+        rng = np.random.default_rng(5)
+        shots = []
+        for level, spots in ((70, [(80, 60), (200, 120), (250, 40)]), (170, [(60, 130), (150, 50), (270, 100)])):
+            img = np.full((H, W), level, np.uint8)
+            for x, y in spots:
+                cv2.circle(img, (x, y), 12, 255 - level, -1)
+            shots.append(img)
+        frames = []
+        for i in range(n):
+            frame = shots[i % 2].copy()
+            frame = np.clip(frame.astype(np.int16) + rng.integers(-2, 3, (H, W)), 0, 255).astype(np.uint8)
+            if logo:
+                _logo(frame)
+            frames.append(frame)
+        return frames, [2. * i for i in range(n)]
+
+    def test_objects_that_repeat_with_a_shot_are_not_a_logo(self):
+        frames, times = self._two_shots()
+        with mock.patch('dubflow.logo_detect.CORE_PERSISTENCE_MIN', 0.):
+            self.assertGreaterEqual(len(detect_static(frames, times, 80., [], SCALE)), 3)  # only the persistence strength rejects them
+        self.assertEqual(detect_static(frames, times, 80., [], SCALE), [])
+
+    def test_overlay_over_repeating_shots_is_kept_and_the_shot_objects_are_not(self):
+        frames, times = self._two_shots(logo=True)
+        found = detect_static(frames, times, 80., [], SCALE)
+        self.assertEqual(len(found), 1, found)
+        self.assertLess(found[0]['x'], 70)
+        self.assertGreaterEqual(found[0]['presence'], .95)
 
 
 def _frag(i, rng, text, x=100, y=50, w=200, h=40):

@@ -12,6 +12,8 @@ MAX_SAMPLES = 150
 SAMPLE_WIDTH = 640      # sampled frames are downscaled to this width
 EDGE_MIN = 40           # Sobel magnitude
 PERSISTENCE_MIN = .5    # fraction of samples in which a pixel is an edge
+CORE_PERSISTENCE_MIN = .68  # mean edge fraction of a component's pixels over its hit span (chance texture <= .62, logos >= .77)
+HITS_MIN = 8            # samples with the component present: with fewer, chance hits reach .8-1.0 and cannot be told from a logo
 CLOSE_SIZE = 5
 AREA_MIN, AREA_MAX = .0003, .06   # component area as a fraction of the (downscaled) frame
 PAD = 6                 # source px added around the component bbox
@@ -93,6 +95,20 @@ def detect_static(frames, times, duration, exclude, scale):
         own = (x1 - x0) * (y1 - y0)
         if any(_inter((x0, y0, x1, y1), (ex, ey, ex + ew, ey + eh)) > EXCLUDE_OVERLAP * own for ex, ey, ew, eh in exclude):
             continue
+        core = (labels[by:by + bh, bx:bx + bw] == label) & persistent[by:by + bh, bx:bx + bw]
+        if not core.any():
+            continue
+        hit = edges[:, by:by + bh, bx:bx + bw][:, core].mean(1) >= PRESENCE_MIN
+        if not hit.any():
+            continue
+        # Keeping pixels that are edges in >= half of the samples also keeps chance hits in busy footage (faces, hair,
+        # leaves: edge probability ~.4-.5 per sample, so they sit just above the cut, mean ~.52-.62 over the span). An
+        # overlay draws the same edges in nearly every sample it is on screen (.77-.88 measured), so between its first
+        # and last hit the mean must be clearly higher. (Over the span, not the whole clip: a logo shown for only part
+        # of the video is judged while it is there.)
+        hits = np.flatnonzero(hit)
+        if len(hits) < HITS_MIN or float(edges[hits[0]:hits[-1] + 1, by:by + bh, bx:bx + bw][:, core].mean()) < CORE_PERSISTENCE_MIN:
+            continue
         # a still shot has no changing background around the box: the whole frame is "persistent"
         px0, py0, px1, py1 = max(0, bx - pad_s), max(0, by - pad_s), min(w, bx + bw + pad_s), min(h, by + bh + pad_s)
         rx0, ry0, rx1, ry1 = max(0, px0 - ring_s), max(0, py0 - ring_s), min(w, px1 + ring_s), min(h, py1 + ring_s)
@@ -103,13 +119,7 @@ def detect_static(frames, times, duration, exclude, scale):
         values = stack[:, ry0:ry1, rx0:rx1][:, ring].astype(np.float32)
         if float(values.std(0).mean()) < RING_STD_MIN:
             continue
-        core = (labels[by:by + bh, bx:bx + bw] == label) & persistent[by:by + bh, bx:bx + bw]
-        if not core.any():
-            continue
-        hit = edges[:, by:by + bh, bx:bx + bw][:, core].mean(1) >= PRESENCE_MIN
         presence = float(hit.mean())
-        if not hit.any():
-            continue
         box = dict(x=x0, y=y0, width=x1 - x0, height=y1 - y0, presence=round(presence, 3))
         if presence >= FULL_PRESENCE:
             out.append(dict(box, start=0.0, end=round(float(duration), 3)))

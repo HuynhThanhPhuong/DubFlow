@@ -686,7 +686,9 @@ def logos(directory, request):
     from logo_detect import apply_candidates, detect_static, merge_candidates, user_owned
     directory = Path(directory)
     width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
-    frames, times, scale = sample_frames(request['ffmpeg'], request['source'], width, height, duration)
+    # short clips are sampled more densely (>= ~24 samples): with few samples chance edge hits look like a logo
+    frames, times, scale = sample_frames(request['ffmpeg'], request['source'], width, height, duration,
+                                         step=min(2.0, max(.5, duration / 24)))
     if not frames:
         raise RuntimeError(translate_message('Could not read frames for logo detection'))
     track = read(directory/'subtrack.json', {}) or {}
