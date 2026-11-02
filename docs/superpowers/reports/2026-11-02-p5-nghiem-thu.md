@@ -66,3 +66,26 @@ Plan: `docs/superpowers/plans/2026-11-02-p5-giong.md`.
 | TM render | 106 s | 1207 s (encode CPU) |
 | Dub synthesize (VoxCPM2, 88 take) | 60 s | 1432 s |
 | Dub render | 60 s | 2967 s (erase 2857 s do 24 logo nhầm) |
+
+## Sửa lỗi logo (P4) sau nghiệm thu
+- **4638e10 — chỉ xóa ứng viên đã xác nhận.**
+  - Vùng tự dò chưa bấm ✓ chỉ là gợi ý: LaMa và ffmpeg không xóa hay che nó, `static_hash` không tính, và cờ `erased` không bật.
+  - Bấm ✓ thì job hết hạn, nên lần xuất sau mới xóa vùng đó.
+- **0be1122 — bộ dò siết ngưỡng.**
+  - Tần suất nét cạnh trung bình trong khoảng xuất hiện phải ≥ 0.68: logo thật có tần suất 0.77–0.88, vùng nhầm 0.52–0.62.
+  - Cần ít nhất 8 mẫu; clip dưới 48 s lấy mẫu dày hơn (tối thiểu 24 mẫu).
+- **1e613a2 — giao diện.** Khung chưa xác nhận hiện "Gợi ý: …", kèm chú thích "bấm ✓ để xóa khi xuất".
+- **Kiểm chứng:**
+
+  | Video | Trước | Sau | Thời gian dò |
+  |---|---|---|---|
+  | dub2 60 s | 25 khung | 1 khung (logo thật) | 1.9 s |
+  | job48 252 s | — | 1 khung, 0–251.9 s | 7.6 s |
+  | tm dọc | 4 khung nhầm | 0 khung | 3.3 s |
+
+  - Xuất lại dub2 với logo đã ✓: **268.6 s (trước 2967 s)**, ảnh không còn vết xóa nhầm (`tmp/p5/out2_20s.jpg`).
+  - Test: backend 442 OK (51 skipped), OCR 75 OK (7 skipped), frontend 68 pass.
+- **Rủi ro:**
+  - Ngưỡng 0.68 mới khớp trên 3 video.
+  - Logo nằm trên nền sáng có thể bị tính thời điểm kết thúc sớm.
+  - Người dùng phải bấm ✓ thì logo mới bị xóa.
