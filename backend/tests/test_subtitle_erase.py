@@ -443,7 +443,7 @@ class EraseStageTest(unittest.TestCase):
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual(done['version'], 6)
+            self.assertEqual(done['version'], 7)
             self.assertEqual((done['static_hash'], done['static_ids']), ('', []))
             self.assertEqual((done['fill'], done['provider']), ('smooth', None))
             self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
@@ -451,7 +451,7 @@ class EraseStageTest(unittest.TestCase):
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (6, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (7, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile
@@ -519,7 +519,7 @@ class StaticEraseStageTest(unittest.TestCase):
             ff, d = self._erase(tmp, [region])  # no subtitle segments at all: clean.mp4 is still produced
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (6, 'sh', ['logo']))
+            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (7, 'sh', ['logo']))
             self.assertEqual(done['frames_touched'], 0)
             self.assertEqual(done['static_frames'], 25)  # 0.5 s .. 1.5 s at 25 fps
             frames = self._frames(ff, d / 'clean.mp4')
@@ -586,3 +586,141 @@ class StaticEraseStageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class BandEraseStageTest(unittest.TestCase):
+    """The user drew the band: erase only inside it, through the whole window of a line, also on frames the detector misses."""
+    W, H, FPS = 1280, 720, 25
+    BAND = (160, 620, 960, 80)  # x y w h
+
+    def _clip(self, tmp):
+        """Grey picture; the text is white with a dark outline from 0.6 s to 1.8 s, except 1.0-1.2 s where it is dim
+        (no white pixel, no outline: the glyph detector sees nothing). A white blob outside the band stays all the time."""
+        import os, shutil, subprocess, sys
+        ff = os.getenv('DUBFLOW_FFMPEG') or shutil.which('ffmpeg')
+        if not ff:
+            try:
+                from dubflow.config import Settings
+                ff = Settings().ffmpeg
+            except Exception:
+                ff = None
+        if not ff or not (Path(ff).exists() or shutil.which(ff)):
+            self.skipTest('ffmpeg unavailable')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        d = Path(tmp)
+        raw = d / 'raw.bin'
+        with raw.open('wb') as out:
+            for n in range(int(2.5 * self.FPS)):
+                t = n / self.FPS
+                img = np.full((self.H, self.W), 120, np.uint8)
+                cv2.circle(img, (640, 150), 30, 255, -1)  # outside the band
+                if .6 <= t < 1.8:
+                    glyph = np.zeros(img.shape, np.uint8)
+                    cv2.putText(glyph, 'SUB 88', (300, 680), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 255, 3, cv2.LINE_8)
+                    if 1.0 <= t < 1.2:
+                        img[glyph > 0] = 150
+                    else:
+                        img[cv2.dilate(glyph, np.ones((5, 5), np.uint8)) > 0] = 0
+                        img[glyph > 0] = 255
+                out.write(cv2.cvtColor(img, cv2.COLOR_GRAY2BGR).tobytes())
+        src = d / 'source.mp4'
+        subprocess.run([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{self.W}x{self.H}', '-r', str(self.FPS), '-i', str(raw),
+                        '-c:v', 'libx264', '-crf', '10', '-pix_fmt', 'yuv420p', str(src)], check=True)
+        raw.unlink()
+        return ff, src
+
+    def _frames(self, ff, path):
+        import subprocess
+        raw = subprocess.run([ff, '-v', 'error', '-i', str(path), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], check=True, capture_output=True).stdout
+        return np.frombuffer(raw, np.uint8).reshape(-1, self.H, self.W)
+
+    def _erase(self, tmp, lines):
+        import json
+        ff, src = self._clip(tmp)
+        import engine_cli
+        d = Path(tmp)
+        x, y, w, h = self.BAND
+        (d / 'subtrack.json').write_text(json.dumps(dict(version=2, mode='band', box=list(self.BAND), band=[y, y + h], segments=lines)))
+        engine_cli.erase(d, dict(ffmpeg=ff, source=str(src), width=self.W, height=self.H, fps_arg=str(self.FPS), duration=2.5,
+                                 source_hash='h', subtrack_hash='s', source_size=1, source_mtime_ns=2))
+        return ff, src, d
+
+    def test_the_whole_line_is_erased_on_every_frame_of_its_window_and_nothing_else(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            # two readings of the same sentence 0.2 s apart: the windows are bridged, the dim frames in between are erased too
+            ff, src, d = self._erase(tmp, [dict(s=.6, e=1.2, x0=300, y0=630, x1=560, y1=690, text='a'), dict(s=1.4, e=1.8, x0=300, y0=630, x1=560, y1=690, text='b')])
+            done = json.loads((d / 'erase.json').read_text())
+            self.assertEqual((done['version'], done['windows']), (7, 2))
+            before, after = self._frames(ff, src), self._frames(ff, d / 'clean.mp4')
+            text = (slice(630, 700), slice(290, 580))
+            for n in range(int(.6 * self.FPS), int(1.8 * self.FPS)):
+                self.assertLess(int(after[n][text].max()), 150, f'frame {n} (t={n / self.FPS:.2f}) still shows the text')
+            self.assertGreater(int(before[27][text].max()), 140)  # the dim text really was there
+            self.assertGreater(int(before[20][text].max()), 250)
+            for n in (5, 60):  # outside every window the picture is not touched (codec noise only)
+                self.assertLess(float(np.abs(after[n].astype(int) - before[n].astype(int)).mean()), 3, n)
+            blob = (slice(120, 180), slice(610, 670))  # outside the band: never changed, also inside the window
+            self.assertGreater(int(after[20][blob].max()), 240)
+
+    def test_nothing_outside_the_drawn_band_is_touched_inside_a_window(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            ff, src, d = self._erase(tmp, [dict(s=.6, e=1.8, x0=300, y0=630, x1=560, y1=690, text='a')])
+            before, after = self._frames(ff, src), self._frames(ff, d / 'clean.mp4')
+            x, y, w, h = self.BAND
+            outside = np.ones((self.H, self.W), bool)
+            outside[y - 30:y + h + 30, x - 30:x + w + 30] = False  # the band and the context LaMa may look at
+            self.assertLess(float(np.abs(after[20].astype(int) - before[20].astype(int))[outside].mean()), 3)
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class SubbandStageTest(unittest.TestCase):
+    """subband() on a synthetic clip: OCR of the band only, one line per displayed subtitle."""
+    W, H, FPS = 640, 360, 10
+
+    def test_one_segment_per_displayed_line_with_its_first_and_last_frame(self):
+        import json, os, shutil, subprocess, sys, tempfile
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+        except ImportError:
+            self.skipTest('rapidocr unavailable')
+        ff = os.getenv('DUBFLOW_FFMPEG') or shutil.which('ffmpeg')
+        if not ff:
+            try:
+                from dubflow.config import Settings
+                ff = Settings().ffmpeg
+            except Exception:
+                ff = None
+        if not ff or not (Path(ff).exists() or shutil.which(ff)):
+            self.skipTest('ffmpeg unavailable')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+        shows = [(1.0, 3.0, 'HELLO WORLD'), (3.0, 4.6, 'GOOD MORNING')]  # the second line replaces the first at once
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            raw = d / 'raw.bin'
+            with raw.open('wb') as out:
+                for n in range(int(6 * self.FPS)):
+                    t = n / self.FPS
+                    img = np.full((self.H, self.W, 3), 110, np.uint8)
+                    text = next((x for a, b, x in shows if a <= t < b), None)
+                    if text:
+                        cv2.putText(img, text, (150, 330), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 0, 0), 6, cv2.LINE_AA)
+                        cv2.putText(img, text, (150, 330), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 255), 2, cv2.LINE_AA)
+                    out.write(img.tobytes())
+            src = d / 'source.mp4'
+            subprocess.run([ff, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{self.W}x{self.H}', '-r', str(self.FPS), '-i', str(raw),
+                            '-c:v', 'libx264', '-crf', '10', '-pix_fmt', 'yuv420p', str(src)], check=True)
+            engine_cli.subband(d, dict(ffmpeg=ff, source=str(src), width=self.W, height=self.H, duration=6.0, box=[100, 285, 460, 60]))
+            track = json.loads((d / 'subtrack.json').read_text())
+            self.assertEqual((track['version'], track['box']), (2, [100, 285, 460, 60]))
+            lines = track['segments']
+            self.assertEqual([l['text'].replace(' ', '').upper() for l in lines], ['HELLOWORLD', 'GOODMORNING'])
+            for line, (a, b, _) in zip(lines, shows):
+                self.assertLessEqual(abs(line['s'] - a), .3, line)
+                self.assertLessEqual(abs(line['e'] - b), .3, line)
+                self.assertTrue(100 <= line['x0'] < line['x1'] <= 560 and 285 <= line['y0'] < line['y1'] <= 345, line)
+            self.assertLess(track['ocr_reads'], 6 * 5)  # sampled at 2.5 fps plus the frames at the edges, not every frame

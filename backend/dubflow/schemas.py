@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import BaseModel, Field, FiniteFloat, ConfigDict, model_validator
 
 
@@ -138,6 +138,16 @@ class OverlaysIn(BaseModel):
 
 class DetectLogosRequest(BaseModel):
     pass
+
+
+Box = Annotated[list[FiniteFloat], Field(min_length=4, max_length=4)]  # [x, y, width, height] in source-video pixels
+
+
+class AnalysisRegionsIn(BaseModel):
+    no_hard_subs: bool = False
+    subtitle: Box | None = None
+    logos: list[Box] = Field(default_factory=list, max_length=20)
+    screen_text: list[Box] = Field(default_factory=list, max_length=20)
 
 
 class Part(BaseModel):

@@ -1,0 +1,197 @@
+"""One cue per displayed subtitle line: fragment merge, OCR-first source cues with ASR gap fill, continuous erase windows.
+
+The fragments are the real readings of the live job "test2" (1280x720, Chinese hard subs in brackets)."""
+import unittest
+
+from dubflow.subtitle_lines import (build_source_cues_primary, clean_line, compatible, erase_windows, line_key, lines_from_samples,
+                                    merge_fragments, subtitle_lines)
+
+# (start, end, text) of the per-segment OCR readings of test2 that produced duplicate cues
+FRAGMENTS = [
+    (1.0, 1.7, '大泽山我'), (1.7, 2.1, '泽山我'), (2.3, 2.6, '泽山我'),
+    (20.4, 21.0, '[这大泽山上人人皆可学]'), (22.0, 22.3, '[这大泽山上人人皆可学]'),
+    (23.4, 24.3, '个小师叔混不正经]'), (24.3, 24.6, '混不正经门'),
+    (26.4, 26.7, '莫要学他]'), (26.7, 27.0, '要学他门'),
+    (27.4, 27.8, '[千万莫'), (31.6, 32.3, '[荒唐荒唐]'),
+    (40.2, 42.3, '【古晋见过师尊见过两位师兄】'), (45.5, 46.0, '【无论遇到任何事 做任何决定】'), (46.0, 46.8, '[大泽山永远支持你]'),
+]
+SEGMENTS = [dict(s=a, e=b, text=t) for a, b, t in FRAGMENTS]
+
+
+class FragmentMergeTest(unittest.TestCase):
+    def merged(self):
+        return {(r['s'], r['e']): r['text'] for r in merge_fragments(SEGMENTS)}
+
+    def test_the_same_line_read_twice_becomes_one_segment_spanning_first_to_last_frame(self):
+        self.assertEqual(self.merged()[(20.4, 22.3)], '这大泽山上人人皆可学')
+
+    def test_partial_and_misread_fragments_of_a_line_keep_the_most_complete_reading(self):
+        merged = self.merged()
+        self.assertEqual(merged[(23.4, 24.6)], '个小师叔混不正经')  # '混不正经门' is the tail of the same line, the bracket mis-read
+        self.assertEqual(merged[(26.4, 27.0)], '莫要学他')
+        self.assertEqual(merged[(1.0, 2.6)], '大泽山我')  # '泽山我' is contained in it
+
+    def test_distinct_lines_stay_distinct(self):
+        merged = self.merged()
+        for key in ((27.4, 27.8), (31.6, 32.3), (40.2, 42.3), (45.5, 46.0), (46.0, 46.8)):
+            self.assertIn(key, merged)
+        self.assertEqual(len(merged), 9)  # 14 readings -> 9 lines
+
+    def test_brackets_are_not_part_of_the_text(self):
+        self.assertEqual(clean_line('【无论遇到任何事 做任何决定】'), '无论遇到任何事 做任何决定')
+        self.assertEqual(clean_line('[千万莫'), '千万莫')
+        self.assertEqual(line_key('[这大泽山上人人皆可学]'), '这大泽山上人人皆可学')
+
+    def test_compatibility_rules(self):
+        self.assertTrue(compatible('混不正经门', '个小师叔混不正经'))  # one mis-read character
+        self.assertTrue(compatible('泽山我', '大泽山我'))  # contained
+        self.assertFalse(compatible('千万莫', '莫要学他'))
+        self.assertFalse(compatible('好', '你好吗'))  # a single character says nothing
+        self.assertFalse(compatible('', '你好吗'))
+
+    def test_a_gap_longer_than_the_limit_keeps_two_cues(self):
+        rows = merge_fragments([dict(s=0, e=1, text='这大泽山上人人皆可学'), dict(s=3, e=4, text='这大泽山上人人皆可学')])
+        self.assertEqual(len(rows), 2)
+        rows = merge_fragments([dict(s=0, e=1, text='好的'), dict(s=1.7, e=2.4, text='好的')])  # short text: 0.6 s limit
+        self.assertEqual(len(rows), 2)
+
+    def test_boxes_are_united_and_readings_kept(self):
+        rows = merge_fragments([dict(s=0, e=1, text='你好吗朋友', x0=10, y0=5, x1=50, y1=20, readings=['你好吗朋友']),
+                                dict(s=1, e=2, text='你好吗朋友', x0=8, y0=6, x1=60, y1=22, readings=['你好吗朋友'])])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['x0'], rows[0]['y0'], rows[0]['x1'], rows[0]['y1']), (8, 5, 60, 22))
+        self.assertEqual(len(rows[0]['readings']), 2)
+
+
+class SamplesToLinesTest(unittest.TestCase):
+    def test_samples_become_lines_with_edges_half_way_to_the_neighbours(self):
+        samples = [dict(t=t, text=x) for t, x in [(0.0, ''), (.4, ''), (.8, '你好吗朋友'), (1.2, '[你好吗朋友]'), (1.6, ''), (2.0, '再见了朋友们'), (2.4, '')]]
+        lines = subtitle_lines(samples, 10)
+        self.assertEqual([(l['s'], l['e'], l['text']) for l in lines], [(.6, 1.4, '你好吗朋友'), (1.8, 2.2, '再见了朋友们')])
+
+    def test_a_single_missed_read_inside_a_line_does_not_split_it(self):
+        samples = [dict(t=round(t * .4, 1), text='这大泽山上人人皆可学' if t != 3 else '') for t in range(8)]
+        lines = subtitle_lines(samples, 10)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual((lines[0]['s'], lines[0]['e']), (0.0, 3.0))
+
+    def test_typewriter_growth_is_one_line_with_the_full_text(self):
+        texts = ['千万', '千万莫', '千万莫要学', '千万莫要学他']
+        samples = [dict(t=i * .4, text=x) for i, x in enumerate(texts)]
+        lines = subtitle_lines(samples, 10)
+        self.assertEqual([l['text'] for l in lines], ['千万莫要学他'])
+
+    def test_consecutive_different_lines_touch(self):
+        samples = [dict(t=0.0, text='第一句话在这里'), dict(t=.4, text='第一句话在这里'), dict(t=.8, text='完全不同的话')]
+        lines = lines_from_samples(samples, 5)
+        self.assertEqual(len(lines), 2)
+        self.assertAlmostEqual(lines[0]['e'], lines[1]['s'])
+
+    def test_stray_single_characters_are_noise(self):
+        samples = [dict(t=0.0, text='3'), dict(t=.4, text='你好吗朋友'), dict(t=.8, text='+'), dict(t=1.2, text='')]
+        self.assertEqual([l['text'] for l in subtitle_lines(samples, 5)], ['你好吗朋友'])
+
+
+class FlickerTest(unittest.TestCase):
+    def test_short_names_read_differently_on_neighbouring_frames_are_one_line(self):
+        rows = merge_fragments([dict(s=84.5, e=84.7, text='阿晋'), dict(s=84.7, e=84.9, text='阿普'), dict(s=85.1, e=85.3, text='阿音'), dict(s=85.5, e=85.7, text='阿晋')])
+        self.assertEqual([(r['s'], r['e'], r['text']) for r in rows], [(84.5, 85.7, '阿晋')])
+
+    def test_a_garbled_blink_next_to_its_line_is_absorbed_and_two_real_short_lines_are_not(self):
+        rows = merge_fragments([dict(s=65.1, e=66.5, text='叫你阿晋如何'), dict(s=66.5, e=66.7, text='叶你阿音 如何')])
+        self.assertEqual([(r['s'], r['e'], r['text']) for r in rows], [(65.1, 66.7, '叫你阿晋如何')])
+        self.assertEqual(len(merge_fragments([dict(s=1, e=2, text='好吗'), dict(s=2, e=3, text='好的')])), 2)
+
+    def test_latin_blips_are_not_subtitles(self):
+        samples = [dict(t=0, text=''), dict(t=.2, text='DOOO'), dict(t=.4, text=''), dict(t=.6, text='你好吗朋友'), dict(t=1.0, text='你好吗朋友')]
+        self.assertEqual([l['text'] for l in subtitle_lines(samples, 5)], ['你好吗朋友'])
+
+
+class EraseWindowsTest(unittest.TestCase):
+    def gaps(self, wins):
+        return [round(b['s'] - a['e'], 6) for a, b in zip(wins, wins[1:])]
+
+    def test_windows_cover_every_line_padded_and_leave_no_short_gap(self):
+        lines = merge_fragments(SEGMENTS)
+        wins = erase_windows(lines, 245.0)
+        for line, win in zip(lines, wins):
+            self.assertLessEqual(win['s'], line['s'] + 1e-9)
+            self.assertGreaterEqual(win['e'], line['e'] - 1e-9)
+        self.assertTrue(all(g >= .5 or g == 0 for g in self.gaps(wins)), self.gaps(wins))
+        for a, b in zip(wins, wins[1:]):
+            self.assertLessEqual(a['e'], b['s'] + 1e-9)  # never overlapping
+        # the old 10 fps detector left 0.7 s holes inside "[这大泽山...]": the window of that line is one piece
+        inside = [w for w in wins if w['s'] <= 21.5 <= w['e']]
+        self.assertEqual(len(inside), 1)
+
+    def test_small_gaps_are_bridged_and_large_ones_kept(self):
+        wins = erase_windows([dict(s=1.0, e=2.0), dict(s=2.3, e=3.0), dict(s=4.5, e=5.0)], 10)
+        self.assertEqual(self.gaps(wins)[0], 0)  # 0.3 s apart: bridged
+        self.assertGreaterEqual(self.gaps(wins)[1], .5)  # 1.5 s apart: kept (minus the padding)
+        self.assertTrue(2.0 <= wins[0]['e'] <= 2.3)
+
+    def test_windows_stay_inside_the_video(self):
+        wins = erase_windows([dict(s=0.05, e=1.0), dict(s=9.9, e=10.0)], 10.0)
+        self.assertEqual(wins[0]['s'], 0.0)
+        self.assertEqual(wins[-1]['e'], 10.0)
+        self.assertEqual(erase_windows([], 10), [])
+
+
+class PrimarySourceCuesTest(unittest.TestCase):
+    ASR = [dict(id='a1', start=6.0, end=7.0, speaker='s', original='安音我也想活', text=''),
+           dict(id='a2', start=21.0, end=22.0, speaker='s', original='早山上人人皆老学', text=''),
+           dict(id='a3', start=22.6, end=23.4, speaker='s', original='没有你一个小师会不整齐', text=''),
+           dict(id='a4', start=39.07, end=40.2, speaker='s', original='古静见过世尊', text=''),
+           dict(id='a5', start=33.0, end=34.0, speaker='s', original='我忘了她', text='')]
+
+    def cues(self, asr=None, segments=None):
+        lines = segments if segments is not None else merge_fragments(SEGMENTS)
+        return build_source_cues_primary(lines, self.ASR if asr is None else asr, 245.0)
+
+    def test_one_ocr_cue_per_displayed_line(self):
+        ocr = [c for c in self.cues() if c['source'] != 'asr']
+        self.assertEqual(len(ocr), 9)
+        texts = [c['original'] for c in ocr]
+        self.assertEqual(sum('这大泽山上人人皆可学' == t for t in texts), 1)
+        self.assertEqual(sum('混不正经' in t for t in texts), 1)
+
+    def test_asr_only_fills_gaps_and_never_overlaps_ocr(self):
+        cues = self.cues()
+        ocr = [c for c in cues if c['source'] != 'asr']
+        asr = [c for c in cues if c['source'] == 'asr']
+        for a in asr:
+            for o in ocr:
+                self.assertTrue(a['end'] <= o['start'] + 1e-9 or a['start'] >= o['end'] - 1e-9, (a, o))
+        self.assertEqual(sorted(a['id'] for a in asr), ['a1', 'a3', 'a5'])  # speech with nothing on screen (a3: this fixture misses the start of its line)
+        self.assertEqual(cues, sorted(cues, key=lambda c: (c['start'], c['end'])))
+
+    def test_speech_of_a_displayed_line_is_not_added_again(self):
+        ids = [c['id'] for c in self.cues() if c['source'] == 'asr']
+        self.assertNotIn('a2', ids)  # spoken while "[这大泽山...]" is on screen
+        line = dict(s=22.6, e=24.6, text='唯有你一个小师叔混不正经')  # what the 0.4 s sampler sees (the old detector lost its first second)
+        self.assertNotIn('a3', [c['id'] for c in self.cues(segments=[line]) if c['source'] == 'asr'])
+        self.assertNotIn('a4', ids)  # "古晋见过师尊..." appears right after the speech
+
+    def test_asr_is_the_source_without_hard_subs(self):
+        cues = self.cues(segments=[])
+        self.assertEqual([c['id'] for c in cues], ['a1', 'a2', 'a3', 'a5', 'a4'])
+        self.assertEqual(len(cues), 5)
+        self.assertTrue(all(c['source'] == 'asr' for c in cues))
+
+    def test_ocr_cue_carries_the_text_box_and_asr_agreement(self):
+        line = dict(s=6.0, e=7.0, text='安音我也想活', x0=100, y0=670, x1=300, y1=700)
+        cue = self.cues(segments=[line])[0]
+        self.assertEqual(cue['box'], [100, 670, 300, 700])
+        self.assertEqual(cue['source'], 'ocr+asr')
+        self.assertEqual(cue['source_agreement'], 1.0)
+        self.assertEqual(cue['source_ids'], ['a1'])
+
+    def test_short_ocr_lines_are_kept_short_asr_leftovers_are_not(self):
+        asr = [dict(id='x', start=10.0, end=12.0, speaker='s', original='完全不同的另一句话', text='')]
+        line = dict(s=10.2, e=11.7, text='某某某某某某')
+        cues = build_source_cues_primary([line], asr, 30)
+        self.assertEqual([c['id'][:3] for c in cues], ['ocr'])  # leftovers of 0.2 s and 0.3 s are not worth a cue
+
+
+if __name__ == '__main__':
+    unittest.main()

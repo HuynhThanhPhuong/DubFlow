@@ -393,6 +393,13 @@ def ocr(directory, request):
     fps = min(4., max(1., float(request.get('ocr_fps',4))))
     step = 1/fps
     duration = float(request['duration'])
+    # crop_boxes (user-drawn on-screen text areas, x y w h): only those crops are read, the rest of the frame never is
+    crops = []
+    for cb in request.get('crop_boxes') or []:
+        cx,cy,cw,ch = (int(round(float(v))) for v in cb)
+        cx,cy = max(0,min(cx,width-1)),max(0,min(cy,height-1))
+        cw,ch = max(1,min(cw,width-cx)),max(1,min(ch,height-cy))
+        crops.append((cx,cy,cw,ch))
     # A fresh asset directory keeps failed reruns from invalidating older masks.
     assets = Path(tempfile.mkdtemp(prefix='ocr-masks-',dir=directory))
     process = subprocess.Popen([request['ffmpeg'],'-v','error','-i',request['source'],
@@ -431,7 +438,13 @@ def ocr(directory, request):
             if len(raw)!=width*height*3:
                 raise RuntimeError(translate_message('Incomplete OCR frame'))
             image=np.frombuffer(raw,np.uint8).reshape(height,width,3)
-            result,_ = reader(image)
+            if crops:
+                result=[]
+                for cx,cy,cw,ch in crops:
+                    found,_ = reader(np.ascontiguousarray(image[cy:cy+ch,cx:cx+cw]))
+                    result += [([[px+cx,py+cy] for px,py in box],text,score) for box,text,score in found or []]
+            else:
+                result,_ = reader(image)
             now=frame*step; frame+=1
             for box,text,score in result or []:
                 if score<.6 or not text.strip():
@@ -481,7 +494,7 @@ def ocr(directory, request):
     for track in tracks:
         mask=track.pop('_mask')
         # One-sample text is retained: transient source text still needs masking.
-        track['kind']='subtitle' if track['y']>height*.65 else 'transient'
+        track['kind']='subtitle' if track['y']>height*.65 and not crops else 'transient'
         if mask is not None:
             glyphs.append((track,mask))
         out.append(track)
@@ -658,6 +671,91 @@ def subtrack(directory, request):
     write(directory/'subtrack.json', out)
 
 
+def subband(directory, request):
+    """OCR of the user-drawn subtitle band only -> subtrack.json (version 2): one segment per displayed line.
+
+    The band crop is decoded at 2 / step fps (5). Every other frame is read by OCR (every `step` s, default 0.4); the
+    frame in between is read only where the reading changes from one sample to the next (a line appears, disappears
+    or is replaced), which gives the edges a precision of half a step. A band that did not change since the last
+    read is not read again. The readings become lines with subtitle_lines.subtitle_lines (fragments of one line
+    merged, most complete reading kept)."""
+    import cv2
+    import numpy as np
+    import subprocess
+    from rapidocr_onnxruntime import RapidOCR
+    from subtitle_lines import compatible, line_key, subtitle_lines
+    from subtitle_track import order_lines
+    directory = Path(directory)
+    ff, source = request['ffmpeg'], request['source']
+    width, height, duration = int(request['width']), int(request['height']), float(request['duration'])
+    bx, by, bw, bh = (int(round(float(v))) for v in request['box'])
+    bx, by = max(0, min(bx, width - 1)), max(0, min(by, height - 1))
+    bw, bh = max(2, min(bw, width - bx)), max(2, min(bh, height - by))
+    step = max(.2, float(request.get('ocr_step', .4)))
+    fps = 2 / step
+    reader = RapidOCR(det_limit_side_len=736, det_limit_type='max', intra_op_num_threads=int(request.get('ocr_threads', 4)),
+                      inter_op_num_threads=1, det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
+
+    def read_band(image):
+        """(text, (x0, y0, x1, y1) in frame pixels) of the band image; ('', None) when nothing is read."""
+        result, _ = reader(image, use_cls=False)
+        rows = [(min(xs), min(ys), max(xs), max(ys), text.strip())
+                for box, text, score in (result or []) if score >= .6 and text.strip()
+                for xs, ys in [zip(*box)]]
+        if not rows:
+            return '', None
+        box = (max(bx, int(bx + min(r[0] for r in rows))), max(by, int(by + min(r[1] for r in rows))),
+               min(bx + bw, int(bx + max(r[2] for r in rows)) + 1), min(by + bh, int(by + max(r[3] for r in rows)) + 1))
+        return order_lines(rows), box
+
+    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps:.6f},crop={bw}:{bh}:{bx}:{by}',
+                             '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    n_bytes = bw * bh * 3
+    samples, reads = [], 0
+    last_key, last_small, last_read, middle = None, None, ('', None), None
+    try:
+        i = 0
+        while True:
+            raw = proc.stdout.read(n_bytes)
+            if len(raw) < n_bytes:
+                break
+            t = i / fps
+            i += 1
+            if t >= duration:
+                break
+            if i % 50 == 0 and (directory/'cancel.request').exists():
+                raise RuntimeError('cancelled')
+            image = np.frombuffer(raw, np.uint8).reshape(bh, bw, 3)
+            if (i - 1) % 2:  # the frame between two samples: kept, read only when needed
+                middle = (t, image)
+                continue
+            small = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (max(2, bw // 4), max(2, bh // 4)), interpolation=cv2.INTER_AREA).astype(np.int16)
+            if last_small is not None and float(np.abs(small - last_small).mean()) < .8:
+                text, box = last_read  # still picture: the same reading
+            else:
+                text, box = read_band(image)
+                reads += 1
+                last_small, last_read = small, (text, box)
+            key = line_key(text)
+            if last_key is not None and middle is not None and (bool(last_key) != bool(key) or (key and not compatible(last_key, key))):
+                mtext, mbox = read_band(middle[1])
+                reads += 1
+                samples.append(dict(t=middle[0], text=mtext, box=mbox))
+            samples.append(dict(t=t, text=text, box=box))
+            last_key, middle = key, None
+    finally:
+        proc.stdout.close()
+        proc.kill()
+        proc.wait()
+    segments = []
+    for ln in subtitle_lines(samples, duration, step):
+        box = [ln.get('x0', bx), ln.get('y0', by), ln.get('x1', bx + bw), ln.get('y1', by + bh)]
+        segments.append(dict(s=ln['s'], e=ln['e'], x0=int(box[0]), y0=int(box[1]), x1=int(box[2]), y1=int(box[3]),
+                             text=ln['text'], confidence=ln['confidence'], readings=ln['readings'][:12]))
+    write(directory/'subtrack.json', dict(version=2, mode='band', box=[bx, by, bw, bh], band=[by, by + bh], fps=fps, step=step,
+                                          samples=len(samples), ocr_reads=reads, segments=segments))
+
+
 def sample_frames(ffmpeg, source, width, height, duration, target_width=640, step=2.0, limit=150):
     """Sparse grayscale frames downscaled to target_width -> (frames, times, scale)."""
     import numpy as np
@@ -828,6 +926,49 @@ def clean_static_regions(request, width, height):
     return out
 
 
+def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=.3):
+    """Stroke footprint of each erase window inside the user's band -> [bool array (box height, box width) | None].
+
+    Burned-in text does not move while a line is shown, so a pixel that is a glyph pixel in at least `share` of the
+    window's frames belongs to the line on every frame of it. The per-frame detector (white strokes with a dark outline)
+    misses frames on a bright picture; the footprint covers those, which is what made the sub flicker through."""
+    import subprocess
+    import numpy as np
+    from subtitle_erase import glyph_mask
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    acc = [None] * len(windows)
+    count = [0] * len(windows)
+    proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={w}:{h}:{x0}:{y0},format=gray', '-f', 'rawvideo', '-'],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        n, first = 0, 0
+        while True:
+            raw = proc.stdout.read(w * h)
+            if len(raw) < w * h:
+                break
+            if n % 100 == 0 and (Path(directory)/'cancel.request').exists():
+                raise RuntimeError('cancelled')
+            t = n / fps
+            n += 1
+            while first < len(windows) and windows[first]['e'] <= t:
+                first += 1
+            if first >= len(windows):
+                break
+            if windows[first]['s'] > t:
+                continue
+            mask = glyph_mask(np.frombuffer(raw, np.uint8).reshape(h, w), k)
+            if acc[first] is None:
+                acc[first] = np.zeros((h, w), np.uint16)
+            acc[first] += mask
+            count[first] += 1
+    finally:
+        proc.stdout.close()
+        proc.kill()
+        proc.wait()
+    return [None if a is None else a >= max(1, int(np.ceil(share * c))) for a, c in zip(acc, count)]
+
+
 def erase(directory, request):
     """Remove burned-in subtitle glyphs and the enabled static regions (logos, fixed text) from every frame
     -> clean.mp4 (video re-encoded, source audio muxed)."""
@@ -860,7 +1001,19 @@ def erase(directory, request):
     k = max(width, height) / 1920
     grow, frame_dt = int(round(14 * k)), 1 / fps
     margin, min_px = 0.25, max(10, 30 * k * k)
-    band = (track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]) if segs else [0, 0]
+    foot, box_grow = None, grow
+    band_box = track.get('box') if track.get('version') == 2 and segs else None
+    if band_box:
+        # the user drew the band: erase only inside it, and during continuous windows (each line padded, small gaps
+        # bridged) instead of the 10 fps detector's segments, which left holes where a frame was not recognised
+        from subtitle_lines import erase_windows
+        bx, by, bw_, bh_ = (int(v) for v in band_box)
+        bx0, by0, bx1, by1 = max(0, bx), max(0, by), min(width, bx + bw_), min(height, by + bh_)
+        segs = [dict(s=w['s'], e=w['e'], x0=bx0, y0=by0, x1=bx1, y1=by1) for w in erase_windows(segs, float(request['duration']))]
+        margin, box_grow = 0.0, 0
+        band = [by0, by1]
+    else:
+        band = (track.get('band') or [min(s['y0'] for s in segs), max(s['y1'] for s in segs)]) if segs else [0, 0]
     ry0, ry1 = max(0, int(band[0]) - grow - 2), min(height, int(band[1]) + grow + 2)
     out = directory/'clean.tmp.mp4'
     out.unlink(missing_ok=True)
@@ -897,6 +1050,8 @@ def erase(directory, request):
         if scan is not None:
             scan.kill(); scan.stdout.close(); scan.wait()
     seg_index = {id(s): i for i, s in enumerate(segs)}
+    if band_box and segs and bx1 > bx0 and by1 > by0:
+        foot = line_footprints(ff, source, fps_arg, fps, (bx0, by0, bx1, by1), segs, k, directory)
     reader = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg}', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
                               stdout=subprocess.PIPE, stderr=None)
     try:
@@ -937,11 +1092,13 @@ def erase(directory, request):
                 refs = [ref_crop, loaded[1] if want is not None else None]
             done = False
             for s in active:
-                x0, y0, x1, y1 = (max(0, int(s['x0'] - grow)), max(0, int(s['y0'] - grow)),
-                                  min(width, int(s['x1'] + grow)), min(height, int(s['y1'] + grow)))
+                x0, y0, x1, y1 = (max(0, int(s['x0'] - box_grow)), max(0, int(s['y0'] - box_grow)),
+                                  min(width, int(s['x1'] + box_grow)), min(height, int(s['y1'] + box_grow)))
                 if x1 <= x0 or y1 <= y0:
                     continue
                 part = glyph_mask(gray[y0:y1, x0:x1], k)
+                if foot is not None and foot[seg_index[id(s)]] is not None and foot[seg_index[id(s)]].shape == part.shape:
+                    part = part | foot[seg_index[id(s)]]  # the line's whole footprint, also on frames the detector missed
                 # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
                 if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
                     continue
@@ -1011,11 +1168,11 @@ def erase(directory, request):
     lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
                     mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
                     cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
-    write(directory/'erase.json', dict(version=6, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
+    write(directory/'erase.json', dict(version=7, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
-                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3),
+                                       frames_touched=touched, seconds=round(time.monotonic() - started, 3), windows=len(segs) if band_box else None,
                                        static_hash=request.get('static_hash', ''), static_ids=[r['id'] for r in statics],
                                        static_frames=static_frames, static_fills=static_fills,
                                        fills=fills, ref_diff_mean=round(float(np.mean(ref_diffs)), 2) if ref_diffs else None))
@@ -1025,7 +1182,7 @@ def erase(directory, request):
 TAKE_CODE=('decode','snapshot','load_asr','LazyWeights','lazy_weights','read_tensor','cpu_rope_tables','stream_load_state_dict','takes_missing',
            'gen','gen_omni','text_match','token_distance','similarity','pick','_TONES','_Y_ONSET','_canon_token','tokens','apply_pronounce')
 
-STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,erase=erase,logos=logos)  # 'speakers' is added lazily by main
+STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,subband=subband,erase=erase,logos=logos)  # 'speakers' is added lazily by main
 
 
 def main():

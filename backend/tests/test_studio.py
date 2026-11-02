@@ -74,7 +74,11 @@ class StudioTests(unittest.TestCase):
         with patch('dubflow.app.probe',return_value={'duration':1,'width':16,'height':16}),patch('dubflow.app.poster'):
             r=self.client.post('/api/jobs',data={'rights_confirmed':'true'},files={'file':('v.mp4',b'video')})
         self.assertEqual(r.status_code,201,r.text)
-        self.assertEqual(r.json()['status'],'created')
+        self.assertEqual(r.json()['status'],'awaiting_regions')
+        self.assertEqual(r.json()['stage'],'awaiting_regions')
+        self.assertIsNone(r.json()['analysis_regions'])
+        self.assertEqual(self.app.state.store.active_tasks(),[])
+        self.assertEqual(r.json()['activity'][-1]['msg'],'Chọn vùng sub, logo và chữ trên màn hình rồi bấm Phân tích.')
 
     def test_cover_and_collections_survive_restart(self):
         c=self.client.post('/api/collections',json={'name':'Cover'}).json()

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
@@ -18,9 +19,11 @@ import shutil
 if __package__:
     from .messages import translate_message
     from .textcheck import needs_translation, screen_text_noise
+    from . import analysis_regions
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
     from textcheck import needs_translation, screen_text_noise
+    import analysis_regions
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -181,7 +184,21 @@ def stop(process):
         except subprocess.TimeoutExpired:
             process.kill(); process.wait()
 
+LIVE_PROCESSES = set()  # engine / ffmpeg processes this worker waits on, so a server-wide stop can end them at once
+_LIVE_LOCK = threading.Lock()
+
+def kill_children():
+    """Kill every process wait_owned is waiting on (with its own children); -> how many were still running."""
+    with _LIVE_LOCK:
+        procs = list(LIVE_PROCESSES)
+    running = [p for p in procs if p.poll() is None]
+    for p in running:
+        stop(p)
+    return len(running)
+
 def wait_owned(process, directory, poll=None):
+    with _LIVE_LOCK:
+        LIVE_PROCESSES.add(process)
     try:
         while True:
             check_cancel(directory)
@@ -197,6 +214,8 @@ def wait_owned(process, directory, poll=None):
             return code
     finally:
         stop(process)
+        with _LIVE_LOCK:
+            LIVE_PROCESSES.discard(process)
 
 def run(cmd, cwd=None):
     check_cancel(cwd)
@@ -301,7 +320,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             payload[name] = str(value)
     request = directory/'engine-request.json'
     # gen_omni runs in the OmniVoice environment (asr_python, read-only); every other unlisted stage does too.
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','erase','logos') else 'speaker_python' if stage in ('speakers','similarity') else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','subband','erase','logos') else 'speaker_python' if stage in ('speakers','similarity') else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
@@ -317,7 +336,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             last = [time.monotonic()]
             def poll():
                 if emit and time.monotonic()-last[0]>=2:
-                    progress = {'separate':5,'transcribe':20,'subtrack':30,'erase':38,'ocr':35,'logos':36,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
+                    progress = {'separate':5,'transcribe':20,'subtrack':30,'subband':30,'erase':38,'ocr':35,'logos':36,'refs':48}.get(stage,50+int(payload.get('count',4))+(1 if stage=='pick' else 0))
                     emit(stage, f'{stage} running', progress)
                     last[0] = time.monotonic()
             code = wait_owned(process,directory,poll)
@@ -330,6 +349,8 @@ def refine_text_regions(directory, source, meta, settings, emit):
     """Upgrade coarse legacy masks without replacing user translations or opt-outs."""
     existing = read(directory/'regions.json', [])
     marker = read(directory/'ocr-complete.json', {})
+    if marker.get('region_mode'):  # regions came from the user's boxes: nothing to detect or refine
+        return existing
     if (existing and marker.get('mask_version',0)>=2) or not getattr(settings,'ocr_python',None):
         return existing
     if existing and all(not r.get('enabled') or r.get('mask_path') or 'boxes' in r for r in existing):
@@ -362,29 +383,50 @@ def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
     frames = audio[:count*n].reshape(count, n).astype(np.float64)
     return np.sqrt((frames**2).mean(1)), frame
 
-def build_source(directory, source, audio, meta, settings, emit, warnings):
-    """ASR cues + burned-in subtitle OCR -> cues.json and source-build.json."""
+def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=None, key=None):
+    """ASR cues + burned-in subtitle OCR -> cues.json and source-build.json.
+    cfg: the user's analysis regions. With them only the drawn subtitle band is read (one cue per displayed line, ASR
+    fills the time without a line); without them the whole bottom of the frame is searched (jobs from before regions)."""
     if __package__:
         from .subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
+        from .subtitle_lines import build_source_cues_primary
     else:
         from subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
+        from subtitle_lines import build_source_cues_primary
     asr_cues = read(directory/'source-asr-cues.json', [])
-    emit('subtrack', 'Đang đọc sub trên hình', 30)
     ocr_failed = False
-    try:
-        engine('subtrack', directory, settings, {'source':str(source), **meta}, emit=emit)
-    except Cancelled:
-        raise
-    except NeedsReview as exc:
-        ocr_failed = True
-        warnings.append('Chưa đọc được sub trên hình: '+str(translate_message(str(exc))))
-        write(directory/'subtrack.json', dict(version=1, segments=[]))
-    segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
-    emit('subtrack', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
     stats = {}
-    cues = build_source_cues(segments, asr_cues, meta['duration'], stats=stats)
-    if stats.get('ocr_unreadable'):
-        warnings.append(f"Có {stats['ocr_unreadable']} vùng sub không đọc được chữ và không nghe được lời; đã bỏ qua, kiểm tra và thêm câu nếu thiếu.")
+    if cfg is None:
+        emit('subtrack', 'Đang đọc sub trên hình', 30)
+        try:
+            engine('subtrack', directory, settings, {'source':str(source), **meta}, emit=emit)
+        except Cancelled:
+            raise
+        except NeedsReview as exc:
+            ocr_failed = True
+            warnings.append('Chưa đọc được sub trên hình: '+str(translate_message(str(exc))))
+            write(directory/'subtrack.json', dict(version=1, segments=[]))
+        segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
+        emit('subtrack', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
+        cues = build_source_cues(segments, asr_cues, meta['duration'], stats=stats)
+        if stats.get('ocr_unreadable'):
+            warnings.append(f"Có {stats['ocr_unreadable']} vùng sub không đọc được chữ và không nghe được lời; đã bỏ qua, kiểm tra và thêm câu nếu thiếu.")
+    else:
+        if cfg['subtitle']:
+            emit('subband', 'Đang đọc sub trong vùng đã chọn', 30)
+            try:
+                engine('subband', directory, settings, {'source':str(source), 'box':cfg['subtitle'], **meta}, emit=emit)
+            except Cancelled:
+                raise
+            except NeedsReview as exc:
+                ocr_failed = True
+                warnings.append('Chưa đọc được sub trong vùng đã chọn: '+str(translate_message(str(exc))))
+                write(directory/'subtrack.json', dict(version=2, mode='band', box=cfg['subtitle'], segments=[]))
+        else:  # no hard subs: nothing on screen to read or erase, ASR is the source
+            write(directory/'subtrack.json', dict(version=2, mode='none', box=None, segments=[]))
+        segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
+        emit('subband', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
+        cues = build_source_cues_primary(segments, asr_cues, meta['duration'], stats=stats)
     if any(c['source'] == 'asr' for c in cues):
         check_cancel(directory)
         try:
@@ -413,7 +455,8 @@ def build_source(directory, source, audio, meta, settings, emit, warnings):
     write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
-        ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0)))
+        ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0),
+        **(dict(source_key=key, mode='regions', asr_dropped=stats.get('asr_dropped', 0)) if cfg is not None else {})))
 
 def detect_logos(directory, source, meta, settings, emit, warnings=None, force=False):
     """Logo / fixed-text candidates (engine stage `logos`), once per source file unless forced.
@@ -450,7 +493,7 @@ def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
     detect_logos(directory, source, meta, settings, emit, warnings)
     return True
 
-ERASE_VERSION = 6
+ERASE_VERSION = 7
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
 def erases_static(r):
@@ -571,6 +614,58 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings, accept_fa
         return
     warnings.extend((read(stamp, {}) or {}).get('warnings') or [])
 
+def region_rows(directory, source, meta, settings, emit, warnings, cfg):
+    """regions.json for a job with user-drawn regions.
+
+    - screen_text boxes: on-screen text read inside those boxes only (OCR stage with crop_boxes, 2 fps), kept as
+      transient/static regions to translate; read again only when the boxes change.
+    - subtitle: one 'subtitle' row per erase window of the band (text of the line), the fallback mask if erasing fails.
+    - logos: one confirmed static row per drawn box, the whole video, so the eraser removes it.
+    User choices (enabled, translation) of rows that stay the same are kept."""
+    directory = Path(directory)
+    duration = float(meta['duration'])
+    marker = read(directory/'ocr-complete.json', {}) or {}
+    skey = analysis_regions.screen_key(cfg)
+    existing = read(directory/'regions.json', []) or []
+    mine = lambda r: str(r.get('id', '')).startswith(('subline-', 'userlogo-'))
+    if marker.get('region_mode') and marker.get('screen_key') == skey:
+        rows = [r for r in existing if not mine(r)]
+    else:
+        rows = []
+        if cfg['screen_text'] and getattr(settings, 'ocr_python', None):
+            emit('ocr', 'Đang đọc chữ trong các vùng chữ trên màn hình', 35)
+            try:
+                engine('ocr', directory, settings, {'source':str(source), **meta, 'crop_boxes':cfg['screen_text'], 'ocr_fps':2,
+                                                     'regions_output':'screen-text-detections.json'}, emit=emit)
+                rows = read(directory/'screen-text-detections.json', []) or []
+            except Cancelled:
+                raise
+            except NeedsReview as exc:
+                warnings.append('Chưa đọc được chữ trên màn hình: '+str(exc))
+    track = read(directory/'subtrack.json', {}) or {}
+    lines = sorted(track.get('segments') or [], key=lambda x: (x['s'], x['e']))
+    box = track.get('box') if track.get('version') == 2 else None
+    if box and lines:
+        if __package__:
+            from .subtitle_lines import erase_windows
+        else:
+            from subtitle_lines import erase_windows
+        for n, w in enumerate(erase_windows(lines, duration), 1):
+            rows.append(dict(id=f'subline-{n}', kind='subtitle', x=box[0], y=box[1], width=box[2], height=box[3], start=w['s'], end=w['e'],
+                             text=lines[w['line']].get('text', ''), translation='', enabled=True, auto=False, confirmed=True, label=''))
+    old_logos = {r['id']: r for r in existing if str(r.get('id', '')).startswith('userlogo-')}
+    for n, b in enumerate(cfg['logos'], 1):
+        row = dict(id=f'userlogo-{n}', kind='static', x=b[0], y=b[1], width=b[2], height=b[3], start=0.0, end=duration, text='', translation='',
+                   enabled=True, auto=False, confirmed=True, label='Logo')
+        before = old_logos.get(row['id'])
+        if before and all(before.get(k) == row[k] for k in ('x', 'y', 'width', 'height')):
+            row.update({k: before[k] for k in ('enabled', 'label', 'translation') if k in before})
+        rows.append(row)
+    write(directory/'regions.json', rows)
+    write(directory/'ocr-complete.json', dict(mask_version=2, region_mode=True, screen_key=skey, warnings=[]))
+    (directory/'logo-candidates.json').unlink(missing_ok=True)
+
+
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     emit('separating', 'Separating background and original voices', 5)
@@ -585,12 +680,24 @@ def prepare(job_dir, settings, emit):
     transcribe_key = cache_key(dict(stage='transcribe', audio=source_stamp(audio), duration=meta['duration'], language='zh', version=1))
     fresh_transcript = not read(directory/'cues.json', []) or not stage_stamp_current(directory/'transcribe.json', transcribe_key)
     warnings = []
+    cfg = analysis_regions.usable(job.get('analysis_regions'))
     if fresh_transcript:
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
         write(directory/'transcribe.json', dict(key=transcribe_key))
-        build_source(directory, source, audio, meta, settings, emit, warnings)
-    if not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
+        if cfg is None:
+            build_source(directory, source, audio, meta, settings, emit, warnings)
+    if cfg is not None:
+        # the user drew the regions: no search for the subtitle band, logos or screen text
+        key = analysis_regions.source_key(cfg)
+        built = read(directory/'source-build.json', {}) or {}
+        have = read(directory/'cues.json', [])
+        if fresh_transcript or not have or built.get('source_key') != key:
+            if have and not fresh_transcript:  # the band changed: rebuilt from the new reading, the old cues stay recoverable
+                shutil.copy2(directory/'cues.json', directory/f"cues.before-regions-{time.strftime('%Y%m%d-%H%M%S')}.json")
+            build_source(directory, source, audio, meta, settings, emit, warnings, cfg=cfg, key=key)
+        region_rows(directory, source, meta, settings, emit, warnings, cfg)
+    elif not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
         try:
             engine('ocr', directory, settings, {'source':str(source), **meta}, emit=emit)
@@ -603,7 +710,8 @@ def prepare(job_dir, settings, emit):
         write(directory/'ocr-complete.json',read(directory/'ocr-complete.json',{}) | dict(warnings=warnings))
     elif getattr(settings,'blur_original',True):
         refine_text_regions(directory,source,meta,settings,emit)
-    detect_logos(directory, source, meta, settings, emit, warnings)
+    if cfg is None:
+        detect_logos(directory, source, meta, settings, emit, warnings)
     erase_subtitles(directory, source, meta, settings, emit, warnings)  # after the logo candidates, so the first erase already covers them
     cues = read(directory/'cues.json', [])
     speaker_signature=cache_key([{k:c.get(k) for k in ('id','start','end','original')} for c in cues])

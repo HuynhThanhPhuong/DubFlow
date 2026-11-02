@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -26,14 +27,16 @@ from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
 from . import logos as logo_lib
-from .schemas import OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
+from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
+from . import analysis_regions, lifecycle
 from .pipeline import erase_current, erases_static
-from .store import Store
+from .store import Store, push_activity
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
 from .voices import all_voices, check_audio, get_voice, public_voice, voice_ref
 
+AWAITING_REGIONS = 'Chọn vùng sub, logo và chữ trên màn hình rồi bấm Phân tích.'
 BUSY = {'queued', 'processing', 'separating', 'transcribing', 'synthesizing', 'rendering'}
 SAMPLE_FILES = {
     'review': ('Thí nghiệm bí ẩn', 'SaveDouyin_Douyin_Media_7694606242899053859_001_1080p.mp4', 'dub'),
@@ -46,6 +49,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
     store = Store(settings.db_path)
     stop = threading.Event()
     thumbnail_lock = threading.Lock()
+    frame_lock = threading.Lock()
+    idle = lifecycle.IdleMonitor()
     if start_worker:
         tempfile.tempdir = str(settings.data_dir / 'tmp')
 
@@ -56,13 +61,17 @@ def create_app(settings: Settings | None = None, start_worker=True):
             from .worker import worker_loop
             thread = threading.Thread(target=worker_loop, args=(settings, stop), daemon=True, name='dubflow-worker')
             thread.start()
+        if start_worker and os.getenv('DUBFLOW_NO_IDLE_SHUTDOWN') != '1':
+            # no web tab for 30 s: cancel the tasks, end the engine processes, the worker and this server
+            threading.Thread(target=lifecycle.watch, daemon=True, name='dubflow-idle',
+                             args=(idle, stop, lambda: lifecycle.shutdown_server(store, settings.jobs_dir, stop, thread))).start()
         yield
         stop.set()
         if thread:
             thread.join(timeout=3)
 
     app = FastAPI(title='DubFlow Local API', version='0.1.0', lifespan=lifespan)
-    app.state.store, app.state.settings = store, settings
+    app.state.store, app.state.settings, app.state.idle = store, settings, idle
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins), allow_methods=['GET', 'POST', 'PUT', 'DELETE'], allow_headers=['Content-Type', 'Last-Event-ID'])
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', 'testserver'])
 
@@ -133,9 +142,13 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 info['worker_alive'] = info['running_ahead'] or (isinstance(beat.get('time'), (int, float)) and time.time() - beat['time'] < 15)
                 value['queue'] = info
         value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
+        value['analysis_regions'] = job.get('analysis_regions')
         return value
 
     def invalidate(job_id):
+        current = store.get_job(job_id)
+        if current and current.get('status') == 'awaiting_regions':  # nothing analysed yet: the next step is choosing regions
+            return current
         job = store.update_job(job_id, status='awaiting_review', stage='awaiting_review', progress=45, error=None, ready_count=0)
         store.event(job_id, 'awaiting_review', 'Nội dung đã thay đổi. Cần xử lý lại để cập nhật kết quả.', 45)
         return job
@@ -275,6 +288,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         except ValueError:
             pass
         store.event(job['id'], 'created', 'Đã tải video lên máy chủ cục bộ.', 0)
+        # nothing is analysed until the user has drawn the subtitle band (and logos / on-screen text) and pressed Analyze
+        job = store.update_job(job['id'], status='awaiting_regions', stage='awaiting_regions', progress=0, error=None, activity=push_activity(job, AWAITING_REGIONS))
+        save_job_file(job)
+        store.event(job['id'], 'awaiting_regions', AWAITING_REGIONS, 0)
         return public_job(job)
 
     @app.get('/api/jobs/{job_id}')
@@ -607,9 +624,51 @@ def create_app(settings: Settings | None = None, start_worker=True):
         invalidate(job_id)
         return values
 
+    @app.put('/api/jobs/{job_id}/analysis-regions')
+    def put_analysis_regions(job_id: str, body: AnalysisRegionsIn):
+        job = writable(job_id)
+        try:
+            value = analysis_regions.normalize(body.model_dump(), job.get('width'), job.get('height'))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if value != job.get('analysis_regions'):
+            job = store.update_job(job_id, analysis_regions=value)
+            save_job_file(job)
+            if job['status'] == 'done':  # the exported video no longer matches the chosen regions
+                invalidate(job_id)
+        return value
+
+    @app.get('/api/jobs/{job_id}/frame')
+    def job_frame(job_id: str, t: float = 0.0):
+        """One full-resolution JPEG frame of the source video (for drawing regions), cached per 0.1 s."""
+        j = job_or_404(job_id)
+        if not math.isfinite(t) or t < 0:
+            raise HTTPException(422, 'Thời điểm khung hình không hợp lệ.')
+        if not j.get('source_path'):
+            raise HTTPException(404, 'Chưa có video nguồn.')
+        folder = job_dir(job_id)
+        source_path = contained(folder, Path(j['source_path']).name)
+        last = max(0.0, float(j.get('duration') or 0) - .1)
+        tenths = int(math.floor(min(t, last) * 10 + .5))
+        path = folder / 'frames' / f'{tenths}.jpg'
+        with frame_lock:
+            if not path.is_file():
+                path.parent.mkdir(exist_ok=True)
+                dest = path.with_name(f'{tenths}.tmp.jpg')
+                try:
+                    run([settings.ffmpeg, '-v', 'error', '-y', '-ss', f'{tenths / 10:.1f}', '-i', source_path, '-frames:v', '1', '-q:v', '3', dest], 30)
+                except (ValueError, OSError, TimeoutError):
+                    dest.unlink(missing_ok=True)
+                if not dest.is_file():
+                    raise HTTPException(422, 'Không lấy được khung hình video.')
+                dest.replace(path)
+        return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=3600'})
+
     @app.post('/api/jobs/{job_id}/analyze')
     def analyze(job_id: str, reset_source: int = 0):
-        writable(job_id)
+        job = writable(job_id)
+        if analysis_regions.usable(job.get('analysis_regions')) is None:
+            raise HTTPException(409, analysis_regions.NOT_READY)
         if reset_source:
             folder = job_dir(job_id)
             cues = folder / 'cues.json'
@@ -662,6 +721,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = writable(job_id)
         if not job.get('source_path'):
             raise HTTPException(409, 'Chưa có video nguồn.')
+        if analysis_regions.usable(job.get('analysis_regions')) is not None:
+            raise HTTPException(409, 'Logo do bạn tự chọn vùng, không dò tự động nữa. Sửa vùng logo ở bước chọn vùng.')
         request = job_dir(job_id) / 'detect-logos-request.json'
         # where the job was, so the worker can put it back (written only once this call owns the task)
         write_request = lambda: atomic_json(request, {k: job.get(k) for k in ('status', 'stage', 'progress', 'error')})
@@ -722,6 +783,29 @@ def create_app(settings: Settings | None = None, start_worker=True):
         store.event(job_id, 'cancelled', 'Đã yêu cầu dừng. Worker sẽ giải phóng tác vụ hiện tại.', 0)
         return public_job(store.get_job(job_id))
 
+    @app.post('/api/tasks/stop-all')
+    def stop_all():
+        """Cancel every queued and running task, end the engine processes (frees the GPU) and report the counts."""
+        return lifecycle.stop_all_tasks(store, settings.jobs_dir)
+
+    async def tab_id(request: Request):
+        try:
+            body = json.loads((await request.body()).decode('utf-8') or '{}')
+        except (ValueError, UnicodeError):
+            return ''
+        tab = body.get('tab') if isinstance(body, dict) else None
+        return tab[:64] if isinstance(tab, str) else ''
+
+    @app.post('/api/client/heartbeat')
+    async def client_heartbeat(request: Request):
+        idle.heartbeat(await tab_id(request))
+        return dict(ok=True, idle_shutdown=os.getenv('DUBFLOW_NO_IDLE_SHUTDOWN') != '1', timeout=idle.timeout)
+
+    @app.post('/api/client/bye')
+    async def client_bye(request: Request):
+        idle.bye(await tab_id(request))
+        return dict(ok=True)
+
     @app.get('/api/jobs/{job_id}/logs')
     def logs(job_id: str):
         job_or_404(job_id)
@@ -734,6 +818,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
             previous = ''
             idle = 0
             while not await request.is_disconnected():
+                idle.touch('stream:' + job_id)  # an open stream is a live tab even when the browser throttles its timers
                 current = store.get_job(job_id)
                 if not current:
                     return  # job was deleted: end the stream quietly

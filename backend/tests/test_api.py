@@ -207,7 +207,7 @@ class ApiTests(unittest.TestCase):
 
     def _job_with_cues(self, status=None):
         from dubflow.media import atomic_json
-        data = {'title': 'a', 'mode': 'dub', 'duration': 10}
+        data = {'title': 'a', 'mode': 'dub', 'duration': 10, 'analysis_regions': {'no_hard_subs': True, 'subtitle': None, 'logos': [], 'screen_text': []}}
         if status:
             data['status'] = status
         j = self.app.state.store.create_job(data)
