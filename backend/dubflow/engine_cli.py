@@ -2,6 +2,7 @@
 All model resolution is local-only. No web server imports this module's models.
 """
 from __future__ import annotations
+import collections
 import contextlib
 import json
 import os
@@ -959,7 +960,8 @@ def clean_static_regions(request, width, height):
     return out
 
 
-TEXT_BOX_FRAC = .06  # share of the OCR text box covered by detected strokes under which the whole box is erased (good frames: .08-.2)
+QUEUE_MAX = 24  # frames held back while the model batch fills (about 65 MB)
+TEXT_BOX_FRAC = .10  # share of the OCR text box covered by detected strokes under which the whole box is erased (good frames: .12-.2; frames that left residue: .07-.10)
 
 
 def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=.3):
@@ -1011,7 +1013,7 @@ def erase(directory, request):
     import subprocess
     import cv2
     import numpy as np
-    from subtitle_erase import LAMA_REUSE_TOL, STATIC_TOL, erase_frame, glyph_mask, open_lama
+    from subtitle_erase import LAMA_CTX, LAMA_REUSE_TOL, STATIC_TOL, LamaBatch, Pending, erase_frame, glyph_mask, open_lama
     directory = Path(directory)
     started = time.monotonic()  # includes opening the model (CUDA start-up can take seconds)
     lama, lama_warning, provider = None, None, None
@@ -1113,6 +1115,26 @@ def erase(directory, request):
     ref_crop, touched, n, first, fills, ref_diffs = None, 0, 0, 0, {}, []
     box_frames, text_box_frac = 0, float(request.get('erase_text_box_frac', TEXT_BOX_FRAC))
     loaded, style = (None, None), {}
+    lama_ctx = int(round(LAMA_CTX * k))
+    crop_m = lama_ctx + int(round(40 * k)) + 8  # columns around a line: model context + the reference alignment's reach
+    batch = LamaBatch(lama, k) if (lama is not None and band_box) else None
+    queue = collections.deque()  # [frame, pending] in frame order; a frame waits here while its model batch fills
+
+    def resolve():
+        """Run the model for the queued frames, then put each result into its frame."""
+        if batch is None or not len(batch):
+            return
+        for item in batch.flush():
+            pass
+        for entry in queue:
+            if entry[1] is not None:
+                item, (cy0, cy1, cx0, cx1) = entry[1]
+                entry[0][cy0:cy1, cx0:cx1] = item.out
+                entry[1] = None
+
+    def drain():
+        while queue and queue[0][1] is None:
+            writer.stdin.write(np.ascontiguousarray(queue.popleft()[0]).tobytes())
     static_styles, static_groups, static_fills, static_frames = {}, {}, {}, 0
     try:
         while True:
@@ -1131,20 +1153,19 @@ def erase(directory, request):
                     (refs_dir/f'{gone}.npy').unlink(missing_ok=True)
                 first += 1
             active, upcoming = active_segments(segs, first, t, margin)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if active else None
             refs = []
             if active:
                 want = after.get(seg_index[id(max(active, key=lambda s: s['e']))])
                 if want is not None and loaded[0] != want:
                     loaded = (want, np.load(refs_dir/f'{want}.npy'))
                 refs = [ref_crop, loaded[1] if want is not None else None]
-            done = False
+            done, entry_pending = False, None
             for s in active:
                 x0, y0, x1, y1 = (max(0, int(s['x0'] - box_grow)), max(0, int(s['y0'] - box_grow)),
                                   min(width, int(s['x1'] + box_grow)), min(height, int(s['y1'] + box_grow)))
                 if x1 <= x0 or y1 <= y0:
                     continue
-                part = glyph_mask(gray[y0:y1, x0:x1], k)
+                part = glyph_mask(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY), k)
                 if foot is not None and foot[seg_index[id(s)]] is not None and foot[seg_index[id(s)]].shape == part.shape:
                     part = part | foot[seg_index[id(s)]]  # the line's whole footprint, also on frames the detector missed
                 tb = s.get('tb')
@@ -1159,10 +1180,30 @@ def erase(directory, request):
                 # outside [s, e] (detector lag at 10 fps) only touch the frame when glyphs are really there
                 if not (s['s'] - frame_dt <= t < s['e'] + frame_dt) and part.sum() < min_px:
                     continue
-                mask = np.zeros((height, width), bool)
-                mask[y0:y1, x0:x1] = part
-                frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol,
-                                             confine=bool(band_box))
+                if band_box:
+                    # work on the part of the picture that matters: the line's columns with room for the model's context and
+                    # the reference alignment, the band's rows with the model's context rows (3x less to move and blur)
+                    tb = s.get('tb') or (x0, y0, x1, y1)
+                    cx0, cx1 = max(0, tb[0] - crop_m), min(width, tb[2] + crop_m)
+                    cy0, cy1 = max(0, ry0 - lama_ctx), min(height, ry1 + lama_ctx)
+                    mask = np.zeros((cy1 - cy0, cx1 - cx0), bool)
+                    px0, px1 = max(x0, cx0), min(x1, cx1)
+                    if px1 > px0:
+                        mask[y0 - cy0:y1 - cy0, px0 - cx0:px1 - cx0] = part[:, px0 - x0:px1 - x0]
+                    batched = batch is not None and len(active) == 1 and not any(r['start'] - 1e-6 <= t < r['end'] - 1e-6 for r in statics)
+                    res, how, rd = erase_frame(frame[cy0:cy1, cx0:cx1], mask, (x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0),
+                                               [None if r is None else r[:, cx0:cx1] for r in refs], (ry0 - cy0, ry1 - cy0), k,
+                                               static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol, confine=True,
+                                               batch=batch if batched else None)
+                    frame = frame.copy()
+                    if isinstance(res, Pending):
+                        entry_pending = (res, (cy0, cy1, cx0, cx1))
+                    else:
+                        frame[cy0:cy1, cx0:cx1] = res
+                else:
+                    mask = np.zeros((height, width), bool)
+                    mask[y0:y1, x0:x1] = part
+                    frame, how, rd = erase_frame(frame, mask, (x0, y0, x1, y1), refs, (ry0, ry1), k, static_tol=static_tol, style=style, lama=lama, reuse_tol=reuse_tol)
                 fills[how] = fills.get(how, 0) + 1
                 if how in ('ref', 'lamaref'):
                     ref_diffs.append(rd)
@@ -1182,8 +1223,13 @@ def erase(directory, request):
                 # a clean reference must not contain subtitle glyphs (the detector starts late)
                 if band_clean:
                     ref_crop = frame[ry0:ry1].copy()
-            writer.stdin.write(np.ascontiguousarray(frame).tobytes())
+            queue.append([frame, entry_pending])
+            if batch is not None and len(batch) and (batch.ready() or len(queue) >= QUEUE_MAX):
+                resolve()
+            drain()
             n += 1
+        resolve()
+        drain()
         writer.stdin.close()
         if writer.wait() or n == 0:
             raise RuntimeError('erase encoder failed')

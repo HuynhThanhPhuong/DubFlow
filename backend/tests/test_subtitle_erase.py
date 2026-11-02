@@ -9,6 +9,7 @@ except ImportError:  # backend venv has no cv2
 if cv2 is not None:
     from dubflow.subtitle_erase import (LAMA_SIZE, SHADOW_AMAX, SHADOW_TAU, _ring_of, erase_frame, estimate_shadow,
                                         glyph_mask, lama_inpaint, open_lama, shadow_field)
+    from dubflow.subtitle_erase import LamaBatch, LamaJobs, Pending
 
 
 def _bg(h=120, w=360):
@@ -917,3 +918,64 @@ class OddBandEraseStageTest(BandEraseStageTest):
             done = json.loads((d / 'erase.json').read_text())
             self.assertGreater(done['frames_touched'], 20)
             self.assertIn('text_box_frames', done)
+
+
+@unittest.skipUnless(cv2 is not None, "cv2 not available")
+class LamaBatchTest(unittest.TestCase):
+    """Frames that need the model share its canvases: the same pixels as one call per frame, a fraction of the calls."""
+
+    def _line(self, seed=0):
+        img = np.full((140, 400, 3), 150, np.uint8)
+        img[:, :, 0] = (np.arange(400) // 4 + seed) % 200
+        mask = np.zeros((140, 400), bool)
+        mask[50:90, 60:340] = True
+        return img, mask
+
+    def test_jobs_share_canvases_and_give_the_single_call_result(self):
+        fake = _FakeLama()
+        jobs = LamaJobs(fake, .5)
+        pairs = [self._line(s) for s in range(4)]
+        for img, mask in pairs:
+            jobs.add(img, mask)
+        outs = jobs.run()
+        self.assertEqual(len(fake.calls), 1)  # four 88-row tiles in one 512x512 canvas
+        for (img, mask), out in zip(pairs, outs):
+            self.assertTrue(np.array_equal(out, lama_inpaint(_FakeLama(), img, mask, .5)))
+        self.assertFalse(jobs.ready())  # room for one more line
+        jobs.add(*self._line(9))
+        self.assertTrue(jobs.ready())  # now another one would not fit
+
+    def test_batched_erase_frame_matches_the_synchronous_result_including_reuse(self):
+        frames = [_shadowed(_bg())[0] for _ in range(3)]
+        h, w = frames[0].shape[:2]
+        mask = glyph_mask(_gray(frames[0]), 1.0)
+        sync_style, sync = {}, []
+        for f in frames:
+            sync.append(erase_frame(f, mask, (0, 0, w, h), [], (0, h), 1.0, style=sync_style, lama=_FakeLama(), reuse_tol=4.5, confine=True))
+        fake, style = _FakeLama(), {}
+        batch = LamaBatch(fake, 1.0)
+        got = [erase_frame(f, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=fake, reuse_tol=4.5, confine=True, batch=batch) for f in frames]
+        self.assertTrue(all(isinstance(g[0], Pending) for g in got))  # the first needs the model, the others wait for it
+        self.assertEqual([g[1] for g in got], [s[1] for s in sync])
+        self.assertEqual(fake.calls, [])
+        batch.flush()
+        self.assertEqual(len(fake.calls), 1)
+        for g, s in zip(got, sync):
+            self.assertEqual(g[0].how, s[1])
+            self.assertLessEqual(int(np.abs(g[0].out.astype(int) - s[0].astype(int)).max()), 2)
+        self.assertTrue(all(k.item is None for k in style['lama_keys']))  # the stand-in keys now hold the real result
+
+    def test_a_failing_model_gives_the_smooth_fill_for_the_waiting_frames(self):
+        class Boom(_FakeLama):
+            def run(self, *_):
+                raise RuntimeError('cuda lost')
+        frame = _shadowed(_bg())[0]
+        h, w = frame.shape[:2]
+        mask = glyph_mask(_gray(frame), 1.0)
+        batch, style = LamaBatch(Boom(), 1.0), {}
+        item, how, _ = erase_frame(frame, mask, (0, 0, w, h), [], (0, h), 1.0, style=style, lama=batch.session, reuse_tol=0, batch=batch)
+        self.assertEqual(how, 'lama')
+        batch.flush()
+        self.assertEqual(item.how, 'smooth')
+        self.assertEqual(style['lama_failed'], 1)
+        self.assertEqual(int(((item.out == 255).all(axis=2) & mask).sum()), 0)

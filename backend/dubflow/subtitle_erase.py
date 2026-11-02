@@ -249,29 +249,26 @@ def _tile_spans(lo: int, hi: int, limit: int):
     return [(int(round(lo + i * step)), int(round(lo + i * step)) + LAMA_SIZE) for i in range(n)]
 
 
-def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0, feather: float = 1.2) -> np.ndarray:
-    """Inpaint the True pixels of mask (same HxW as img, BGR uint8) with a LaMa ONNX session (fixed 512x512 input).
+class LamaJobs:
+    """Inpaint jobs that run together: the tiles of all jobs are stacked into shared 512x512 canvases.
 
-    The mask bounding box plus context is cut into overlapping bands (<= 512 rows) and, inside a band, overlapping tiles
-    (<= 512 px wide); a band's tiles are stacked into 512x512 canvases at native scale, so one model call normally covers
-    a whole subtitle line. Overlaps are blended. Only masked pixels change (feathered ~1 px); the rest of img is returned
-    untouched."""
-    ys, xs = np.nonzero(mask)
-    if not len(ys):
-        return img
-    H, W = mask.shape
-    ctx = int(round(LAMA_CTX * scale))
-    y_lo, y_hi = max(0, int(ys.min()) - ctx), min(H, int(ys.max()) + 1 + ctx)
-    col_spans = _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W)
-    names = [i.name for i in session.get_inputs()]
-    # everything below works on the rows/columns the tiles cover, not on the whole frame (4x faster than full-frame math)
-    cx0, cx1 = min(a for a, _ in col_spans), max(b for _, b in col_spans)
-    rgb = cv2.cvtColor(np.ascontiguousarray(img[y_lo:y_hi, cx0:cx1]), cv2.COLOR_BGR2RGB)
-    mc = mask[y_lo:y_hi, cx0:cx1]
-    acc = np.zeros(rgb.shape, np.float32)
-    wsum = np.zeros(rgb.shape[:2], np.float32)
+    A job is (img, mask) as in lama_inpaint. The mask bounding box plus context is cut into overlapping bands (<= 512 rows)
+    and, inside a band, overlapping tiles (<= 512 px wide). The model costs the same for every canvas whatever it
+    holds, so tiles (of one job or of consecutive frames) are stacked into a canvas until it is full: a subtitle line
+    is about 100 rows high, four of them fill a canvas. Overlaps are blended; only masked pixels change (feathered ~1 px)."""
 
-    def ramp_weights(a, b, limit):
+    def __init__(self, session, scale: float = 1.0, feather: float = 1.2):
+        self.session, self.scale, self.feather = session, scale, feather
+        self.names = [i.name for i in session.get_inputs()]
+        self.jobs = []
+        self.tiles = []  # (job index, ya, yb, a, b): rows ya:yb and columns a:b of the job's image
+        self._canvases, self._used, self._max_th = 1, 0, 0
+
+    def __len__(self):
+        return len(self.jobs)
+
+    @staticmethod
+    def _ramp(a, b, limit):
         w = np.ones(b - a, np.float32)
         r = min(LAMA_OVERLAP, b - a)
         if a > 0:
@@ -280,40 +277,95 @@ def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0,
             w[-r:] = np.minimum(w[-r:], np.linspace(1, 0.05, r, dtype=np.float32))
         return w
 
-    for ya, yb in _tile_spans(y_lo, y_hi, H):  # bands of <= LAMA_SIZE rows, overlapping when the mask is taller
-        th = yb - ya
-        spans = [s for s in col_spans if mask[ya:yb, s[0]:s[1]].any()]
-        if not spans:
-            continue
-        wy = ramp_weights(ya, yb, H)
-        r0, r1 = ya - y_lo, yb - y_lo
-        per = max(1, LAMA_SIZE // th)  # tiles stacked per canvas
-        for c0 in range(0, len(spans), per):
-            group = spans[c0:c0 + per]
+    def add(self, img: np.ndarray, mask: np.ndarray) -> int:
+        """Queue one job -> its index in the list run() returns."""
+        ys, xs = np.nonzero(mask)
+        job = dict(img=img, mask=mask)
+        self.jobs.append(job)
+        if not len(ys):
+            return len(self.jobs) - 1
+        H, W = mask.shape
+        ctx = int(round(LAMA_CTX * self.scale))
+        y_lo, y_hi = max(0, int(ys.min()) - ctx), min(H, int(ys.max()) + 1 + ctx)
+        col_spans = _tile_spans(int(xs.min()) - ctx, int(xs.max()) + 1 + ctx, W)
+        # everything below works on the rows/columns the tiles cover, not on the whole frame (4x faster than full-frame math)
+        cx0, cx1 = min(a for a, _ in col_spans), max(b for _, b in col_spans)
+        rgb = cv2.cvtColor(np.ascontiguousarray(img[y_lo:y_hi, cx0:cx1]), cv2.COLOR_BGR2RGB)
+        job.update(H=H, W=W, y_lo=y_lo, y_hi=y_hi, cx0=cx0, cx1=cx1, rgb=rgb, mc=mask[y_lo:y_hi, cx0:cx1],
+                   acc=np.zeros(rgb.shape, np.float32), wsum=np.zeros(rgb.shape[:2], np.float32))
+        index = len(self.jobs) - 1
+        for ya, yb in _tile_spans(y_lo, y_hi, H):  # bands of <= LAMA_SIZE rows, overlapping when the mask is taller
+            for a, b in col_spans:
+                if mask[ya:yb, a:b].any():
+                    self.tiles.append((index, ya, yb, a, b))
+                    th = yb - ya
+                    if self._used + th > LAMA_SIZE:
+                        self._canvases, self._used = self._canvases + 1, 0
+                    self._used += th
+                    self._max_th = max(self._max_th, th)
+        return index
+
+    def ready(self) -> bool:
+        """True when another job like the last ones would not fit the canvas in progress (or one canvas is already full)."""
+        return bool(self.tiles) and (self._canvases > 1 or self._used + self._max_th > LAMA_SIZE)
+
+    def run(self) -> list:
+        """Run every queued tile, one model call per canvas -> the inpainted image of each job (same order as add)."""
+        canvases, current, used = [], [], 0
+        for tile in self.tiles:
+            th = tile[2] - tile[1]
+            if used + th > LAMA_SIZE:
+                canvases.append(current)
+                current, used = [], 0
+            current.append((tile, used))
+            used += th
+        if current:
+            canvases.append(current)
+        for group in canvases:
             canvas = np.zeros((LAMA_SIZE, LAMA_SIZE, 3), np.float32)
             cmask = np.zeros((LAMA_SIZE, LAMA_SIZE), np.float32)
-            for j, (a, b) in enumerate(group):
-                canvas[j * th:(j + 1) * th, :b - a] = rgb[r0:r1, a - cx0:b - cx0]
-                cmask[j * th:(j + 1) * th, :b - a] = mc[r0:r1, a - cx0:b - cx0]
-            # pad the unused canvas area with the nearest content so it does not look like a huge black hole edge
-            used = len(group) * th
-            if used < LAMA_SIZE:
+            for (index, ya, yb, a, b), off in group:
+                job = self.jobs[index]
+                r0, r1 = ya - job['y_lo'], yb - job['y_lo']
+                canvas[off:off + r1 - r0, :b - a] = job['rgb'][r0:r1, a - job['cx0']:b - job['cx0']]
+                cmask[off:off + r1 - r0, :b - a] = job['mc'][r0:r1, a - job['cx0']:b - job['cx0']]
+            used = group[-1][1] + group[-1][0][2] - group[-1][0][1]
+            if used < LAMA_SIZE:  # pad the unused canvas area with the nearest content so it does not look like a black hole edge
                 canvas[used:] = canvas[used - 1:used]
-            feeds = {names[0]: (canvas / 255.0).transpose(2, 0, 1)[None].astype(np.float32), names[1]: cmask[None, None]}
-            res = np.asarray(session.run(None, feeds)[0])[0].transpose(1, 2, 0)
-            for j, (a, b) in enumerate(group):
-                w = ramp_weights(a, b, W)[None, :] * wy[:, None]
-                acc[r0:r1, a - cx0:b - cx0] += res[j * th:(j + 1) * th, :b - a] * w[..., None]
-                wsum[r0:r1, a - cx0:b - cx0] += w
-    got = wsum > 0
-    filled = np.where(got[..., None], acc / np.maximum(wsum, 1e-6)[..., None], rgb.astype(np.float32))
-    mf = mc.astype(np.float32)
-    alpha = np.maximum(mf, cv2.GaussianBlur(mf, (0, 0), max(0.8, feather * scale)))
-    alpha = np.minimum(alpha, 1.0) * got
-    patch = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
-    out = img.copy()
-    out[y_lo:y_hi, cx0:cx1] =cv2.cvtColor(np.clip(patch + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-    return out
+            feeds = {self.names[0]: (canvas / 255.0).transpose(2, 0, 1)[None].astype(np.float32), self.names[1]: cmask[None, None]}
+            res = np.asarray(self.session.run(None, feeds)[0])[0].transpose(1, 2, 0)
+            for (index, ya, yb, a, b), off in group:
+                job = self.jobs[index]
+                r0, r1 = ya - job['y_lo'], yb - job['y_lo']
+                w = self._ramp(a, b, job['W'])[None, :] * self._ramp(ya, yb, job['H'])[:, None]
+                job['acc'][r0:r1, a - job['cx0']:b - job['cx0']] += res[off:off + r1 - r0, :b - a] * w[..., None]
+                job['wsum'][r0:r1, a - job['cx0']:b - job['cx0']] += w
+        return [self._compose(job) for job in self.jobs]
+
+    def _compose(self, job):
+        if 'rgb' not in job:  # empty mask
+            return job['img']
+        rgb, mc = job['rgb'], job['mc']
+        got = job['wsum'] > 0
+        filled = np.where(got[..., None], job['acc'] / np.maximum(job['wsum'], 1e-6)[..., None], rgb.astype(np.float32))
+        mf = mc.astype(np.float32)
+        alpha = np.maximum(mf, cv2.GaussianBlur(mf, (0, 0), max(0.8, self.feather * self.scale)))
+        alpha = np.minimum(alpha, 1.0) * got
+        patch = rgb.astype(np.float32) * (1 - alpha[..., None]) + filled * alpha[..., None]
+        out = job['img'].copy()
+        out[job['y_lo']:job['y_hi'], job['cx0']:job['cx1']] = cv2.cvtColor(np.clip(patch + .5, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        return out
+
+
+def lama_inpaint(session, img: np.ndarray, mask: np.ndarray, scale: float = 1.0, feather: float = 1.2) -> np.ndarray:
+    """Inpaint the True pixels of mask (same HxW as img, BGR uint8) with a LaMa ONNX session (fixed 512x512 input).
+
+    The mask bounding box plus context is cut into overlapping bands and tiles that are stacked into 512x512 canvases at
+    native scale (see LamaJobs), so one model call normally covers a whole subtitle line. Only masked pixels change
+    (feathered ~1 px); the rest of img is returned untouched."""
+    jobs = LamaJobs(session, scale, feather)
+    jobs.add(img, mask)
+    return jobs.run()[0]
 
 
 def _paste_ref(fb: np.ndarray, ref: np.ndarray, zone: np.ndarray, scale: float) -> np.ndarray:
@@ -336,9 +388,86 @@ def _paste_ref(fb: np.ndarray, ref: np.ndarray, zone: np.ndarray, scale: float) 
     return np.clip(mixed + .5, 0, 255).astype(np.uint8)
 
 
+class LamaKey:
+    """A recent LaMa-filled band crop kept as a reference. item is the Pending frame whose model result it will be
+    (img then holds that frame's unfilled band, a stand-in good enough to judge the match) until the batch ran."""
+    __slots__ = ('img', 'item')
+
+    def __init__(self, img, item=None):
+        self.img, self.item = img, item
+
+
+class Pending:
+    """An erase_frame result that is not computed yet: how 'lama' waits for the model batch, how 'lamaref' for the result of
+    an earlier pending frame. LamaBatch.flush() fills .out (the whole erased frame) and .how."""
+
+    def __init__(self, how, frame, fb, zone, ring, allow, b0, b1, scale, redo):
+        self.how, self.frame, self.fb, self.zone, self.ring, self.allow = how, frame, fb, zone, ring, allow
+        self.b0, self.b1, self.scale, self.redo = b0, b1, scale, redo
+        self.out, self.diff = None, None
+        self.job, self.rect, self.key = None, None, None
+
+
+class LamaBatch:
+    """Collects the LaMa work of consecutive frames so that their tiles share canvases (LamaJobs), then resolves the frames.
+
+    erase_frame(..., batch=b) returns a Pending instead of a frame when it needs the model or an earlier pending result;
+    the caller keeps frames in order and calls flush() when ready() (or when it must write the frame): every pending frame
+    then has .out. A frame is never reordered; only its computation is postponed."""
+
+    def __init__(self, session, scale: float = 1.0):
+        self.session, self.scale = session, scale
+        self.jobs = LamaJobs(session, scale)
+        self.items = []
+
+    def __len__(self):
+        return len(self.items)
+
+    def ready(self) -> bool:
+        return self.jobs.ready()
+
+    def flush(self) -> list:
+        """Run the model once for all queued frames and finish every pending frame -> the items (now with .out)."""
+        items, self.items = self.items, []
+        jobs, self.jobs = self.jobs, LamaJobs(self.session, self.scale)
+        outs, failed = [], False
+        if len(jobs):
+            try:
+                outs = jobs.run()
+            except Exception:  # noqa: BLE001 - the model failed even after the CPU retry: smooth fill for these frames
+                failed = True
+        for item in items:
+            if item.how == 'lama':
+                if failed or item.job is None:
+                    item.out, item.how, item.diff = item.redo(None)
+                else:
+                    patch = outs[item.job]
+                    ya, yb, xa, xb = item.rect
+                    out, b0, b1 = item.frame.copy(), item.b0, item.b1
+                    out[ya:yb, xa:xb] = patch
+                    if item.allow is not None:  # the model blends ~1 px beyond the hole: keep only the box
+                        out[ya:b0], out[b1:yb] = item.frame[ya:b0], item.frame[b1:yb]
+                        np.copyto(out[b0:b1], item.fb, where=~item.allow[..., None])
+                    item.out = out
+                if item.key is not None:
+                    item.key.img, item.key.item = np.ascontiguousarray(item.out[item.b0:item.b1]), None
+        for item in items:
+            if item.how == 'lamaref':
+                key = item.key
+                warped, diff = align_ref(item.fb, key.img, item.zone, item.ring, good=ALIGN_GOOD)
+                if diff > item.diff + 1.5:  # the real result matches worse than the unfilled stand-in promised: ask the model
+                    item.out, item.how, item.diff = item.redo(self.session)
+                else:
+                    out = item.frame.copy()
+                    patch = _paste_ref(item.fb, warped, item.zone, item.scale)
+                    out[item.b0:item.b1] = patch if item.allow is None else np.where(item.allow[..., None], patch, item.fb)
+                    item.out, item.diff = out, diff
+        return items
+
+
 def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, band: tuple,
                 scale: float = 1.0, static_tol: float = STATIC_TOL, style: dict | None = None, lama=None,
-                reuse_tol: float = LAMA_REUSE_TOL, rigid: bool = False, confine: bool = False):
+                reuse_tol: float = LAMA_REUSE_TOL, rigid: bool = False, confine: bool = False, batch: LamaBatch | None = None):
     """Erase glyphs (mask = glyph_mask output, full-frame, limited to box) and their drop shadow.
 
     refs: band-sized BGR crops (frame[y0b:y1b]). A motion-aligned reference is used when its ring diff <= static_tol
@@ -352,6 +481,8 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
     confine: box is the only area that may change (the user's band / logo box). The stroke growth, shadow zone, feathered
     alpha and the model output are cut to it: every pixel outside box is returned exactly as it was (the rows around the
     mask are still read as context). Without it the repaired zone may reach grow+2 px beyond the box.
+    batch: a LamaBatch (with lama its session): a frame that needs the model, or an earlier pending frame's result, is
+    queued and a Pending is returned in place of the frame (the batch's flush() resolves it); everything else is as usual.
     Returns (out, how, ring_diff) with how in {'none','ref','lamaref','lama','smooth'}."""
     x0, y0, x1, y1 = (int(v) for v in box)
     H, W = frame.shape[:2]
@@ -413,20 +544,50 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
         return out, 'ref', best_diff
     if lama is not None:
         keys = style.setdefault('lama_keys', [])
-        kbest, kdiff = None, None
+        kbest, kdiff, kkey = None, None, None
         for key in (keys if reuse_tol > 0 else []):
-            if key.shape != fb.shape:
+            if key.img.shape != fb.shape or (key.item is not None and batch is None):
                 continue
-            warped, diff = align_ref(fb, key, zone, ring, good=ALIGN_GOOD)
+            warped, diff = align_ref(fb, key.img, zone, ring, good=ALIGN_GOOD)
             if kdiff is None or diff < kdiff:
-                kbest, kdiff = warped, diff
+                kbest, kdiff, kkey = warped, diff, key
             if kdiff <= ALIGN_GOOD:
                 break
+
+        def redo(session, _args=(frame, mask, box, refs, band, scale, static_tol, style)):
+            """The frame again, synchronously: with the model (session) or, when it failed, with the smooth fill."""
+            r = erase_frame(*_args, lama=session, reuse_tol=0, rigid=rigid, confine=confine)
+            if session is None:
+                style['lama_failed'] = style.get('lama_failed', 0) + 1
+            return r
+
         if kbest is not None and kdiff <= reuse_tol:
+            if kkey.item is not None:  # the key is a frame still waiting for the model: finish this one after it
+                item = Pending('lamaref', frame, fb, zone, ring, allow, b0, b1, scale, redo)
+                item.key, item.diff = kkey, kdiff
+                batch.items.append(item)
+                return item, 'lamaref', kdiff
             put(_paste_ref(fb, kbest, zone, scale))
             return out, 'lamaref', kdiff
         # LaMa rebuilds glyphs and the shadow zone from the untouched frame (measured cleaner than dividing the shadow
         # out and inpainting only the strokes, which left grey smudges at object edges)
+        if batch is not None:
+            ys, xs = np.nonzero(zone)
+            ctx = int(round(LAMA_CTX * scale))
+            ya, yb = max(0, b0 + int(ys.min()) - ctx), min(H, b0 + int(ys.max()) + 1 + ctx)
+            xa, xb = max(0, int(xs.min()) - ctx), min(W, int(xs.max()) + 1 + ctx)
+            hole = np.zeros((yb - ya, xb - xa), bool)
+            r0, r1 = max(0, ya - b0), min(b1 - b0, yb - b0)
+            hole[b0 + r0 - ya:b0 + r1 - ya] = zone[r0:r1, xa:xb]
+            item = Pending('lama', frame, fb, zone, ring, allow, b0, b1, scale, redo)
+            item.rect, item.diff = (ya, yb, xa, xb), best_diff
+            item.job = batch.jobs.add(frame[ya:yb, xa:xb], hole)
+            if reuse_tol > 0:
+                item.key = LamaKey(fb, item)
+                keys.append(item.key)
+                del keys[:-LAMA_KEEP]
+            batch.items.append(item)
+            return item, 'lama', best_diff
         hole = np.zeros((H, W), bool)
         hole[b0:b1] = zone
         try:
@@ -441,7 +602,7 @@ def erase_frame(frame: np.ndarray, mask: np.ndarray, box: tuple, refs: list, ban
             else:
                 out = lama_out
             if reuse_tol > 0:
-                keys.append(np.ascontiguousarray(out[b0:b1]))
+                keys.append(LamaKey(np.ascontiguousarray(out[b0:b1])))
                 del keys[:-LAMA_KEEP]
             return out, 'lama', best_diff
     corr = np.clip(fb.astype(np.float32) / (1.0 - a)[..., None] + .5, 0, 255).astype(np.uint8)
