@@ -57,6 +57,15 @@
   flex: 1;
   min-width: 180px;
 }
+/* Toolbar co o nhan (Field): can day de o tim va select thang hang. */
+.studio-toolbar:has(> .studio-field) {
+  align-items: flex-end;
+}
+.studio-page .studio-toolbar > input,
+.studio-page .studio-toolbar > .studio-field > select {
+  height: var(--control-h);
+  min-height: var(--control-h);
+}
 .studio-page input:not([type="checkbox"]):not([type="range"]),
 .studio-page select,
 .studio-page textarea,
@@ -73,14 +82,29 @@
   width: 100%;
   box-sizing: border-box;
 }
-.studio-page input:focus-visible,
-.studio-page select:focus-visible,
-.studio-page textarea:focus-visible,
-.studio-form input:focus-visible,
-.studio-form textarea:focus-visible,
-.studio-form select:focus-visible {
+.studio-page input[type="checkbox"]:focus-visible,
+.studio-page input[type="radio"]:focus-visible,
+.studio-page input[type="range"]:focus-visible,
+.studio-form input[type="checkbox"]:focus-visible,
+.studio-form input[type="radio"]:focus-visible {
   outline: 2px solid var(--blue, #4e5cdb);
   outline-offset: 2px;
+}
+.studio-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+.studio-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+.studio-page select:focus,
+.studio-page select:focus-visible,
+.studio-page textarea:focus,
+.studio-page textarea:focus-visible,
+.studio-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+.studio-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+.studio-form select:focus,
+.studio-form select:focus-visible,
+.studio-form textarea:focus,
+.studio-form textarea:focus-visible {
+  outline: none;
+  border-color: #b8c2d6;
+  box-shadow: 0 0 0 2px rgba(120, 135, 165, 0.12);
 }
 .studio-field {
   display: grid;

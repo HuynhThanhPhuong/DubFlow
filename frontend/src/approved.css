@@ -124,7 +124,7 @@
  .studio-app .studio-settings-nav .button{flex:0 0 auto;white-space:nowrap;scroll-snap-align:start}
 }
 /* U7: o so trang luon la o chu thuan, khong co nut tang/giam. */
-.studio-pagination .page-jump{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.studio-pagination .page-jump input{-moz-appearance:textfield;appearance:textfield;width:44px;min-width:0;height:28px;min-height:28px;padding:0 4px;text-align:center;font-size:11px;box-sizing:border-box}
+.studio-pagination .page-jump{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.studio-pagination .page-jump input:not([type="checkbox"]):not([type="range"]){-moz-appearance:textfield;appearance:textfield;width:44px;min-width:0;height:28px;min-height:28px;padding:0 4px;text-align:center;font-size:11px;box-sizing:border-box;border:1px solid #dfe5f2;border-radius:5px}
 .studio-pagination .page-jump input::-webkit-inner-spin-button,.studio-pagination .page-jump input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 
 /* P6 fix round 1: header gon (~110px) de nhuong chieu cao cho trinh phat. */

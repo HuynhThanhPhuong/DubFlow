@@ -46,11 +46,22 @@ select {
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible,
-summary:focus-visible {
+summary:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible,
+input[type="range"]:focus-visible {
   outline: 2px solid var(--accent);
+}
+/* Input chu, select, textarea: khong outline, chi doi vien xam nhat va bong mo nhe. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus,
+select:focus-visible {
+  outline: none;
+  border-color: #b8c2d6;
+  box-shadow: 0 0 0 2px rgba(120, 135, 165, 0.12);
 }
 button,
 a,
@@ -425,7 +436,9 @@ h2 {
 }
 .line-copy textarea:focus {
   background: #fff;
-  border-color: var(--accent);
+  border-color: #b8c2d6;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(120, 135, 165, 0.12);
   padding: 4px 7px;
 }
 .script-footer {
@@ -1222,6 +1235,7 @@ label:has(> input[type="radio"]), label:has(> input[type="checkbox"]) { flex-dir
 .simple-player:fullscreen { overflow: hidden; }
 @media(max-width:480px) {
  :root { --control-h: 36px; }
- .studio-pagination .page-jump input, .studio-pagination button { height: 32px; min-height: 32px; }
+ .studio-pagination button { height: 32px; min-height: 32px; }
+ .studio-pagination .page-jump input[aria-label="Trang"]:not([type="checkbox"]):not([type="range"]) { height: 32px; min-height: 32px; }
  .button, .mode-line button { min-height: 36px; }
 }
