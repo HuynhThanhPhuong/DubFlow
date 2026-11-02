@@ -63,6 +63,24 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([f['cue_ids'] for f in flags],[['e']]); self.assertEqual(flags[0]['severity'],'review')
         self.assertEqual(flags[0]['message'],'Không đọc được chữ trên hình; lời gốc tạm lấy từ lời nghe được.')
 
+    def test_ocr_flicker_is_a_review_hint_and_real_screen_text_still_blocks(self):
+        def region(rid,text,start,end,**extra):
+            return dict(dict(id=rid,kind='transient',enabled=True,text=text,translation='',start=start,end=end),**extra)
+        def untranslated(regions):
+            write(self.folder/'regions.json',regions)
+            report=review.quality_report(self.folder,self.job)
+            return {f['message'].split()[3]:f['severity'] for f in report['flags'] if f['code']=='SCREEN_TEXT_UNTRANSLATED'},report
+        found,report=untranslated([region('a','可',1,1.25),region('b','可电',3,3.25)])
+        self.assertEqual(found,{'a':'review','b':'review'})
+        self.assertTrue(report['draft_allowed'])  # automatic export is not blocked by flicker
+        self.assertFalse(report['final_allowed'])  # but a reviewer has to look at it before sign-off
+        # three or more characters, half a second or longer, or a caption cut into touching slices are real text
+        found,report=untranslated([region('a','细心的',1,1.25),region('b','茶',3,3.5),region('c','水',5,5.25),region('d','水',5.25,5.5),region('e','心',7,7.25,enabled=False)])
+        self.assertEqual(found,{'a':'error','b':'error','c':'error','d':'error'})
+        self.assertFalse(report['draft_allowed'])
+        found,_=untranslated([region('a','可',1,1.25,translation='Được')])
+        self.assertEqual(found,{})
+
     def test_snapshot_is_immutable_and_ocr_does_not_replace_asr(self):
         state = review.load_state(self.folder)
         self.assertEqual(state['source_cues'][0]['original'], '有她在')

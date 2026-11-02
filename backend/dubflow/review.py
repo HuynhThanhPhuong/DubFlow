@@ -11,11 +11,11 @@ _SAVE_LOCK=threading.RLock()
 if __package__:
     from .pipeline import read, write, cache_key, file_hash
     from .subtitle_style import overflows
-    from .textcheck import needs_translation
+    from .textcheck import needs_translation, screen_text_noise
 else:
     from pipeline import read, write, cache_key, file_hash
     from subtitle_style import overflows
-    from textcheck import needs_translation
+    from textcheck import needs_translation, screen_text_noise
 
 STATE_FIELDS = ('characters', 'assignments', 'address_rules', 'scene_context', 'omissions')
 VOLATILE = {'status','asr_edits','take_url','take_path','path','delay','overrun'}
@@ -221,7 +221,10 @@ def quality_report(folder, job, state=None):
             flag('ASR_OCR_CONFLICT',[c['id']], 'ASR và OCR có khác biệt; kiểm cả âm thanh và chữ, không tự chọn nguồn.')
     for r in regions:
         if r.get('enabled') and r.get('kind')=='transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip():
-            flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} chưa có bản dịch.",'error')
+            if screen_text_noise(r,regions):  # an OCR flicker is a hint for the reviewer, never a block
+                flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} rất ngắn (dưới nửa giây, tối đa 2 ký tự), có thể là nhiễu OCR; kiểm tra rồi bỏ qua hoặc dịch.")
+            else:
+                flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} chưa có bản dịch.",'error')
     technical=not any(f['severity']=='error' for f in flags)
     unresolved=[f for f in flags if f['severity']=='review' and not f['resolved']]
     approval=state.get('approval') or {}
