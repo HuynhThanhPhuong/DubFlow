@@ -48,10 +48,28 @@ def file_hash(path):
             h.update(chunk)
     return h.hexdigest()
 
+_TONES = {'̀': '1', '́': '2', '̃': '3', '̉': '4', '̣': '5'}
+_Y_ONSET = re.compile(r'(ngh|ng|gh|kh|ph|th|tr|ch|nh|[bcdđghklmnpqrstvx])y')
+
+def _canon_token(tok):
+    """Tone-placement and i/y spelling variants compare equal; tones still differ."""
+    marks = ''
+    base = []
+    for ch in unicodedata.normalize('NFD', tok):
+        if ch in _TONES:
+            marks += _TONES[ch]
+        else:
+            base.append(ch)
+    base = unicodedata.normalize('NFC', ''.join(base))
+    m = _Y_ONSET.fullmatch(base)
+    if m:
+        base = m.group(1) + 'i'
+    return base + marks
+
 def tokens(text):
     text = unicodedata.normalize('NFC', text).lower()
     text = re.sub(r'\bvi[\s-]+rút\b', 'virus', text)
-    return re.findall(r'\w+', text)
+    return [_canon_token(t) for t in re.findall(r'\w+', text)]
 
 
 def reference_spans(cues, speaker):

@@ -41,6 +41,13 @@ class PipelineTests(unittest.TestCase):
         self.assertNotEqual(p.tokens('Tiểu Mỹ'),p.tokens('Tiểu My'))
         self.assertNotEqual(p.tokens('má'),p.tokens('ma'))
 
+    def test_spelling_variants_compare_equal(self):
+        for a,b in (('kĩ','kỹ'),('kỉ niệm','kỷ niệm'),('hoà','hòa'),('thuý','thúy'),('lí','lý'),('quả','qủa')):
+            self.assertEqual(p.tokens(a),p.tokens(b),(a,b))
+        for w in ('quy','hay','tay','suy','ây','khuya','yêu','y'):
+            self.assertEqual(p.tokens(w),[w])
+        self.assertNotEqual(p.tokens('kỉ'),p.tokens('kí'))
+
     def test_cache_parameters(self):
         args=dict(text='xin chào',model='m',reference='h',reference_text='ref',prompt='p',seed=1,steps=10,cfg=2.)
         for key in args:
