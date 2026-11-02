@@ -194,13 +194,20 @@ export function RegionOverlay({
             >
               <span
                 className={`region-label${d.top - rect.top < 16 ? " inside" : ""}`}
+                title={
+                  pending
+                    ? "Máy tự dò, chưa xóa. Bấm ✓ để xóa khi xuất, ✗ để bỏ."
+                    : undefined
+                }
                 onPointerDown={(e) => {
                   if (drawing) return;
                   e.stopPropagation();
                   setSelected(r.id);
                 }}
               >
-                {r.label || "Vùng che"}
+                {pending
+                  ? `Gợi ý: ${r.label || "Vùng che"}`
+                  : r.label || "Vùng che"}
               </span>
               {isSel &&
                 !drawing &&
@@ -226,7 +233,8 @@ export function RegionOverlay({
                     type="button"
                     className="region-btn ok"
                     disabled={disabled}
-                    aria-label={`Giữ vùng ${r.label || "che"}`}
+                    aria-label={`Xóa vùng ${r.label || "che"} khi xuất`}
+                    title={`Xóa vùng ${r.label || "che"} khi xuất`}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() =>
                       patch(r.id, { enabled: true, confirmed: true })
@@ -239,6 +247,7 @@ export function RegionOverlay({
                     className="region-btn no"
                     disabled={disabled}
                     aria-label={`Bỏ vùng ${r.label || "che"}`}
+                    title="Bỏ gợi ý này"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => {
                       patch(r.id, { enabled: false, confirmed: true });

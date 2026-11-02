@@ -69,19 +69,30 @@ describe("RegionOverlay", () => {
   it("rejects an auto candidate with the cross button", () => {
     const onChange = vi.fn();
     render(<RegionOverlay {...props} regions={[auto]} onChange={onChange} />);
-    expect(screen.getByText("Logo")).toBeTruthy();
+    expect(screen.getByText("Gợi ý: Logo")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Bỏ vùng/ }));
     expect(onChange).toHaveBeenCalledWith([{ ...auto, enabled: false, confirmed: true }]);
   });
   it("confirms an auto candidate with the tick button", () => {
     const onChange = vi.fn();
     render(<RegionOverlay {...props} regions={[auto]} onChange={onChange} />);
-    fireEvent.click(screen.getByRole("button", { name: /Giữ vùng/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Xóa vùng/ }));
     expect(onChange).toHaveBeenCalledWith([{ ...auto, enabled: true, confirmed: true }]);
+  });
+  it("marks pending labels as suggestions with a tooltip, but not confirmed ones", () => {
+    const { unmount } = render(<RegionOverlay {...props} regions={[auto]} onChange={vi.fn()} />);
+    const label = screen.getByText("Gợi ý: Logo");
+    expect(label.title).toBe("Máy tự dò, chưa xóa. Bấm ✓ để xóa khi xuất, ✗ để bỏ.");
+    expect(screen.getByRole("button", { name: "Xóa vùng Logo khi xuất" }).title).toBe("Xóa vùng Logo khi xuất");
+    expect(screen.getByRole("button", { name: "Bỏ vùng Logo" }).title).toBe("Bỏ gợi ý này");
+    unmount();
+    render(<RegionOverlay {...props} currentTime={2} regions={[{ ...auto, auto: false, confirmed: true }]} onChange={vi.fn()} />);
+    expect(screen.getByText("Logo").title).toBe("");
+    expect(screen.queryByText(/Gợi ý/)).toBeNull();
   });
   it("hides rejected regions", () => {
     render(<RegionOverlay {...props} regions={[{ ...auto, enabled: false, confirmed: true }]} onChange={vi.fn()} />);
-    expect(screen.queryByText("Logo")).toBeNull();
+    expect(screen.queryByText("Gợi ý: Logo")).toBeNull();
   });
   it("draws a new region in source pixels covering the whole video time", () => {
     const onChange = vi.fn();
@@ -125,15 +136,15 @@ describe("RegionOverlay review fixes", () => {
   it("filters boxes by current time, keeping pending candidates when paused", () => {
     const { rerender } = render(<RegionOverlay {...props} currentTime={9} regions={[confirmed, auto]} onChange={vi.fn()} />);
     expect(screen.queryByText("Tay")).toBeNull();
-    expect(screen.getByText("Logo")).toBeTruthy();
+    expect(screen.getByText("Gợi ý: Logo")).toBeTruthy();
     rerender(<RegionOverlay {...props} currentTime={9} playing regions={[confirmed, auto]} onChange={vi.fn()} />);
-    expect(screen.queryByText("Logo")).toBeNull();
+    expect(screen.queryByText("Gợi ý: Logo")).toBeNull();
     rerender(<RegionOverlay {...props} currentTime={2} playing regions={[confirmed]} onChange={vi.fn()} />);
     expect(screen.getByText("Tay")).toBeTruthy();
   });
   it("clears the selection when the selected box is rejected", () => {
     render(<Harness {...props} regions={[auto]} onChange={vi.fn()} />);
-    fireEvent.pointerDown(screen.getByText("Logo"));
+    fireEvent.pointerDown(screen.getByText("Gợi ý: Logo"));
     expect(screen.getByText("Từ (s)")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Bỏ vùng/ }));
     expect(screen.queryByText("Từ (s)")).toBeNull();
@@ -141,7 +152,7 @@ describe("RegionOverlay review fixes", () => {
   it("renders the action buttons outside a small box, flipping above in the lower frame", () => {
     const small = { ...auto, x: 100, y: 100, width: 40, height: 20 };
     const { rerender } = render(<RegionOverlay {...props} regions={[small]} onChange={vi.fn()} />);
-    const btn = () => screen.getByRole("button", { name: /Giữ vùng/ }).parentElement as HTMLElement;
+    const btn = () => screen.getByRole("button", { name: /Xóa vùng/ }).parentElement as HTMLElement;
     const box = screen.getByTestId("region-box-a1");
     expect(box.contains(btn())).toBe(false);
     // box bottom at display y = 60 + 120*0.5 = 120; actions top = 123 (below)
@@ -160,7 +171,7 @@ describe("RegionOverlay review fixes", () => {
   it("resizes by a corner handle and clamps to the frame", () => {
     const onChange = vi.fn();
     render(<Harness {...props} currentTime={2} regions={[auto]} onChange={onChange} />);
-    fireEvent.pointerDown(screen.getByText("Logo"));
+    fireEvent.pointerDown(screen.getByText("Gợi ý: Logo"));
     const se = screen.getByTestId("handle-se");
     fireEvent.pointerDown(se, { clientX: 0, clientY: 0, pointerId: 1 });
     fireEvent.pointerMove(se, { clientX: 5000, clientY: 5000, pointerId: 1 });
@@ -187,9 +198,9 @@ describe("RegionOverlay review fixes", () => {
 describe("RegionOverlay busy", () => {
   it("disables tick and cross and hides handles and drawing while busy", () => {
     render(<RegionOverlay {...props} disabled regions={[auto]} onChange={vi.fn()} />);
-    expect((screen.getByRole("button", { name: /Giữ vùng/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Xóa vùng/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: /Bỏ vùng/ }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.pointerDown(screen.getByText("Logo"));
+    fireEvent.pointerDown(screen.getByText("Gợi ý: Logo"));
     expect(screen.queryByTestId("handle-se")).toBeNull();
   });
   it("does not draw while busy", () => {
