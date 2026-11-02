@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import WaveSurfer from "wavesurfer.js";
 import type { Cue, Job, Logo, Overlay, Region } from "./types";
-import { api, ApiError, mediaUrl } from "./api";
+import { api, mediaUrl } from "./api";
 import { workspaceApi } from "./workspaceApi";
 import { LogoEditor, LogoOverlay, placeLogo } from "./LogoOverlay";
 import { LogoPicker } from "./LogoPicker";
@@ -25,11 +25,14 @@ export function Player({
   seek,
   draft = false,
   blurOriginal = true,
+  onOpenRegions,
 }: {
   job: Job;
   cues: Cue[];
   onTime: (t: number) => void;
   seek: { time: number; token: number };
+  /** opens the region picker; used instead of auto logo detection for jobs with chosen regions */
+  onOpenRegions?: () => void;
   draft?: boolean;
   blurOriginal?: boolean;
 }) {
@@ -223,9 +226,7 @@ export function Player({
       await api.detectLogos(job.id);
     } catch (e) {
       setError(
-        e instanceof ApiError && e.status === 409
-          ? "Video đang xử lý, hãy thử dò logo lại sau."
-          : e instanceof Error
+        e instanceof Error
             ? e.message
             : "Không dò được logo.",
       );
@@ -433,13 +434,21 @@ export function Player({
         </p>
       )}
       <div className="region-tools" aria-label="Che logo">
-        <Button
-          variant="ghost"
-          disabled={detecting || isBusy(job)}
-          onClick={() => void detectLogos()}
-        >
-          {detecting ? "Đang dò…" : "Dò logo"}
-        </Button>
+        {job.analysis_regions ? (
+          onOpenRegions && (
+            <Button variant="ghost" disabled={isBusy(job)} onClick={onOpenRegions}>
+              Vùng phân tích
+            </Button>
+          )
+        ) : (
+          <Button
+            variant="ghost"
+            disabled={detecting || isBusy(job)}
+            onClick={() => void detectLogos()}
+          >
+            {detecting ? "Đang dò…" : "Dò logo"}
+          </Button>
+        )}
         <Button
           variant="ghost"
           disabled={busy || (!drawing && !(regionDuration > 0))}

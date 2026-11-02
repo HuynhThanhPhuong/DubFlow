@@ -67,7 +67,7 @@ export function JobActivity({ job, notes = [] }: { job: Job; notes?: string[] })
   }, [busy]);
   useEffect(() => setOpen(false), [job.id]);
   const rows = job.activity ?? [];
-  const live = busy ? liveLine(job, now) : null;
+  const live = busy || job.stopping || job.deleting ? liveLine(job, now) : null;
   if (!live && !rows.length && !notes.length) return null;
   const stuck = job.status === "queued" && !!job.queue && !job.queue.worker_alive;
   const ago = busy ? agoText(job.updated_at, now) : "";

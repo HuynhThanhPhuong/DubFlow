@@ -66,6 +66,8 @@ export function formatClock(seconds: number): string {
 
 /** One line telling the user what the worker is doing right now; null when nothing is running. */
 export function liveLine(job: Job, nowMs: number): string | null {
+  if (job.deleting) return "Đang xóa…";
+  if (job.stopping) return "Đang dừng…";
   if (job.status === "queued") {
     const q = job.queue;
     if (!q) return "Đang chờ máy xử lý…";

@@ -16,6 +16,14 @@ import type {
   VoiceScript,
 } from "./types";
 import { vietnameseMessage } from "./messages";
+export interface StopAllResult {
+  cancelled?: number;
+  queued?: number;
+  running?: number;
+  jobs?: string[];
+  processes_killed?: number;
+  processes_failed?: number;
+}
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -127,7 +135,7 @@ export const api = {
     request<unknown>(`/jobs/${key(id)}/analysis-regions`, json("PUT", data)),
   frameUrl: (id: string, t: number) =>
     `/api/jobs/${key(id)}/frame?t=${Number(t.toFixed(2))}`,
-  stopAll: () => request<unknown>("/tasks/stop-all", json("POST")),
+  stopAll: () => request<StopAllResult>("/tasks/stop-all", json("POST")),
   regions: (id: string) => request<Region[]>(`/jobs/${key(id)}/regions`),
   saveRegions: (id: string, data: Region[]) =>
     request<Region[]>(`/jobs/${key(id)}/regions`, json("PUT", data)),

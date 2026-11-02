@@ -34,6 +34,9 @@ export interface AnalysisRegions {
 }
 export interface Job {
   analysis_regions?: AnalysisRegions | null;
+  regions_stale?: boolean;
+  stopping?: boolean;
+  deleting?: boolean;
   collection_id?: string | null;
   collection_name?: string | null;
   episode?: string;

@@ -47,6 +47,10 @@ import {
   SettingsDialog,
   VoiceDialog,
 } from "./Dialogs";
+const REGIONS_STALE = "Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.";
+const subtitleBandChanged = (a: AnalysisRegions | null | undefined, b: AnalysisRegions) =>
+  !!a && (a.no_hard_subs !== b.no_hard_subs || JSON.stringify(a.subtitle ?? null) !== JSON.stringify(b.subtitle ?? null));
+
 export default function App() {
   const [studioSettings,setStudioSettings]=useState<StudioSettings|null>(null);
   const [collections,setCollections]=useState<Collection[]>([]);
@@ -294,6 +298,10 @@ export default function App() {
   }
   async function saveRegions(regions: AnalysisRegions, analyze: boolean) {
     if (!job) return;
+    if (dirty && (analyze || subtitleBandChanged(job.analysis_regions, regions))) {
+      setError("Hãy lưu hoặc bỏ thay đổi lời dịch trước khi phân tích lại.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -322,10 +330,13 @@ export default function App() {
     if (!window.confirm("Dừng mọi tác vụ đang chạy và đang chờ?")) return;
     setBusy(true);
     try {
-      await api.stopAll();
-      setNotice("Đã gửi yêu cầu dừng mọi tác vụ.");
+      const r = await api.stopAll();
+      const n = r?.cancelled ?? (r?.queued ?? 0) + (r?.running ?? 0);
+      setNotice(`Đã dừng ${n} tác vụ`);
       setPollKey((k) => k + 1);
       await refresh();
+      if ((r?.processes_failed ?? 0) > 0)
+        setError(`Có ${r.processes_failed} tiến trình chưa dừng được, hãy thử lại hoặc khởi động lại máy chủ.`);
     } catch (e) {
       showError(e);
     } finally {
@@ -527,7 +538,7 @@ export default function App() {
                 <Button disabled={busy || isBusy(currentJob)} aria-pressed={pickerVisible} onClick={() => { setPickerDismissed(null); setPickerOpen((v) => !v); }}>Vùng phân tích</Button>
                 <Button variant="primary" disabled={busy || isBusy(currentJob) || dirty} onClick={() => void action("analyze")}><Layers size={16}/>Phân tích video</Button>
                 <Button disabled={busy || isBusy(currentJob) || dirty} onClick={() => void resetSource()}>Phân tích lại lời gốc</Button>
-                <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length} onClick={()=>setExportOpen(true)}>Xuất video</Button>
+                <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length||!!currentJob.regions_stale||!!currentJob.deleting} title={currentJob.regions_stale?REGIONS_STALE:undefined} onClick={()=>setExportOpen(true)}>Xuất video</Button>
                 </div>
               </div>
               <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><Button className="icon-danger" title={isBusy(currentJob)?"Video đang xử lý, không thể xóa":"Xóa video vĩnh viễn"} disabled={isBusy(currentJob)} onClick={()=>setDeleteJobId(currentJob.id)}><Trash2 size={15}/>Xóa video</Button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
@@ -596,11 +607,12 @@ export default function App() {
                   </span>
                   <progress max={100} value={currentJob.progress || 0} />
                   <span>{currentJob.progress || 0}%</span>
-                  <Button disabled={busy} onClick={() => void action("cancel")}>
-                    Huỷ
+                  <Button disabled={busy || currentJob.stopping || currentJob.deleting} onClick={() => void action("cancel")}>
+                    {currentJob.stopping ? "Đang dừng…" : "Huỷ"}
                   </Button>
                 </div>
               )}
+              {currentJob.regions_stale && <p role="alert" className="error regions-stale">{REGIONS_STALE}</p>}
               <JobActivity job={currentJob} notes={projectWarnings.map(vietnameseMessage)} />
               <div className="simple-work">
                 <div className="video-column" ref={videoColumn}>
@@ -619,6 +631,7 @@ export default function App() {
                   onTime={setNow}
                   seek={seek}
                   draft={dirty}
+                  onOpenRegions={() => { setPickerDismissed(null); setPickerOpen(true); }}
                   blurOriginal={studioSettings?.blur_original??true}
                 />
               <Timeline
@@ -777,7 +790,7 @@ export default function App() {
                       providerLabel={providerLabels[studioSettings?.translation_provider ?? "gemini"]}
                       ready={health?.capabilities?.automatic_translation === true}
                       disabled={busy || dirty}
-                      canExport={!dirty && cues.length > 0 && !cues.some((c) => !c.original.trim())}
+                      canExport={!dirty && !currentJob.regions_stale && cues.length > 0 && !cues.some((c) => !c.original.trim())}
                       onJob={(j) => { setJob(j); setPollKey((k) => k + 1); }}
                       onCues={(rows) => { setCues(rows); setDirty(false); void refresh(); }}
                       onError={showError}
@@ -897,8 +910,8 @@ export default function App() {
                       <span
                         className={`badge ${["error", "failed", "awaiting_review", "awaiting_regions"].includes(j.status) ? "warn" : ""}`}
                       >
-                        {statusLabels[j.status] || j.status}
-                        {isBusy(j) ? ` · ${j.progress || 0}%` : ""}
+                        {j.deleting ? "Đang xóa…" : j.stopping ? "Đang dừng…" : statusLabels[j.status] || j.status}
+                        {isBusy(j) && !j.stopping && !j.deleting ? ` · ${j.progress || 0}%` : ""}
                       </span>
                       <Button onClick={() => navigate("editor", j.id)}>
                         Mở biên tập
@@ -907,7 +920,7 @@ export default function App() {
                         className="icon-danger"
                         aria-label={`Xóa ${j.title || j.filename}`}
                         title={isBusy(j) ? "Video đang xử lý, không thể xóa" : "Xóa video"}
-                        disabled={isBusy(j)}
+                        disabled={isBusy(j) || j.deleting}
                         onClick={() => setDeleteJobId(j.id)}
                       >
                         <Trash2 size={15} />
@@ -915,7 +928,7 @@ export default function App() {
                       </Button>
                       {isBusy(j) && (
                         <Button
-                          disabled={busy}
+                          disabled={busy || j.stopping || j.deleting}
                           onClick={async () => {
                             setBusy(true);
                             try {
@@ -928,7 +941,7 @@ export default function App() {
                             }
                           }}
                         >
-                          Dừng
+                          {j.stopping ? "Đang dừng…" : "Dừng"}
                         </Button>
                       )}
                     </article>

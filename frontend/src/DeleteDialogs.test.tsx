@@ -24,6 +24,16 @@ describe("JobDeleteDialog", () => {
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("j1"));
     expect(calls).toEqual(["GET /api/jobs/j1/delete-preview", "DELETE /api/jobs/j1?outputs=true"]);
   });
+  it("shows the server 409 message verbatim and stays open", async () => {
+    vi.stubGlobal("fetch", vi.fn((_u: string, init?: RequestInit) => init?.method === "DELETE"
+      ? reply({ detail: "Video đang được dừng, thử lại sau ít giây." }, 409)
+      : reply({ id: "j1", title: "X", busy: false, data_bytes: 0, outputs: [] })));
+    const onClose = vi.fn();
+    render(<JobDeleteDialog jobId="j1" onClose={onClose} onDeleted={() => {}} onError={() => {}} />);
+    fireEvent.click(await screen.findByText("Xóa vĩnh viễn"));
+    expect(await screen.findByText("Video đang được dừng, thử lại sau ít giây.")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
   it("disables when busy", async () => {
     vi.stubGlobal("fetch", vi.fn(() => reply({ id: "j1", title: "X", busy: true, data_bytes: 0, outputs: [] })));
     render(<JobDeleteDialog jobId="j1" onClose={() => {}} onDeleted={() => {}} onError={() => {}} />);
@@ -33,6 +43,14 @@ describe("JobDeleteDialog", () => {
 });
 
 describe("CollectionDeleteDialog", () => {
+  it("shows a partial-failure message verbatim", async () => {
+    vi.stubGlobal("fetch", vi.fn((_u: string, init?: RequestInit) => init?.method === "DELETE"
+      ? reply({ detail: "Đã xóa 1/2 video; còn 1 video không xóa được." }, 409)
+      : reply({ id: "c1", name: "Bộ A", data_bytes: 0, videos: [{ id: "a", title: "V1", busy: false }] })));
+    render(<CollectionDeleteDialog collectionId="c1" onClose={() => {}} onDeleted={() => {}} onError={() => {}} />);
+    fireEvent.click(await screen.findByText(/Xóa bộ sưu tập|Xóa vĩnh viễn/, { selector: "button" }));
+    expect(await screen.findByText("Đã xóa 1/2 video; còn 1 video không xóa được.")).toBeTruthy();
+  });
   const preview = { id: "c1", name: "Bộ A", data_bytes: 2 * 1024 ** 3, videos: [{ id: "a", title: "V1", busy: false }, { id: "b", title: "V2", busy: false }] };
   it("requires acknowledgement for videos=true", async () => {
     const calls: string[] = [];

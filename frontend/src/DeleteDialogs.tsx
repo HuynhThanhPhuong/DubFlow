@@ -37,6 +37,7 @@ export function JobDeleteDialog({ jobId, onClose, onDeleted, onError }: {
   const preview: JobDeletePreview | undefined = usePreview(() => workspaceApi.jobDeletePreview(jobId), onClose, onError);
   const [outputs, setOutputs] = useState(false);
   const [working, setWorking] = useState(false);
+  const [failure, setFailure] = useState("");
   const run = async () => {
     setWorking(true);
     try {
@@ -44,7 +45,7 @@ export function JobDeleteDialog({ jobId, onClose, onDeleted, onError }: {
       onDeleted(jobId);
       onClose();
     } catch (e) {
-      onError(serverError(e));
+      setFailure(serverError(e).message);
       setWorking(false);
     }
   };
@@ -64,6 +65,7 @@ export function JobDeleteDialog({ jobId, onClose, onDeleted, onError }: {
               Xóa cả {count} file đã xuất ({formatBytes(preview.outputs.reduce((s, o) => s + o.bytes, 0))})
             </label>
           )}
+          {failure && <p role="alert" className="error">{failure}</p>}
           <p><strong>Không thể hoàn tác.</strong></p>
           <div className="delete-actions">
             <Button onClick={onClose}>Huỷ</Button>
@@ -86,6 +88,7 @@ export function CollectionDeleteDialog({ collectionId, onClose, onDeleted, onErr
   const [ack, setAck] = useState(false);
   const [outputs, setOutputs] = useState(false);
   const [working, setWorking] = useState(false);
+  const [failure, setFailure] = useState("");
   const run = async () => {
     setWorking(true);
     try {
@@ -93,7 +96,7 @@ export function CollectionDeleteDialog({ collectionId, onClose, onDeleted, onErr
       onDeleted(collectionId, videos);
       onClose();
     } catch (e) {
-      onError(serverError(e));
+      setFailure(serverError(e).message);
       setWorking(false);
     }
   };
@@ -134,6 +137,7 @@ export function CollectionDeleteDialog({ collectionId, onClose, onDeleted, onErr
               </label>
             </>
           )}
+          {failure && <p role="alert" className="error">{failure}</p>}
           <p><strong>Không thể hoàn tác.</strong></p>
           <div className="delete-actions">
             <Button onClick={onClose}>Huỷ</Button>
