@@ -8,7 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dubflow import pipeline as p
-from dubflow.subtitle_mask import refined_regions, mask_filters, refine_legacy_regions
+import re
+
+from dubflow.subtitle_style import ffmpeg_filter_path
+from dubflow.subtitle_mask import refined_regions, mask_filters, refine_legacy_regions, time_segments, windowed_filters
 
 
 def region(**changes):
@@ -149,7 +152,8 @@ class SubtitleMaskTests(unittest.TestCase):
             with patch.object(p,'refine_text_regions',return_value=[r,dict(r,start=1.25,end=1.5)],create=True):
                 p.render(folder,SimpleNamespace(ffmpeg=ff,ffprobe=probe),lambda *a:None)
             command=p.read(folder/'render-command.json')
-            self.assertEqual(command.count(str((folder/'glyph.pgm').resolve())),1)
+            self.assertEqual(command.count(str((folder/'glyph.pgm').resolve())),0)  # read by a movie source in the graph
+            self.assertEqual((folder/'render-filter.txt').read_text().count("movie='"),1)
             self.assertNotIn('-loop',command)
             self.assertGreater((folder/'output.mp4').stat().st_size,1000)
             self.assertEqual(p.read(folder/'render-version.json'),{'version':'transparent-captions-v4'})
@@ -175,6 +179,67 @@ class SubtitleMaskTests(unittest.TestCase):
                         changed.append((x,y))
             self.assertTrue(changed)
             self.assertTrue(all(47<=x<=72 and 30<=y<50 for x,y in changed))
+
+    def test_time_segments_cut_at_region_edges_and_merge_equal_neighbours(self):
+        rows=[region(start=1,end=2),region(start=2,end=3),region(start=0,end=10),region(start=5,end=10)]
+        self.assertEqual(time_segments(rows,10),[(0.,1.,(2,)),(1.,2.,(0,2)),(2.,3.,(1,2)),(3.,5.,(2,)),(5.,None,(2,3))])
+        self.assertEqual(time_segments([],10),[(0.,None,())])
+        self.assertEqual(time_segments([region(start=0,end=10)],10),[(0.,None,(0,))])
+
+    def test_windowed_graph_runs_each_region_only_inside_its_window(self):
+        rows=[region(start=0,end=10),region(start=2,end=2.5,x=30),region(start=7,end=8,x=40)]
+        graph,last=windowed_filters(rows,'0:v',10,(120,90))
+        text=';'.join(graph)
+        self.assertEqual(last,'wout')
+        self.assertNotIn('enable=',text)  # no per-frame gate: the stream itself is cut
+        # the whole-clip region is applied once, before the cut
+        self.assertEqual(text.count('overlay=20:30'),1)
+        self.assertIn('[sma0out]split=5',text)  # the cut starts from the whole-clip region's output
+        # a windowed region sits in exactly one piece and that piece is trimmed to its window
+        self.assertEqual(text.count('overlay=30:30'),1)
+        self.assertIn('[w1]trim=start=2.000000:end=2.500000,setpts=PTS-STARTPTS[v1]',text)
+        self.assertIn('[v1]split[sm1x1base][sm1x1crop]',text)
+        self.assertIn('[w3]trim=start=7.000000:end=8.000000,setpts=PTS-STARTPTS[v3]',text)
+        self.assertIn('[v0][sm1x1out][v2][sm3x2out][v4]concat=n=5:v=1:a=0[wout]',text)  # pieces without a region carry no mask work
+
+    def test_windowed_graph_gives_each_use_of_a_shared_glyph_atlas_its_own_copy(self):
+        rows=[region(start=1,end=2,mask_path='a.png'),region(start=1.5,end=3,mask_path='a.png')]
+        graph,_=windowed_filters(rows,'0:v',4,(120,90),{0:'a.png',1:'a.png'})
+        text=';'.join(graph)
+        self.assertEqual(len(re.findall(r'\[glyph\dx1\]scale',text)),4)  # pieces: 1-1.5 (r0), 1.5-2 (r0, r1), 2-3 (r1)
+        self.assertEqual(text.count("movie='a.png',split=4"),1)  # one read of the atlas, not an extra ffmpeg input
+        self.assertNotIn('enable=',text)
+
+    def test_windowed_graph_without_regions_is_a_no_op(self):
+        self.assertEqual(windowed_filters([],'cleanv',10,(120,90)),([],'cleanv'))
+
+    def test_real_ffmpeg_windowed_graph_is_pixel_identical_to_the_gated_chain(self):
+        ff = shutil.which('ffmpeg') or 'D:/OmniVoice/tools/ffmpeg.exe'
+        if not Path(ff).exists():
+            self.skipTest('FFmpeg unavailable')
+        with tempfile.TemporaryDirectory(dir=p.ROOT/'tmp') as tmp:
+            folder = Path(tmp)
+            mask = bytes(255 if 35 <= x < 45 and 3 <= y < 17 else 0 for y in range(20) for x in range(80))
+            (folder/'glyph.pgm').write_bytes(b'P5\n80 20\n255\n'+mask)
+            subprocess.run([ff,'-v','error','-y','-f','lavfi','-i','testsrc2=s=160x120:r=10:d=3','-c:v','libx264','-crf','12',str(folder/'source.mp4')],check=True)
+            rows=[region(start=0,end=3),region(start=.5,end=1,mask_path='glyph.pgm'),region(start=1,end=2,x=50,y=60),
+                  region(start=1.5,end=2.5,x=30,y=40,mask_path='glyph.pgm'),region(start=2.75,end=3,x=60,y=20)]
+            glyphs=[i for i,r in enumerate(rows) if r.get('mask_path')]
+            def render(chains,last):
+                cmd=[ff,'-v','error','-i',str(folder/'source.mp4'),'-i',str(folder/'glyph.pgm'),'-filter_complex',';'.join(chains),
+                     '-map',f'[{last}]','-pix_fmt','yuv420p','-f','rawvideo','-']
+                return subprocess.check_output(cmd)
+            # reference: every region over the whole clip, gated by overlay enable=
+            gated=[f'[1:v]split={len(glyphs)}'+''.join(f'[g{i}]' for i in glyphs)]
+            last='0:v'
+            for i,r in enumerate(rows):
+                chain,last=mask_filters(r,i,last,f'g{i}' if i in glyphs else None,(160,120))
+                gated.append(chain)
+            chains,out=windowed_filters(rows,'0:v',3,(160,120),{i:ffmpeg_filter_path(folder/'glyph.pgm') for i in glyphs})
+            expected,actual=render(gated,last),render(chains,out)
+            self.assertEqual(len(actual),30*160*120*3//2)  # no frame lost or duplicated by the cuts
+            self.assertEqual(len(actual),len(expected))
+            self.assertEqual(actual,expected)
 
 
 if __name__ == '__main__':

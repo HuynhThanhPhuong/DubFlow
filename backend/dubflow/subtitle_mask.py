@@ -81,7 +81,7 @@ def refined_regions(regions, width, height, duration=float('inf')):
     return result
 
 
-def mask_filters(region, index, last, mask_input=None, frame_size=None):
+def mask_filters(region, index, last, mask_input=None, frame_size=None, timed=True):
     """Return a feathered local erasure graph and its output label.
 
     FFmpeg delogo interpolates from the box perimeter; gentle smoothing removes
@@ -89,6 +89,8 @@ def mask_filters(region, index, last, mask_input=None, frame_size=None):
     This avoids the readable silhouettes left by blurring white glyphs alone.
     Work is proportional to the OCR box, not the whole frame. Half-open time
     intervals avoid an extra stale frame when consecutive detections change.
+    timed=False drops the overlay's enable gate for a stream that already
+    holds only the frames of the region's window (see windowed_filters).
     """
     w, h, x, y = (region[k] for k in ('width', 'height', 'x', 'y'))
     box_w,box_h = w,h
@@ -112,9 +114,79 @@ def mask_filters(region, index, last, mask_input=None, frame_size=None):
         extract = f"crop={int(crop[2])}:{int(crop[3])}:{int(crop[0])}:{int(crop[1])}:exact=1," if crop else ''
         padding = f'pad={w}:{h}:{pad}:{pad}:color=black,' if pad else ''
         graph.append(f'[{label}]{extract}scale={box_w}:{box_h},format=gray,{padding}'+'dilation,'*6+f'gblur=sigma=0.6[{prefix}mask]')
+    gate = f":enable='gte(t,{region['start']})*lt(t,{region['end']})'" if timed else ''
     graph += [f'[{prefix}blur][{prefix}mask]alphamerge[{prefix}patch]',
-              f"[{prefix}base][{prefix}patch]overlay={x}:{y}:format=auto:enable='gte(t,{region['start']})*lt(t,{region['end']})'[{prefix}out]"]
+              f'[{prefix}base][{prefix}patch]overlay={x}:{y}:format=auto{gate}[{prefix}out]']
     return ';'.join(graph), f'{prefix}out'
+
+
+def time_segments(regions, duration=float('inf')):
+    """Cut the timeline at every region edge -> [(start, end, active region indices)], end None for the last one.
+
+    The active set is constant inside a segment (a region covers [start, end) exactly or not at all), so each
+    segment can be processed with its regions ungated. Neighbours with the same active set are merged."""
+    edges = sorted({0.} | {float(t) for r in regions for t in (r['start'], r['end']) if 0 < t < duration})
+    segments = []
+    for k, start in enumerate(edges):
+        end = edges[k+1] if k+1 < len(edges) else None
+        active = tuple(i for i, r in enumerate(regions)
+                       if r['start'] <= start and r['end'] >= (duration if end is None else end))
+        if segments and segments[-1][2] == active:
+            segments[-1] = (segments[-1][0], end, active)
+        else:
+            segments.append((start, end, active))
+    return segments
+
+
+def windowed_filters(regions, source, duration, frame_size, mask_files=None):
+    """Apply mask_filters to each region on the frames of its own window only -> (chains, output label).
+
+    The plain chain gated each region with overlay enable=, so every frame still went through crop, delogo, blur
+    and a full-frame overlay for all regions (a 106 s clip with 91 regions: 20 minutes). Here a region that lasts
+    the whole clip is applied once, ungated. For the others the timeline is cut at the region edges
+    (time_segments), trim/setpts feed each piece, a piece holds only the regions active in it, and concat joins
+    the pieces: a region costs work only during its window, other pieces pass untouched. Regions keep their
+    order except that whole-clip regions come first.
+    mask_files maps a region index to its glyph atlas as a filter-escaped path. The atlas is read by a movie source
+    (one decoded frame, repeated by alphamerge): as a separate ffmpeg input the graph stalled, because ffmpeg kept
+    feeding video and never read the input's end of file. A region used in several pieces gets one copy per piece."""
+    mask_files = mask_files or {}
+    chains, uses = [], {}
+
+    def apply(i, tag, last):
+        label = None
+        if i in mask_files:
+            label = f'glyph{len(uses.setdefault(mask_files[i], []))}x{len(uses)}'
+            uses[mask_files[i]].append(label)
+        filters, last = mask_filters(regions[i], tag, last, label, frame_size, timed=False)
+        chains.append(filters)
+        return last
+
+    steady = [i for i, r in enumerate(regions) if r['start'] <= 0 and r['end'] >= duration]
+    for i in steady:
+        source = apply(i, f'a{i}', source)
+    timed = [i for i in range(len(regions)) if i not in steady]
+    segments = time_segments([regions[i] for i in timed], duration)
+    finals, splits = [], []
+    if any(active for _, _, active in segments):
+        for k, (start, end, active) in enumerate(segments):
+            last = source
+            if len(segments) > 1:
+                bounds = (f'start={start:.6f}' if start > 0 else '', f'end={end:.6f}' if end is not None else '')
+                chains.append(f"[w{k}]trim={':'.join(b for b in bounds if b)},setpts=PTS-STARTPTS[v{k}]")
+                splits.append(f'[w{k}]')
+                last = f'v{k}'
+            for j in active:
+                last = apply(timed[j], f'{k}x{timed[j]}', last)
+            finals.append(last)
+    head = [f"movie='{path}',split={len(labels)}" + ''.join(f'[{label}]' for label in labels) for path, labels in uses.items()]
+    if len(finals) > 1:
+        head.append(f'[{source}]split={len(segments)}' + ''.join(splits))
+        chains.append(''.join(f'[{label}]' for label in finals) + f'concat=n={len(finals)}:v=1:a=0[wout]')
+        source = 'wout'
+    elif finals:
+        source = finals[0]
+    return head + chains, source
 
 
 def subtitle_spans(cue, regions):

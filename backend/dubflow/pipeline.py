@@ -16,10 +16,10 @@ import shutil
 
 if __package__:
     from .messages import translate_message
-    from .textcheck import needs_translation
+    from .textcheck import needs_translation, screen_text_noise
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
-    from textcheck import needs_translation
+    from textcheck import needs_translation, screen_text_noise
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -160,6 +160,40 @@ def run(cmd, cwd=None):
         if code:
             raise RuntimeError(f"{Path(str(cmd[0])).name} failed: {stderr.read().decode('utf-8',errors='replace')[-4000:]}")
         return stdout.read().decode('utf-8',errors='replace')
+
+X264_ARGS = ['-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p']
+# Turing NVENC: constant quality near libx264 crf 20 (-b:v 0 lifts the bitrate cap), lookahead and AQ for the flat anime/cartoon areas.
+NVENC_ARGS = ['-c:v','h264_nvenc','-preset','p5','-tune','hq','-rc','vbr','-cq','26','-b:v','0','-spatial-aq','1','-rc-lookahead','20','-profile:v','high','-pix_fmt','yuv420p']
+_NVENC = {}  # ffmpeg path -> bool: one probe per ffmpeg per process
+
+def nvenc_available(ffmpeg):
+    """True when this ffmpeg can open h264_nvenc on this machine (a 0.2 s test encode, probed once per run)."""
+    if ffmpeg not in _NVENC:
+        try:
+            done = subprocess.run([str(ffmpeg),'-v','error','-f','lavfi','-i','color=c=black:s=640x360:r=30:d=0.2','-c:v','h264_nvenc','-pix_fmt','yuv420p','-f','null','-'],
+                                  capture_output=True,timeout=60)
+            _NVENC[ffmpeg] = done.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _NVENC[ffmpeg] = False
+    return _NVENC[ffmpeg]
+
+def video_encoder(settings, ffmpeg):
+    """Encoder arguments for the final video: NVENC when usable ('auto' or 'nvenc'), else libx264 ('libx264' forces the CPU)."""
+    wanted = str(getattr(settings,'video_encoder','auto') or 'auto').lower()
+    if wanted in ('auto','nvenc') and nvenc_available(ffmpeg):
+        return NVENC_ARGS
+    return X264_ARGS
+
+def frames_missing(output, meta, settings):
+    """True when the encoded video holds clearly fewer frames than the source rate and length imply (None-safe: unknown is fine)."""
+    try:
+        done = subprocess.run([str(getattr(settings,'ffprobe','ffprobe')),'-v','error','-select_streams','v:0','-show_entries','stream=nb_frames','-of','csv=p=0',str(output)],
+                              capture_output=True,timeout=60)
+        have = int(done.stdout.decode().split()[0])
+        expected = float(meta['fps']) * min(float(meta['duration']), float(meta.get('video_duration') or meta['duration']))
+        return have < expected * .98 - 2
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, KeyError, TypeError):
+        return False
 
 def probe(source, settings):
     data = json.loads(run([getattr(settings, 'ffprobe', 'ffprobe'), '-v','error','-show_format','-show_streams','-of','json', source]))
@@ -911,12 +945,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
-    regions = (refine_text_regions(directory,source,meta,settings,emit)
-               if getattr(settings,'blur_original',True) else read(directory/'regions.json', []))
     cues = read(directory/'cues.json', [])
     if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
     mode = job.get('mode','dub')
+    # Every cheap check runs before OCR refinement, erase and encode: a blocked export fails in seconds, not minutes.
     if job.get('export_kind'):
         if __package__:
             from .review import require_export
@@ -941,7 +974,10 @@ def render(job_dir, settings, emit):
             raise NeedsReview('Cue timing changed; synthesize placements again')
         # Captions follow source cue intervals; delayed speech placements must
         # not shift the replacement away from the original on-screen text.
-    if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip() for r in regions):
+    regions = (refine_text_regions(directory,source,meta,settings,emit)
+               if getattr(settings,'blur_original',True) else read(directory/'regions.json', []))
+    if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip()
+           and not screen_text_noise(r, regions) for r in regions):
         raise NeedsReview('Có chữ xuất hiện thoáng qua chưa được dịch. Mở Tuỳ chỉnh vùng chữ để nhập lời Việt trước khi xuất.')
     render_warnings = []
     if getattr(settings,'blur_original',True) and getattr(settings,'ocr_python',None)             and ensure_logo_candidates(directory, source, meta, settings, lambda stage, message, progress: emit(stage, message, 85), render_warnings):
@@ -964,9 +1000,9 @@ def render(job_dir, settings, emit):
     ff = getattr(settings,'ffmpeg','ffmpeg')
     cmd = [ff,'-v','error','-y','-filter_complex_threads','2','-i',str(source)]
     if __package__:
-        from .subtitle_mask import refined_regions, mask_filters
+        from .subtitle_mask import refined_regions, windowed_filters
     else:
-        from subtitle_mask import refined_regions, mask_filters
+        from subtitle_mask import refined_regions, windowed_filters
     graph, last = [], '0:v'
     mask_regions = refined_regions([r for r in regions if r.get('kind') != 'static' or erases_static(r)],meta['width'],meta['height'],meta['duration'])
     use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
@@ -985,20 +1021,18 @@ def render(job_dir, settings, emit):
                 if not path.is_relative_to(directory.resolve()):
                     raise NeedsReview('Subtitle glyph mask must be inside the job directory')
                 paths.setdefault(path,[]).append(i)
-        mask_labels = {}
+        if __package__:
+            from .subtitle_style import ffmpeg_filter_path
+        else:
+            from subtitle_style import ffmpeg_filter_path
+        mask_files = {}
         for path, indices in paths.items():
             if not path.is_file():
                 raise NeedsReview(f'Missing subtitle glyph mask: {path.name}')
-            mask_inputs += 1
-            # A single decoded frame is repeated by alphamerge framesync.
-            # Looping a shared atlas can deadlock branches with different times.
-            cmd += ['-threads','1','-i',str(path)]
-            labels = ''.join(f'[glyph{i}]' for i in indices)
-            graph.append(f'[{mask_inputs}:v]split={len(indices)}{labels}')
-            mask_labels.update({i:f'glyph{i}' for i in indices})
-        for i,r in enumerate(mask_regions):
-            filters, last = mask_filters(r,i,last,mask_labels.get(i),(meta['width'],meta['height']))
-            graph.append(filters)
+            mask_files.update({i:ffmpeg_filter_path(path) for i in indices})
+        # Each region is processed only on the frames of its own window (see windowed_filters).
+        chains, last = windowed_filters(mask_regions,last,meta['duration'],(meta['width'],meta['height']),mask_files)
+        graph += chains
     resolution = getattr(settings,'resolution','source')
     scale = '' if resolution == 'source' else ',scale=-2:' + ('1080' if resolution=='1080p' else '720')
     if __package__:
@@ -1042,15 +1076,29 @@ def render(job_dir, settings, emit):
     graph.append(f"[{last}]{scale[1:] or 'null'}[vout]")
     # Keep the graph off the Windows command line (WinError 206 on OCR-heavy clips).
     (directory/'render-filter.txt').write_text(';'.join(graph),encoding='utf-8')
-    cmd += ['-filter_complex_script','render-filter.txt','-map','[vout]','-map',amap,'-t',str(meta['duration']),'-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-movflags','+faststart','output.mp4']
+    video = video_encoder(settings,ff)
+    tail = ['-c:a','aac','-b:a','192k','-ar','48000','-movflags','+faststart','output.mp4']
+    cmd += ['-filter_complex_script','render-filter.txt','-map','[vout]','-map',amap,'-t',str(meta['duration'])]
     if (directory/'output.mp4').exists():
         archive=directory/'render-history'/uuid.uuid4().hex
         archive.mkdir(parents=True)
         for name in ('output.mp4','render-command.json','render-version.json','part-outputs.json'):
             if (directory/name).exists():shutil.copy2(directory/name,archive/name)
-    write(directory/'render-command.json',cmd)
-    emit('rendering','Rendering video on CPU',90)
-    run(cmd,cwd=directory)
+    write(directory/'render-command.json',cmd+video+tail)
+    emit('rendering','Rendering video on GPU (NVENC)' if video is NVENC_ARGS else 'Rendering video on CPU',90)
+    try:
+        run(cmd+video+tail,cwd=directory)
+        if video is NVENC_ARGS and frames_missing(directory/'output.mp4',meta,settings):
+            raise RuntimeError('NVENC output dropped frames')
+    except Cancelled:
+        raise
+    except RuntimeError:
+        if video is not NVENC_ARGS:
+            raise
+        # NVENC can refuse at run time (busy GPU, session limit) or drop frames; the CPU encoder always works
+        emit('rendering','NVENC failed; rendering video on CPU',90)
+        write(directory/'render-command.json',cmd+X264_ARGS+tail)
+        run(cmd+X264_ARGS+tail,cwd=directory)
     # A successful mux is not evidence of an intact final encoded file.
     run([ff,'-v','error','-xerror','-i',str(directory/'output.mp4'),'-f','null','-'],cwd=directory)
     write(directory/'render-version.json', {'version':'transparent-captions-v4'})

@@ -725,6 +725,125 @@ class PipelineTests(unittest.TestCase):
                 except Exception:
                     pass  # later render stages are not under test
 
+    def _gate_job(self, folder, region):
+        p.write(folder/'job.json',dict(source_path='source.mp4',mode='vietsub',export_kind='auto'))
+        p.write(folder/'cues.json',[dict(id='c1',start=0,end=2,speaker='s',original='你好',text='Xin chào')])
+        p.write(folder/'regions.json',[region])
+
+    def test_export_gate_runs_before_ocr_erase_and_encode(self):
+        class Reached(Exception):pass
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            folder=Path(d)
+            self._gate_job(folder,dict(id='t1',enabled=True,kind='transient',text='细心的男生',translation='',start=1,end=3,x=0,y=0,width=50,height=20))
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run') as run,\
+                 patch.object(p,'engine') as engine,patch.object(p,'refine_text_regions',side_effect=Reached) as refine,\
+                 patch.object(p,'erase_subtitles') as erase,patch.object(p,'ensure_logo_candidates') as logos:
+                with self.assertRaisesRegex(p.NeedsReview,'Chưa thể xuất'):
+                    p.render(folder,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:None)
+            for mocked in (run,engine,refine,erase,logos):
+                mocked.assert_not_called()
+            self.assertEqual(p.read(folder/'quality-report.json')['export_status'],'blocked')
+
+    def test_ocr_flicker_does_not_stop_the_export_gate(self):
+        class Reached(Exception):pass
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            folder=Path(d)
+            self._gate_job(folder,dict(id='t1',enabled=True,kind='transient',text='可',translation='',start=1,end=1.25,x=0,y=0,width=50,height=20))
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run'),\
+                 patch.object(p,'refine_text_regions',side_effect=Reached) as refine:
+                with self.assertRaises(Reached):  # the gate let it through and the next stage began
+                    p.render(folder,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:None)
+            refine.assert_called_once()
+
+    def test_ocr_flicker_is_not_an_untranslated_error_in_the_render_check(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            folder=Path(d)
+            (folder/'source.mp4').write_bytes(b'src')
+            p.write(folder/'job.json',dict(source_path='source.mp4',mode='vietsub'))
+            p.write(folder/'cues.json',[dict(start=0,end=2,text='Xin chào')])
+            p.write(folder/'regions.json',[dict(id='n',enabled=True,kind='transient',text='可电',translation='',start=1,end=1.25),
+                                           dict(id='m',enabled=True,kind='transient',text='细心的男生',translation='',start=1.5,end=2.5)])
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run'):
+                with self.assertRaisesRegex(p.NeedsReview,'chưa được dịch'):
+                    p.render(folder,SimpleNamespace(),lambda *a:None)
+            p.write(folder/'regions.json',[dict(id='n',enabled=True,kind='transient',text='可电',translation='',start=1,end=1.25)])
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run'):
+                try:
+                    p.render(folder,SimpleNamespace(),lambda *a:None)
+                except p.NeedsReview as exc:
+                    self.fail(f'flicker blocked the render: {exc}')
+
+    def test_video_encoder_prefers_nvenc_and_the_cpu_setting_forces_libx264(self):
+        with patch.object(p,'nvenc_available',return_value=True):
+            self.assertIs(p.video_encoder(SimpleNamespace(),'ffmpeg'),p.NVENC_ARGS)
+            self.assertIs(p.video_encoder(SimpleNamespace(video_encoder='auto'),'ffmpeg'),p.NVENC_ARGS)
+            self.assertIs(p.video_encoder(SimpleNamespace(video_encoder='libx264'),'ffmpeg'),p.X264_ARGS)
+        with patch.object(p,'nvenc_available',return_value=False):
+            self.assertIs(p.video_encoder(SimpleNamespace(video_encoder='nvenc'),'ffmpeg'),p.X264_ARGS)
+        self.assertIn('h264_nvenc',p.NVENC_ARGS); self.assertIn('libx264',p.X264_ARGS)
+
+    def test_nvenc_probe_runs_once_per_ffmpeg(self):
+        with patch.dict(p._NVENC,clear=True),patch.object(p.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as probe:
+            self.assertTrue(p.nvenc_available('ff-a')); self.assertTrue(p.nvenc_available('ff-a'))
+            self.assertEqual(probe.call_count,1)
+            self.assertIn('h264_nvenc',probe.call_args.args[0])
+            probe.return_value=SimpleNamespace(returncode=1)
+            self.assertFalse(p.nvenc_available('ff-b')); self.assertFalse(p.nvenc_available('ff-b'))
+            self.assertEqual(probe.call_count,2)
+        with patch.dict(p._NVENC,clear=True),patch.object(p.subprocess,'run',side_effect=FileNotFoundError):
+            self.assertFalse(p.nvenc_available('missing'))  # no ffmpeg binary: not available, not an error
+
+    def test_render_encodes_with_nvenc_and_falls_back_to_libx264_when_it_fails(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,False)
+            commands,emitted=[],[]
+            def run(cmd,cwd=None):
+                commands.append(list(cmd))
+                if 'h264_nvenc' in cmd:
+                    raise RuntimeError('ffmpeg failed: OpenEncodeSessionEx failed')
+                return ''
+            settings=SimpleNamespace(blur_original=True,video_encoder='auto')
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run',side_effect=run),\
+                 patch.object(p,'nvenc_available',return_value=True):
+                p.render(directory,settings,lambda *a:emitted.append(a))
+            self.assertIn('h264_nvenc',commands[0]); self.assertNotIn('libx264',commands[0])
+            self.assertIn('libx264',commands[1]); self.assertNotIn('h264_nvenc',commands[1])
+            self.assertEqual(commands[0][:commands[0].index('-c:v')],commands[1][:commands[1].index('-c:v')])  # same inputs and graph
+            self.assertEqual(p.read(directory/'render-command.json'),commands[1])
+            self.assertTrue(any('NVENC failed' in e[1] for e in emitted))
+            commands.clear()
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run',side_effect=run),\
+                 patch.object(p,'nvenc_available',return_value=False):
+                p.render(directory,settings,lambda *a:None)
+            self.assertIn('libx264',commands[0]); self.assertEqual(len([c for c in commands if '-c:v' in c]),1)
+
+    def test_nvenc_output_that_dropped_frames_is_rendered_again_on_the_cpu(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,False)
+            commands=[]
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240,fps=30.)),patch.object(p,'run',side_effect=lambda cmd,cwd=None:commands.append(list(cmd)) or ''),                 patch.object(p,'nvenc_available',return_value=True),patch.object(p,'frames_missing',return_value=True):
+                p.render(directory,SimpleNamespace(blur_original=True),lambda *a:None)
+            self.assertIn('h264_nvenc',commands[0]); self.assertIn('libx264',commands[1])
+        meta=dict(fps=30.,duration=3.)
+        with patch.object(p.subprocess,'run',return_value=SimpleNamespace(stdout=b'60\n')):
+            self.assertTrue(p.frames_missing('o.mp4',meta,SimpleNamespace()))
+        with patch.object(p.subprocess,'run',return_value=SimpleNamespace(stdout=b'90\n')):
+            self.assertFalse(p.frames_missing('o.mp4',meta,SimpleNamespace()))
+        with patch.object(p.subprocess,'run',side_effect=FileNotFoundError):
+            self.assertFalse(p.frames_missing('o.mp4',meta,SimpleNamespace()))  # unknown is not a failure
+
+    def test_a_cancelled_nvenc_render_does_not_retry_on_the_cpu(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            directory=Path(d)
+            self._render_cmd(directory,False)
+            with patch.object(p,'probe',return_value=dict(duration=3,width=320,height=240)),patch.object(p,'run',side_effect=p.Cancelled('stop')) as run,\
+                 patch.object(p,'nvenc_available',return_value=True):
+                with self.assertRaises(p.Cancelled):
+                    p.render(directory,SimpleNamespace(blur_original=True),lambda *a:None)
+            self.assertEqual(run.call_count,1)
+
     def test_speaker_boundary_edit_invalidates_extracted_reference(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             folder=Path(d)

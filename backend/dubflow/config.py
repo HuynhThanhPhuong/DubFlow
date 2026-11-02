@@ -23,6 +23,8 @@ class Settings:
     system_voices: Path = field(default_factory=lambda: Path(os.getenv('DUBFLOW_SYSTEM_VOICES', 'D:/OmniVoice/voices')))
     # verified Vietnamese primer (audio + transcript) that VoxCPM2 mixes with the speaker timbre in dub mode
     vi_prompt: str = field(default_factory=lambda: os.getenv('DUBFLOW_VI_PROMPT', str(ROOT / 'bench/runs/20261027/refs-origreview/vi-prompt.json')))
+    # final video encoder: 'auto' (NVENC when the GPU and ffmpeg support it, else libx264), 'nvenc' or 'libx264' (CPU only)
+    video_encoder: str = field(default_factory=lambda: os.getenv('DUBFLOW_VIDEO_ENCODER', 'auto'))
     redis_url: str = field(default_factory=lambda: os.getenv('DUBFLOW_REDIS_URL', ''))
     max_upload_bytes: int = 2 * 1024 ** 3
     max_duration: float = 3600
