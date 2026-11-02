@@ -566,6 +566,52 @@ class SimilarityStageTests(unittest.TestCase):
         self.assertEqual(sorted(decoded), ['a.wav', 'b.wav', 'c.wav', 'ref.wav'])
 
 
+class StreamedWeightsTests(unittest.TestCase):
+    def test_stream_load_matches_torch_load_state_dict(self):
+        try:
+            import torch
+            from safetensors.torch import save_file
+        except ImportError:
+            self.skipTest('torch/safetensors unavailable in the backend test venv')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))
+        import engine_cli
+
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = torch.nn.Linear(3, 2)
+                self.b = torch.nn.Linear(2, 2, bias=False)
+                self.register_buffer('kept', torch.zeros(2))
+                self.register_buffer('dropped', torch.zeros(2), persistent=False)
+
+        torch.manual_seed(0)
+        source = Tiny()
+        weights = dict(source.state_dict(), extra=torch.ones(1))
+        weights.pop('b.weight')  # missing from the checkpoint: stays as initialised
+        extra_real = torch.full((2,), 7.)  # like the eagerly added audio_vae.* tensors
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            path = Path(d) / 'model.safetensors'
+            save_file({k: v.contiguous() for k, v in weights.items()}, str(path))
+            streamed, stock = Tiny().to(torch.bfloat16), Tiny().to(torch.bfloat16)
+            stock.load_state_dict(streamed.state_dict())  # same starting point, so the missing key compares equal
+            lazy = engine_cli.lazy_weights(path)
+            self.assertTrue(all(v is None for v in lazy.values()))  # nothing is read until it is copied in
+            lazy['kept'] = extra_real
+            result = engine_cli.stream_load_state_dict(streamed, lazy)
+            eager = dict(weights, kept=extra_real)
+            expected = stock.load_state_dict(eager, strict=False)
+        self.assertEqual((result.missing_keys, result.unexpected_keys), (expected.missing_keys, expected.unexpected_keys))
+        self.assertEqual(result.missing_keys, ['b.weight'])
+        for key, value in stock.state_dict().items():
+            self.assertTrue(torch.equal(streamed.state_dict()[key], value), key)
+        self.assertEqual(streamed.a.weight.dtype, torch.bfloat16)
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            path = Path(d) / 'model.safetensors'
+            save_file({'a.weight': torch.zeros(5, 5)}, str(path))
+            with self.assertRaises(RuntimeError):
+                engine_cli.stream_load_state_dict(Tiny(), engine_cli.lazy_weights(path))
+
+
 class PickTests(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dubflow'))

@@ -2,6 +2,7 @@
 All model resolution is local-only. No web server imports this module's models.
 """
 from __future__ import annotations
+import contextlib
 import json
 import os
 import shutil
@@ -109,6 +110,78 @@ def refs(directory, request):
     write(directory/'speaker-refs.json',out)
 
 
+class LazyWeights(dict):
+    """Checkpoint key -> None placeholder, plus the safetensors header (offsets). Tensor bytes are read only when
+    stream_load_state_dict copies them in. Real tensors added later (e.g. AudioVAE) are ordinary values."""
+    path = None
+    header = None
+    base = 0
+
+
+def lazy_weights(path):
+    """Parse the safetensors header with plain file reads. safe_open, even with backend='pread', transiently commits
+    the whole 4.6 GB file at open time, which is what exhausts the pagefile next to the loaded model."""
+    with open(path, 'rb') as f:
+        size = int.from_bytes(f.read(8), 'little')
+        header = json.loads(f.read(size))
+    header.pop('__metadata__', None)
+    weights = LazyWeights.fromkeys(header)
+    weights.path, weights.header, weights.base = str(path), header, 8 + size
+    return weights
+
+
+def read_tensor(f, weights, key):
+    import torch
+    dtypes = dict(F64=torch.float64, F32=torch.float32, F16=torch.float16, BF16=torch.bfloat16, I64=torch.int64,
+                  I32=torch.int32, I16=torch.int16, I8=torch.int8, U8=torch.uint8, BOOL=torch.bool)
+    info = weights.header[key]
+    begin, end = info['data_offsets']
+    f.seek(weights.base+begin)
+    buffer = bytearray(end-begin)
+    f.readinto(buffer)
+    if not buffer:
+        return torch.empty(info['shape'], dtype=dtypes[info['dtype']])
+    return torch.frombuffer(buffer, dtype=dtypes[info['dtype']]).reshape(info['shape'])
+
+
+def cpu_rope_tables(model):
+    """Rotary tables are computed in __init__ and are not checkpoint weights. A model built on the GPU gets cos/sin that
+    differ from the CPU-built ones by one bf16 step in places, so recompute them on the CPU exactly as the stock build does."""
+    import torch
+    from voxcpm.modules.minicpm4.model import MiniCPMLongRoPE
+    for module in model.modules():
+        if isinstance(module, MiniCPMLongRoPE):
+            with torch.device('cpu'):
+                fresh = MiniCPMLongRoPE(module.config)
+            for name in ('inv_freq', 'cos_cached', 'sin_cached'):
+                old = getattr(module, name)
+                setattr(module, name, getattr(fresh, name).to(device=old.device, dtype=old.dtype))
+
+
+def stream_load_state_dict(model, weights):
+    """load_state_dict(strict=False) that copies one checkpoint tensor at a time into the model's own tensors, so
+    the 4.6 GB state dict never exists next to the 4.6 GB model (that doubled peak commit and hit os error 1455).
+    Same result as torch: copy_ casts each tensor to the parameter dtype, unknown keys are ignored, a shape mismatch raises."""
+    import torch
+    from torch.nn.modules.module import _IncompatibleKeys
+    target = model.state_dict()  # detached views sharing storage with the live parameters and buffers
+    missing = [k for k in target if k not in weights]
+    unexpected = [k for k in weights if k not in target]
+    def put(key, value):
+        if tuple(value.shape) != tuple(target[key].shape):
+            raise RuntimeError(f'size mismatch for {key}: checkpoint {tuple(value.shape)}, model {tuple(target[key].shape)}')
+        with torch.no_grad():
+            target[key].copy_(value)
+    for key, value in weights.items():
+        if key in target and value is not None:
+            put(key, value)
+    with open(weights.path, 'rb') as f:
+        for key, value in weights.items():
+            if key in target and value is None:
+                put(key, read_tensor(f, weights, key))  # released before the next read
+    return _IncompatibleKeys(missing, unexpected)
+
+
 def gen(directory, request):
     import numpy as np
     import soundfile as sf
@@ -130,14 +203,31 @@ def gen(directory, request):
         from safetensors.torch import load_file as load_weights
         def read_weights(path, device='cpu'):
             print('Reading weights without mmap:', Path(path).name, flush=True)
+            if Path(path).name == 'model.safetensors':  # the 4.6 GB file is streamed into the model by load_state_dict below
+                return lazy_weights(path)
             return load_weights(path, device=device, backend='pread')
         model_module.load_file = read_weights
+        model_class = model_module.VoxCPM2Model
+        stock_load = model_class.load_state_dict
+        def load_state_dict(self, state_dict, *args, **kwargs):
+            if isinstance(state_dict, LazyWeights):
+                result = stream_load_state_dict(self, state_dict)
+                cpu_rope_tables(self)
+                return result
+            return stock_load(self, state_dict, *args, **kwargs)
+        model_class.load_state_dict = load_state_dict
     previous_dtype = torch.get_default_dtype()
+    # Windows charges commit for CPU parameters, and the model would be built on CPU only to be moved to the GPU.
+    # Building it on the GPU (where it ends up anyway) leaves commit at roughly the CUDA context plus one tensor.
+    place = torch.device('cuda') if os.name == 'nt' and torch.cuda.is_available() else contextlib.nullcontext()
     try:
         torch.set_default_dtype(getattr(torch, dtype_name))
-        model = VoxCPM.from_pretrained(model_path,load_denoiser=False,optimize=False,local_files_only=True)
+        with place:
+            model = VoxCPM.from_pretrained(model_path,load_denoiser=False,optimize=False,local_files_only=True)
     finally:
         torch.set_default_dtype(previous_dtype)
+        if os.name == 'nt':
+            model_class.load_state_dict = stock_load
     state = read(directory/'state.json',{})
     for task in tasks:
         for seed in range(1000,1000+request['count']):
