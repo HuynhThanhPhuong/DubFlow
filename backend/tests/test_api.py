@@ -71,6 +71,23 @@ class ApiTests(unittest.TestCase):
         atomic_json(folder/'regions.json',[box('a'),box('b',x=100)])
         return j,folder,box
 
+    def test_erased_flag_follows_confirmation_of_auto_candidates(self):
+        from dubflow.media import atomic_json
+        from dubflow.pipeline import ERASE_VERSION, file_hash, static_hash
+        j,folder,box=self._region_job()
+        source=folder/'source.mp4'; source.write_bytes(b'src')
+        self.app.state.store.update_job(j['id'],source_path=str(source))
+        atomic_json(folder/'subtrack.json',{'segments':[]}); (folder/'clean.mp4').write_bytes(b'0123456789')
+        regions=[box('a',confirmed=True),box('b',x=100),box('c',x=150,auto=False)]  # confirmed, unconfirmed candidate, user-drawn
+        atomic_json(folder/'regions.json',regions)
+        st=source.stat()
+        atomic_json(folder/'erase.json',{'version':ERASE_VERSION,'source_size':st.st_size,'source_mtime_ns':st.st_mtime_ns,
+                    'subtrack_hash':file_hash(folder/'subtrack.json'),'static_hash':static_hash(folder),'static_ids':['a','b','c']})
+        rows=lambda:{r['id']:r.get('erased',False) for r in self.client.get(f"/api/jobs/{j['id']}/regions").json()}
+        self.assertEqual(rows(),{'a':True,'b':False,'c':True})  # even a stale static_ids list cannot mark an unreviewed candidate
+        atomic_json(folder/'regions.json',[box('a',confirmed=True),box('b',x=100,confirmed=True),box('c',x=150,auto=False)])
+        self.assertEqual(rows(),{'a':False,'b':False,'c':False})  # ticked since the erase: the clean video is stale until re-erased
+
     def test_put_regions_response_is_decorated_like_get(self):
         from dubflow.media import atomic_json
         from dubflow.pipeline import ERASE_VERSION, file_hash, static_hash
@@ -79,7 +96,7 @@ class ApiTests(unittest.TestCase):
         self.app.state.store.update_job(j['id'],source_path=str(source))
         (folder/'mask.png').write_bytes(b'x')
         sub=dict(box('s',kind='subtitle',auto=False,confirmed=False,label=''),mask_path='mask.png',mask_crop=[10,10,40,20])
-        atomic_json(folder/'regions.json',[box('a'),sub])
+        atomic_json(folder/'regions.json',[box('a',confirmed=True),sub])  # an unconfirmed auto box is never erased
         atomic_json(folder/'subtrack.json',{'segments':[]}); (folder/'clean.mp4').write_bytes(b'0123456789')
         st=source.stat()
         atomic_json(folder/'erase.json',{'version':ERASE_VERSION,'source_size':st.st_size,'source_mtime_ns':st.st_mtime_ns,
@@ -101,7 +118,11 @@ class ApiTests(unittest.TestCase):
         status=lambda:self.app.state.store.get_job(j['id'])['status']
         tick=[box('a',confirmed=True,label='Chữ cố định'),box('b',x=100)]
         self.assertEqual(self.client.put(url,json=tick).status_code,200)
-        self.assertEqual(status(),'done')   # a tick or relabel changes neither what is erased nor drawn
+        self.assertEqual(status(),'awaiting_review')  # ticking an unreviewed auto candidate starts erasing it
+        self.app.state.store.update_job(j['id'],status='done')
+        relabel=[box('a',confirmed=True,label='Logo'),box('b',x=100)]
+        self.assertEqual(self.client.put(url,json=relabel).status_code,200)
+        self.assertEqual(status(),'done')   # a relabel (box already confirmed) changes neither what is erased nor drawn
         cross=[box('a',confirmed=True,enabled=False),box('b',x=100)]
         self.assertEqual(self.client.put(url,json=cross).status_code,200)
         self.assertEqual(status(),'awaiting_review')  # switching a box off does

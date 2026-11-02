@@ -315,7 +315,7 @@ class PipelineTests(unittest.TestCase):
             self.assertLess(calls.index('logos'),calls.index('erase'))
 
     def _static_region(self, rid='l', **over):
-        return dict(dict(id=rid,kind='static',enabled=True,x=10,y=20,width=40,height=30,start=0,end=3,auto=True,confirmed=False),**over)
+        return dict(dict(id=rid,kind='static',enabled=True,x=10,y=20,width=40,height=30,start=0,end=3,auto=True,confirmed=True),**over)
 
     def test_erase_request_has_enabled_static_regions_only(self):
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
@@ -502,8 +502,9 @@ class PipelineTests(unittest.TestCase):
                 p.render(directory,SimpleNamespace(blur_original=True,ocr_python=sys.executable),lambda *a:None)
             self.assertEqual([c[0] for c in calls],['logos','erase'])
             sent=calls[1][1]['static_regions']
-            self.assertLessEqual(len(sent),3)
-            self.assertGreaterEqual(len(sent),1)
+            self.assertEqual(sent,[])  # merged candidates stay proposals until the user confirms them
+            merged=[r for r in p.read(directory/'regions.json') if r.get('kind')=='static']
+            self.assertTrue(1<=len(merged)<=3 and all(r['auto'] and not r['confirmed'] for r in merged))
             self.assertIn('cleanv',(directory/'render-filter.txt').read_text())
 
     def test_prepare_of_a_legacy_job_merges_ocr_fragments_before_the_erase(self):
@@ -553,7 +554,37 @@ class PipelineTests(unittest.TestCase):
             self._render_cmd(directory,True,stamp=dict(static_ids=[]))
             self.assertEqual((directory/'render-filter.txt').read_text().count('overlay='),2)
 
-    def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None):
+    def test_unconfirmed_auto_candidates_are_not_erased_hashed_or_masked(self):
+        with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+            d=Path(d)
+            rows=lambda: [r['id'] for r in p.erase_static_regions(d)]
+            for over,erased in ((dict(confirmed=False),False),(dict(confirmed=True),True),(dict(auto=False,confirmed=False),True),
+                                (dict(auto=False,confirmed=True),True),(dict(confirmed=True,enabled=False),False),(dict(confirmed=False,enabled=False),False)):
+                p.write(d/'regions.json',[self._static_region(**over)])
+                self.assertEqual(rows(),['l'] if erased else [],over)
+                self.assertEqual(bool(p.static_hash(d)),erased,over)
+            p.write(d/'regions.json',[self._static_region('k',x=200)])
+            alone=p.static_hash(d)
+            p.write(d/'regions.json',[self._static_region(confirmed=False),self._static_region('k',x=200),self._static_region('m',x=300,confirmed=False)])
+            self.assertEqual((rows(),p.static_hash(d)),(['k'],alone))  # unreviewed candidates do not count
+            # ticking a candidate makes a clean.mp4 built without it stale
+            (d/'source.mp4').write_bytes(b'src'); (d/'clean.mp4').write_bytes(b'clean')
+            p.write(d/'subtrack.json',dict(version=1,fps=10,band=[1,2],segments=[dict(s=1,e=2,x0=1,y0=1,x1=5,y1=5,text='a')]))
+            p.write(d/'regions.json',[self._static_region(confirmed=False)])
+            p.write(d/'erase.json',self._stamp(d))
+            self.assertTrue(p.erase_current(d,d/'source.mp4',dict(fps=25)))
+            p.write(d/'regions.json',[self._static_region(confirmed=True)])
+            self.assertFalse(p.erase_current(d,d/'source.mp4',dict(fps=25)))
+
+    def test_render_fallback_masks_only_reviewed_static_regions(self):
+        counts={}
+        for name,over in (('unconfirmed',dict(confirmed=False)),('confirmed',dict(confirmed=True)),('drawn',dict(auto=False,confirmed=True))):
+            with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
+                self._render_cmd(Path(d),False,static=over)  # no clean.mp4: the ffmpeg masks are the fallback
+                counts[name]=(Path(d)/'render-filter.txt').read_text().count('overlay=')
+        self.assertEqual(counts,dict(unconfirmed=2,confirmed=3,drawn=3))  # subtitle + transient, plus the static box when reviewed
+
+    def _render_cmd(self, directory, clean, blur=True, mode='tm', stamp=None, static=None):
         (directory/'source.mp4').write_bytes(b'src')
         (directory/'dry.wav').write_bytes(b'x')
         cues=[dict(id='1',start=0,end=1,speaker='s',original='o',text='Xin chào')]
@@ -562,7 +593,7 @@ class PipelineTests(unittest.TestCase):
         p.write(directory/'subtrack.json',dict(version=1,segments=[dict(s=0,e=1,x0=1,y0=1,x1=5,y1=5,text='a')]))
         p.write(directory/'regions.json',[
             dict(id='s',kind='subtitle',enabled=True,x=10,y=200,width=100,height=20,start=0,end=3),
-            dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3,auto=True,confirmed=False),
+            dict(dict(id='l',kind='static',enabled=True,x=0,y=0,width=40,height=20,start=0,end=3,auto=True,confirmed=True),**(static or {})),
             dict(id='t',kind='transient',enabled=True,x=0,y=100,width=60,height=20,start=1,end=2,text='x',translation='y')])
         if mode=='tm':
             p.write(directory/'manifest.json',dict(mode='tm',input_cues=p.cue_inputs(cues),lines=[dict(start=0,end=.5,text='Xin chào')]))

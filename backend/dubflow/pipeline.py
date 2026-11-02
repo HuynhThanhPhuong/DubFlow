@@ -372,11 +372,16 @@ def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
 ERASE_VERSION = 6
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
+def erases_static(r):
+    """A static region the eraser (and the ffmpeg fallback) touches: enabled, and not a detector candidate the user has
+    not confirmed yet - unreviewed auto candidates are only proposals (false positives would damage the picture)."""
+    return r.get('kind') == 'static' and bool(r.get('enabled')) and (not r.get('auto') or bool(r.get('confirmed')))
+
 def erase_static_regions(directory):
     """Enabled static regions (logos, fixed text) the eraser removes, as engine rows, sorted for a stable hash."""
     rows = []
     for r in read(Path(directory)/'regions.json', []) or []:
-        if r.get('kind') != 'static' or not r.get('enabled'):
+        if not erases_static(r):
             continue
         try:
             row = dict(id=str(r['id']), x=round(float(r['x']), 3), y=round(float(r['y']), 3), width=round(float(r['width']), 3),
@@ -963,7 +968,7 @@ def render(job_dir, settings, emit):
     else:
         from subtitle_mask import refined_regions, mask_filters
     graph, last = [], '0:v'
-    mask_regions = refined_regions(regions,meta['width'],meta['height'],meta['duration'])
+    mask_regions = refined_regions([r for r in regions if r.get('kind') != 'static' or erases_static(r)],meta['width'],meta['height'],meta['duration'])
     use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
                  and erase_wanted(directory) and erase_current(directory, source, None, full=False))
     if use_clean:  # subtitle glyphs and the static regions listed in erase.json are already erased in clean.mp4; transient masks still apply

@@ -27,7 +27,7 @@ from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
 from .schemas import Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
-from .pipeline import erase_current
+from .pipeline import erase_current, erases_static
 from .store import Store
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
@@ -418,7 +418,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if j.get('source_path') and (folder / 'clean.mp4').is_file() and erase_current(folder, j['source_path'], full=False):
             erased=set(read_json(folder / 'erase.json',{}).get('static_ids') or [])
             for row in rows:
-                if row.get('kind')=='static' and row.get('id') in erased:
+                if erases_static(row) and row.get('id') in erased:
                     row['erased']=True
         for row in rows:
             for index,box in enumerate(row.get('boxes',[row])):
@@ -427,13 +427,14 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return rows
 
     def only_decision_changed(previous, values):
-        """True when the new regions differ from the stored ones in confirmed/label only (ticking or relabelling a box)."""
+        """True when the new regions differ from the stored ones in confirmed/label only (ticking or relabelling a box).
+        Ticking an unreviewed auto candidate is not one: it starts being erased."""
         decision=('confirmed','label')
         try:
             old=[Region(**r).model_dump() for r in previous]
         except Exception:  # noqa: BLE001 - legacy rows that no longer validate: treat as a real change
             return False
-        if len(old)!=len(values):
+        if len(old)!=len(values) or any(erases_static(a)!=erases_static(b) for a,b in zip(old,values)):
             return False
         strip=lambda row:{k:v for k,v in row.items() if k not in decision}
         return all(strip(a)==strip(b) for a,b in zip(old,values)) and any(any(a[k]!=b[k] for k in decision) for a,b in zip(old,values))
