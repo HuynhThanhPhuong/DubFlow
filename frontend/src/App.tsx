@@ -41,6 +41,7 @@ import { Player, Timeline } from "./Player";
 import './editor-interactions.css';
 import {
   ImportDialog,
+  ProjectNotesDialog,
   SettingsDialog,
   VoiceDialog,
 } from "./Dialogs";
@@ -48,8 +49,6 @@ export default function App() {
   const [studioSettings,setStudioSettings]=useState<StudioSettings|null>(null);
   const [collections,setCollections]=useState<Collection[]>([]);
   const [exportOpen,setExportOpen]=useState(false);
-  const [notesOpen,setNotesOpen]=useState(false);
-  const [notesPage,setNotesPage]=useState(0);
   const [cuePage,setCuePage]=useState(0);
   const [queuePage,setQueuePage]=useState(0);
   const sentenceArea=useRef<HTMLDivElement>(null),queueArea=useRef<HTMLDivElement>(null);
@@ -70,7 +69,7 @@ export default function App() {
   const [cueLoading, setCueLoading] = useState(false);
   const [cueError, setCueError] = useState("");
   const [modal, setModal] = useState<
-    "import" | "regions" | "parts" | "voice" | null
+    "import" | "regions" | "parts" | "voice" | "notes" | null
   >(null);
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [dropped, setDropped] = useState<File>();
@@ -464,8 +463,8 @@ export default function App() {
                 <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length} onClick={()=>setExportOpen(true)}>Xuất video</Button>
                 </div>
               </div>
-              <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><Button className="icon-danger" title={isBusy(currentJob)?"Video đang xử lý, không thể xóa":"Xóa video vĩnh viễn"} disabled={isBusy(currentJob)} onClick={()=>setDeleteJobId(currentJob.id)}><Trash2 size={15}/>Xóa video</Button><button className="project-notes-toggle" aria-expanded={notesOpen} aria-controls="project-notes-content" onClick={()=>{setNotesOpen(v=>!v);setNotesPage(0)}}>Lưu ý của dự án{projectWarnings.length?` · ${projectWarnings.length}`:''}<span aria-hidden="true">{notesOpen?'−':'+'}</span></button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
-              <div className={`mode-notes-row ${notesOpen?'expanded':''}`}>
+              <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><Button className="icon-danger" title={isBusy(currentJob)?"Video đang xử lý, không thể xóa":"Xóa video vĩnh viễn"} disabled={isBusy(currentJob)} onClick={()=>setDeleteJobId(currentJob.id)}><Trash2 size={15}/>Xóa video</Button><button className="project-notes-toggle" aria-haspopup="dialog" onClick={()=>setModal("notes")}>Lưu ý của dự án{projectWarnings.length?` · ${projectWarnings.length}`:''}</button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
+              <div className="mode-notes-row">
               <div className="modebar">
                 <div
                   className="mode-line"
@@ -519,9 +518,8 @@ export default function App() {
                   </span>
                 )}
               </div>
-              {notesOpen&&<section id="project-notes-content" className="project-notes-content" aria-label="Lưu ý của dự án"><div className="project-notes-grid">{(projectWarnings.length?projectWarnings:['Hệ thống tự xử lý; bạn có thể sửa lời gốc, lời Việt và người nói ngay trong Lời dịch.']).slice(Math.min(notesPage,Math.max(0,Math.ceil(projectWarnings.length/4)-1))*4,(Math.min(notesPage,Math.max(0,Math.ceil(projectWarnings.length/4)-1))+1)*4).map((w,i)=><p key={i}>{vietnameseMessage(w)}</p>)}</div>{projectWarnings.length>4&&<Pagination total={projectWarnings.length} page={Math.min(notesPage,Math.ceil(projectWarnings.length/4)-1)} size={4} onChange={setNotesPage}/>}</section>}
               </div>
-              <div className="studio-workflow"><div><b>Nhận dạng</b><small>{cues.length?`${cues.length} câu lời gốc`:"Chưa phân tích"}</small></div><div className={missing?"current":""}><b>Dịch tiếng Việt</b><small>{cues.length?`${cues.length-missing}/${cues.length} câu đã có lời Việt`:"Chưa có bản dịch"}</small></div><div><b>{currentJob.mode==="vietsub"?"Xem & sửa lời dịch":"Tạo giọng & kiểm tra"}</b><small>{currentJob.mode==="vietsub"?"Sửa ngay trong Lời dịch khi cần":`${currentJob.ready_count||0}/${cues.length} câu có giọng`}</small></div><div><b>Xuất video</b><small>{currentJob.exported_paths?.length?"Đã lưu vào thư mục":currentJob.status==="done"?"Có bản xem trước":"Chưa xuất"}</small></div></div>
+              <div className="studio-workflow"><div><b>Nhận dạng</b><small className="step-meta">{cues.length?`${cues.length} câu lời gốc`:"Chưa phân tích"}</small></div><div className={missing?"current":""}><b>Dịch tiếng Việt</b><small className="step-meta">{cues.length?`${cues.length-missing}/${cues.length} câu đã có lời Việt`:"Chưa có bản dịch"}</small></div><div><b>{currentJob.mode==="vietsub"?"Xem & sửa lời dịch":"Tạo giọng & kiểm tra"}</b><small className="step-meta">{currentJob.mode==="vietsub"?"Sửa ngay trong Lời dịch khi cần":`${currentJob.ready_count||0}/${cues.length} câu có giọng`}</small></div><div><b>Xuất video</b><small className="step-meta">{currentJob.exported_paths?.length?"Đã lưu vào thư mục":currentJob.status==="done"?"Có bản xem trước":"Chưa xuất"}</small></div></div>
               </div>
               {isBusy(currentJob) && (
                 <div className="job-progress">
@@ -893,6 +891,12 @@ export default function App() {
             setNotice("Đã lưu cấu hình.");
             void refresh();
           }}
+        />
+      )}
+      {modal === "notes" && currentJob && (
+        <ProjectNotesDialog
+          notes={projectWarnings.map(vietnameseMessage)}
+          onClose={() => setModal(null)}
         />
       )}
       {modal === "voice" && (

@@ -599,8 +599,21 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  border: 0;
-  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  margin: 0;
+  min-width: 0;
+}
+.translate-panel .translate-scope legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.translate-panel .translate-scope .translate-scope-action {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
 }
 .translate-panel .translate-scope .warning,
 .translate-panel > p {

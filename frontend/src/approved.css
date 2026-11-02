@@ -157,3 +157,24 @@
  .studio-app .cue-lane{height:22px}.studio-app .cue-lane button{height:18px}
 }
 @media(max-width:900px){.editor-head{grid-template-columns:minmax(0,1fr)}.editor-head>.editor-membership,.editor-head>.mode-notes-row{grid-column:1}}
+
+/* Layout robustness (fullscreen/notes clipping). Root cause: .simple-work had an implicit `auto` grid row,
+   so a transient taller content size (fullscreen) stuck the row at 827px after exit while the container was
+   shorter, pushing the player/timeline/footer out of the overflow:hidden viewport. Rows are now definite,
+   the video no longer feeds its intrinsic height into the layout, and clipping containers use overflow:clip
+   (cannot be scrolled by focus/fullscreen) while the editor <main> scrolls if it ever overflows. */
+@media(min-width:901px){
+ .studio-app .simple-work{grid-template-rows:minmax(0,1fr)}
+ .studio-app .movie-frame video{position:absolute;inset:0;width:100%;height:100%}
+ .studio-app,.studio-app .simple-main{overflow:hidden;overflow:clip}
+ .studio-app.page-editor .simple-main{overflow-x:hidden;overflow-y:auto}
+}
+
+/* Pipeline step bar: four bordered step cards (title + .step-meta status, room for an ETA line). */
+.studio-app .studio-workflow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;border:0;border-radius:0;background:transparent;overflow:visible}
+.studio-app .studio-workflow>div,.studio-app .editor-head .studio-workflow>div{display:flex;flex-direction:column;justify-content:center;align-items:stretch;gap:0;min-height:42px;padding:8px 12px;border:1px solid var(--line);border-left:1px solid var(--line);border-radius:7px;background:#fff;white-space:nowrap;overflow:hidden;min-width:0}
+.studio-app .studio-workflow>div+div{border-left:1px solid var(--line)}
+.studio-app .studio-workflow>div.current,.studio-app .editor-head .studio-workflow>div.current{background:#fafaff;border-color:#c9d2f5}
+.studio-app .studio-workflow b,.studio-app .editor-head .studio-workflow b{display:block;font-size:11px;line-height:1.2;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.studio-app .studio-workflow .step-meta,.studio-app .editor-head .studio-workflow .step-meta{display:block;margin:0;font-size:10px;line-height:1.2;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){.studio-app .studio-workflow{grid-template-columns:repeat(2,minmax(0,1fr))}}

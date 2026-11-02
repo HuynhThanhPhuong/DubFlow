@@ -119,11 +119,18 @@ export function TranslatePanel({
                   Dịch lại tất cả sẽ ghi đè cả những lời Việt bạn đã sửa.
                 </p>
               )}
+              <div className="translate-scope-action">
+                <Button variant="primary" disabled={off} onClick={() => void askEstimate()}>
+                  {buttonLabel}
+                </Button>
+              </div>
             </fieldset>
           )}
-          <Button variant="primary" disabled={off} onClick={() => void askEstimate()}>
-            {buttonLabel}
-          </Button>
+          {pause && (
+            <Button variant="primary" disabled={off} onClick={() => void askEstimate()}>
+              {buttonLabel}
+            </Button>
+          )}
         </>
       )}
       <a
