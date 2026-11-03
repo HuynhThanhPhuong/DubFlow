@@ -119,6 +119,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         value['export_filename'] = safe_name(job.get('title','Video')) + '.mp4'
         base = f"/api/jobs/{job['id']}"
         folder = settings.jobs_dir / job['id']
+        from .address_rules import normalize_setting, valid_setting
+        value['setting'] = normalize_setting(job.get('setting'))
+        context = read_json(folder / 'translation-context.json', {})
+        value['translation_context'] = {'setting': valid_setting(context.get('setting'))} if isinstance(context, dict) and valid_setting(context.get('setting')) else None
         value['source_url_path'] = base + '/source'
         value['poster_url'] = base + '/poster' if (folder / 'poster.jpg').exists() else None
         value['output_url'] = base + '/output' if (folder / 'output.mp4').exists() and job['status'] == 'done' else None
@@ -369,11 +373,15 @@ def create_app(settings: Settings | None = None, start_worker=True):
                         headers={'Content-Disposition':f"attachment; filename*=UTF-8''{filename}"})
 
     @app.get('/api/jobs/{job_id}/translate-prompt')
-    def translate_prompt(job_id: str, mode: Literal['vietsub', 'tm', 'dub'] | None = None):
+    def translate_prompt(job_id: str, mode: Literal['vietsub', 'tm', 'dub'] | None = None,
+                         setting: Literal['auto', 'modern', 'ancient'] | None = None):
         from .manual_translation import prompt_text
         job = job_or_404(job_id)
         chosen = mode or (job.get('mode') if job.get('mode') in ('vietsub', 'tm', 'dub') else 'vietsub')
-        text = prompt_text(chosen, preferences(store, settings)['vietsub_cps'], terminology_for(job))
+        collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
+        text = prompt_text(chosen, preferences(store, settings)['vietsub_cps'], terminology_for(job),
+                           setting=setting or job.get('setting', 'auto'), video_title=job.get('title', ''),
+                           collection_name=(collection or {}).get('name', ''))
         return Response(text.encode('utf-8'), media_type='text/plain; charset=utf-8')
 
     @app.post('/api/jobs/{job_id}/translation-srt')
@@ -741,10 +749,14 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return prefs, folder
 
     @app.get('/api/jobs/{job_id}/translate/estimate')
-    def translate_estimate(job_id: str, scope: Literal['missing', 'all'] = 'missing'):
+    def translate_estimate(job_id: str, scope: Literal['missing', 'all'] = 'missing',
+                           setting: Literal['auto', 'modern', 'ancient'] | None = None):
         job = job_or_404(job_id)
         prefs, folder = translate_preflight(job, scope)
-        result = translate_run.estimate(folder, scope, job.get('mode') or 'vietsub', prefs, terminology_for(job))
+        collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
+        result = translate_run.estimate(folder, scope, job.get('mode') or 'vietsub', prefs, terminology_for(job),
+                                        setting=setting or job.get('setting', 'auto'),
+                                        job={**job, 'collection_name': (collection or {}).get('name', '')})
         if result is None:
             raise HTTPException(409, 'Không có câu nào cần dịch.')
         return result
@@ -759,7 +771,13 @@ def create_app(settings: Settings | None = None, start_worker=True):
             raise HTTPException(409, 'Không có câu nào cần dịch.')
         request = folder / translate_run.REQUEST_FILE
         # The file is written inside the enqueue transaction, only once this call owns the task.
-        write_request = lambda: atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap))
+        from .address_rules import normalize_setting
+        chosen_setting = normalize_setting(body.setting if body.setting is not None else job.get('setting'))
+        if body.setting is not None:
+            store.update_job(job_id, setting=chosen_setting)
+            save_job_file(store.get_job(job_id))
+        write_request = lambda: atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap,
+                                                          setting=chosen_setting))
         try:
             return dispatch(job_id, 'translate', write_request)
         except HTTPException as exc:

@@ -6,19 +6,22 @@ Không bao giờ ghi key ra file hay thông điệp.
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from .translate_api import LABELS, ProviderError, make_provider
 from .textcheck import needs_translation
-from .translate_job import Item, RateLimiter, plan_translation, run_translation
+from .translate_job import CONTEXT_FILE, PROMPT_VERSION, Item, RateLimiter, plan_translation, run_translation
+from .address_rules import normalize_setting
 from .translation_history import save_snapshot
 
 REQUEST_FILE = 'translate-request.json'
 USAGE_FILE = 'translation-usage.json'
 FAILED_FILE = 'translation-failed.json'
 RATE_FILE = 'translation-rate.json'
+CONTEXT_META_FILE = 'translation-context-meta.json'
 SCOPES = ('missing', 'all')
 PREF_KEYS = ('rate_rpm', 'rate_rpd', 'price_in_per_mtok',
              'price_out_per_mtok', 'cost_cap_usd', 'vietsub_cps', 'max_output_tokens', 'max_input_tokens', 'thinking')
@@ -72,6 +75,19 @@ def collect_items(folder: Path, scope: str) -> list[Item]:
         if scope == 'all' or not str(r.get('translation') or '').strip():
             items.append(Item(f"region:{r['id']}", str(r['text']).strip(), float(r['start']), float(r['end']), '', 'onscreen'))
     return items
+
+
+def context_inputs(folder: Path, job: dict) -> tuple[dict, list[dict]]:
+    """Toàn bộ lời gốc kể cả câu đã dịch; metadata không bao giờ thành item cần dịch."""
+    metadata = {'video_title': job.get('title') or '', 'collection_name': job.get('collection_name') or ''}
+    dialogue = [{'id': str(c['id']), 'zh': str(c.get('original') or ''), 'speaker': str(c.get('speaker') or '')}
+                for c in _read(folder / 'cues.json', [])]
+    return metadata, dialogue
+
+
+def context_signature(setting, metadata, dialogue, mode, terminology) -> str:
+    raw = json.dumps([PROMPT_VERSION, setting, metadata, dialogue, mode, terminology], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
 def read_usage(folder: Path):
@@ -141,6 +157,7 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     request = _read(folder / REQUEST_FILE, {})
     (folder / REQUEST_FILE).unlink(missing_ok=True)
     scope = request.get('scope') if request.get('scope') in SCOPES else 'missing'
+    setting = normalize_setting(request.get('setting', job.get('setting')))
     allow = bool(request.get('allow_over_cap'))
     name, key, model = selected(settings)
     label = LABELS.get(name, name)
@@ -163,6 +180,11 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     provider = None
     stop_file = folder / 'cancel.request'
     source_cues = _read(folder/'cues.json',[])
+    metadata, dialogue = context_inputs(folder, job)
+    signature = context_signature(setting, metadata, dialogue, mode, terminology)
+    initial_context = None
+    if scope == 'missing' and _read(folder / CONTEXT_META_FILE, {}).get('signature') == signature:
+        initial_context = _read(folder / CONTEXT_FILE, {})
     last_snapshot = None
     def snapshot(texts, requests=0, usage=None, cost=None, status='partial', error=None, update=False):
         nonlocal last_snapshot
@@ -179,7 +201,9 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow,
                                   spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
-                                  should_stop=stop_file.exists, on_event=on_event, on_result=snapshot)
+                                  should_stop=stop_file.exists, on_event=on_event, on_result=snapshot,
+                                  setting=setting, metadata=metadata, source_dialogue=dialogue, initial_context=initial_context)
+        _write(folder / CONTEXT_META_FILE, {'signature': signature})
     except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
         snapshot({},status='error',error=str(exc))
         raise TranslateFailed(scrub(str(exc), key)) from None
@@ -221,13 +245,19 @@ def _no_result_message(outcome, label: str, total: int, prefs, key: str) -> str:
     return f'Chưa dịch được câu nào trong {total} câu: {reason.rstrip(".")}. Hãy thử lại sau hoặc dịch tay.'
 
 
-def estimate(folder: Path, scope: str, mode: str, values, terminology: str) -> dict | None:
+def estimate(folder: Path, scope: str, mode: str, values, terminology: str, *, setting='auto', job=None) -> dict | None:
     """Ước tính không gọi mạng; None nếu không có câu nào."""
     items = collect_items(Path(folder), scope)
     if not items:
         return None
     prefs = prefs_ns(values)
-    plan = plan_translation(items, mode, prefs, terminology)
+    metadata, dialogue = context_inputs(Path(folder), job or {})
+    signature = context_signature(normalize_setting(setting), metadata, dialogue, mode, terminology)
+    initial = None
+    if scope == 'missing' and _read(Path(folder) / CONTEXT_META_FILE, {}).get('signature') == signature:
+        initial = _read(Path(folder) / CONTEXT_FILE, {})
+    plan = plan_translation(items, mode, prefs, terminology, setting=setting, metadata=metadata,
+                            source_dialogue=dialogue, initial_context=initial)
     paid = prefs.tier == 'paid'
     cap = prefs.cost_cap_usd if paid else None
     spent = spent_so_far(Path(folder)) if paid else None

@@ -99,6 +99,7 @@ class RenderRequest(BaseModel):
 class TranslateRequest(BaseModel):
     scope: Literal['missing','all'] = 'missing'
     allow_over_cap: bool = False
+    setting: Literal['auto', 'modern', 'ancient'] | None = None
 
 
 class Region(BaseModel):
@@ -168,6 +169,7 @@ class Part(BaseModel):
 
 
 class JobUpdate(BaseModel):
+    setting: Literal['auto', 'modern', 'ancient'] = 'auto'
     collection_id: str | None = Field(default=None, max_length=100)
     episode: str = Field(default="", max_length=100)
     title: str | None = Field(default=None, min_length=1, max_length=200)

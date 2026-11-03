@@ -63,6 +63,7 @@ def run_task(task, settings, store):
     collection = store.get_record('collection',job.get('collection_id')) if job and job.get('collection_id') else None
     terminology = (collection or {}).get('terminology','')
     if job:
+        job['collection_name'] = (collection or {}).get('name', '')
         job['review_terms']=terminology
         job['vietsub_cps']=settings.vietsub_cps
     folder = settings.jobs_dir / jid

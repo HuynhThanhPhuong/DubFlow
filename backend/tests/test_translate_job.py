@@ -387,7 +387,7 @@ class TranslateJobTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         text = logs[0].read_text(encoding='utf-8')
         self.assertNotIn(KEY, text)
-        self.assertEqual(json.loads(text)['prompt_version'], 'p3-4')
+        self.assertEqual(json.loads(text)['prompt_version'], 'p3-5-address')
 
     def test_vietsub_items_carry_max_chars(self):
         f = Fake()
