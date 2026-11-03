@@ -821,7 +821,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
         cs = sorted([Cue(**c) for c in read_json(job_dir(job_id) / 'cues.json')],key=lambda c:(c.start,c.end))
         validate_cues(cs, job, require_text=True)
         if job['mode'] == 'tm' and not job.get('voice_id'):
-            raise HTTPException(409, 'Chọn giọng thuyết minh trước khi xử lý.')
+            message='Chọn giọng thuyết minh trước khi xử lý.'
+            raise HTTPException(409,dict(message=message,reasons=[dict(code='VOICE_REQUIRED',message=message,cue_count=0,cue_ids=[])]))
         store.update_job(job_id,export_kind=kind)
         return dispatch(job_id, 'render')
 

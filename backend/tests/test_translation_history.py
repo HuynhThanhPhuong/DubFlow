@@ -123,6 +123,12 @@ class HistoryTests(unittest.TestCase):
         self.assertIn('Việt',missing['message'])
         self.assertEqual(self.client.get(self.base+'/quality').json()['reasons'],reasons)
 
+    def test_missing_narration_voice_returns_a_structured_export_reason(self):
+        self.store.update_job(self.job['id'],mode='tm',voice_id=None)
+        response=self.client.post(self.base+'/render')
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.json()['detail']['reasons'][0]['code'],'VOICE_REQUIRED')
+
     def test_manual_prompt_has_no_characters_per_second_limit(self):
         text=prompt_text('vietsub',17)
         self.assertNotIn('ký tự trên mỗi giây',text)
