@@ -43,10 +43,10 @@ Người dùng thấy hệ thống còn dịch sai ngữ cảnh nhiều, chủ y
    - Gửi kèm tên video và tên bộ sưu tập làm gợi ý bối cảnh. Mục đích là để model xác định bối cảnh, tuyệt đối không dịch hay chèn tên này vào câu.
    - Tăng version của prompt/cache dịch để bản dịch mới theo quy tắc mới; lịch sử bản dịch cũ vẫn giữ nguyên.
 6. **Người dùng chọn bối cảnh.**
-   - Thêm lựa chọn "Bối cảnh xưng hô: Tự nhận / Hiện đại / Cổ trang" vào popover "Dịch ▾", nằm cạnh phạm vi dịch, mặc định "Tự nhận".
+   - Thêm lựa chọn "Bối cảnh xưng hô: Tự động / Hiện đại / Cổ trang" vào popover "Dịch ▾", nằm cạnh phạm vi dịch, mặc định "Tự động".
    - Lưu theo job.
    - Khi chọn Hiện đại hoặc Cổ trang, bối cảnh bị khoá: API không được tự đổi, và lệnh mẫu AI chat ghi rõ bối cảnh đó.
-   - Khi chọn Tự nhận, lệnh mẫu yêu cầu AI tự xác định bối cảnh ở bước 1.
+   - Khi chọn Tự động, lệnh mẫu yêu cầu AI tự xác định bối cảnh ở bước 1.
    - Sau khi dịch xong, popover và popup Chi tiết hiện bối cảnh model đã nhận, ví dụ "Bối cảnh: Cổ trang".
 7. **Lệnh mẫu SRT**: chèn đầy đủ khối quy tắc ở mục 1–4, viết ngắn gọn để AI chat làm theo được, và bỏ dòng XƯNG HÔ cũ. Không thêm lại dòng giới hạn 17 ký tự mỗi giây.
 
