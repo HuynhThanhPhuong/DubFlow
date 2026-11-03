@@ -15,3 +15,5 @@ bench/runs/
 ui-preview/
 frontend/tsconfig.tsbuildinfo
 models/
+
+/tmp/
