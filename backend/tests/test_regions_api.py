@@ -57,7 +57,7 @@ class RegionsApiTests(unittest.TestCase):
         self.assertIsNone(self.client.get(f"/api/jobs/{j['id']}").json()['analysis_regions'])
         r = self.put(j, no_hard_subs=False, subtitle=[10, 180, 300, 40], logos=[[5, 5, 40, 20]], screen_text=[[100, 50, 80, 30]])
         self.assertEqual(r.status_code, 200, r.text)
-        want = dict(no_hard_subs=False, subtitle=[10, 180, 300, 40], logos=[[5, 5, 40, 20]], screen_text=[[100, 50, 80, 30]])
+        want = dict(no_hard_subs=False, subtitle=[10, 180, 300, 40], subtitles=[dict(box=[10,180,300,40],orientation='h')], logos=[[5, 5, 40, 20]], screen_text=[[100, 50, 80, 30]])
         self.assertEqual(r.json(), want)
         self.assertEqual(self.client.get(f"/api/jobs/{j['id']}").json()['analysis_regions'], want)
         self.assertEqual(json.loads((self.settings.jobs_dir / j['id'] / 'job.json').read_text(encoding='utf-8'))['analysis_regions'], want)
@@ -85,7 +85,7 @@ class RegionsApiTests(unittest.TestCase):
         self.assertIn('vùng sub', r.json()['detail'])
         ok = self.put(j, no_hard_subs=True, subtitle=[10, 10, 100, 40], logos=[[5, 5, 40, 20]])
         self.assertEqual(ok.status_code, 200)
-        self.assertEqual(ok.json(), dict(no_hard_subs=True, subtitle=None, logos=[[5, 5, 40, 20]], screen_text=[]))
+        self.assertEqual(ok.json(), dict(no_hard_subs=True, subtitle=None, subtitles=[], logos=[[5, 5, 40, 20]], screen_text=[]))
         self.assertEqual(self.put(j, subtitle=[1, 2]).status_code, 422)  # not a box
 
     def test_busy_job_cannot_change_regions(self):
@@ -142,7 +142,7 @@ class RegionsApiTests(unittest.TestCase):
         a = analysis_regions.usable(dict(no_hard_subs=False, subtitle=[1, 2, 30, 40], logos=[[1, 1, 9, 9]], screen_text=[]))
         b = dict(a, logos=[[2, 2, 9, 9]])
         self.assertEqual(analysis_regions.source_key(a), analysis_regions.source_key(b))  # logos do not decide the source cues
-        self.assertNotEqual(analysis_regions.source_key(a), analysis_regions.source_key(dict(a, subtitle=[1, 2, 30, 41])))
+        self.assertNotEqual(analysis_regions.source_key(a), analysis_regions.source_key(dict(a, subtitles=[dict(box=[1, 2, 30, 41], orientation='h')])))
         self.assertNotEqual(analysis_regions.screen_key(a), analysis_regions.screen_key(dict(a, screen_text=[[1, 1, 9, 9]])))
 
     # -- GET /frame -----------------------------------------------------------------------------------------

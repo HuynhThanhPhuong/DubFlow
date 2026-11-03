@@ -11,6 +11,7 @@ from .pipeline import read, write
 _LOCK = threading.RLock()
 _ID = re.compile(r'^[a-f0-9]{32}$')
 FIELDS = ('start', 'end', 'original', 'text')
+REGION_FIELDS = ('region', 'box', 'orientation', 'text_height')
 META = ('provider', 'model', 'requests', 'input_tokens', 'output_tokens', 'cost_usd', 'error')
 
 
@@ -20,7 +21,8 @@ def save_snapshot(folder, cues, *, source, status='done', metadata=None, snapsho
         if not _ID.fullmatch(sid):
             raise ValueError('Mã bản dịch không hợp lệ.')
         directory = Path(folder)/'translation-history';directory.mkdir(exist_ok=True)
-        rows = [{k: c.get(k, '' if k in ('original','text') else 0) for k in FIELDS} for c in cues]
+        rows = [{**{k: c.get(k, '' if k in ('original','text') else 0) for k in FIELDS},
+                 **{k: c[k] for k in REGION_FIELDS if k in c}} for c in cues]
         old = read(directory/(sid+'.json'), {}) or {}
         value = dict(id=sid, created_at=old.get('created_at') or datetime.now(timezone.utc).isoformat(),
                      source=source, status=status, cue_count=sum(bool(c['text'].strip()) for c in rows),
@@ -60,6 +62,13 @@ def match_cues(saved, current):
         for i,c in enumerate(current):
             if i in used or not _original(old.get('original')) or _original(old.get('original'))!=_original(c.get('original')):
                 continue
+            if old.get('region') is not None and c.get('region') is not None:
+                # A region index can change after deletion/reordering; spatial identity wins.
+                if old.get('box') and c.get('box'):
+                    if old['box'] != c['box']:
+                        continue
+                elif old['region'] != c['region']:
+                    continue
             ds,de=abs(old['start']-c['start']),abs(old['end']-c['end'])
             if ds<=.75 and de<=.75:
                 candidates.append((ds+de,i))

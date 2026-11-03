@@ -490,7 +490,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
         if cfg['subtitle']:
             emit('subband', 'Đang đọc sub trong vùng đã chọn', 30)
             try:
-                engine('subband', directory, settings, {'source':str(source), 'box':cfg['subtitle'], **meta}, emit=emit)
+                engine('subband', directory, settings, {'source':str(source), 'box':cfg['subtitle'], 'subtitles':analysis_regions.subtitle_regions(cfg), **meta}, emit=emit)
             except Cancelled:
                 raise
             except NeedsReview as exc:
@@ -500,6 +500,12 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
         else:  # no hard subs: nothing on screen to read or erase, ASR is the source
             write(directory/'subtrack.json', dict(version=2, mode='none', box=None, segments=[]))
         segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
+        for segment in segments:
+            region = segment.setdefault('region', 0)
+            spec = analysis_regions.subtitle_regions(cfg)[region]
+            x, y, w, h = spec['box']
+            segment.update(box=[x, y, x+w, y+h], orientation=spec['orientation'])
+            segment.setdefault('text_height', max(1, segment.get('y1', y+h) - segment.get('y0', y)))
         emit('subband', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
         cues = build_source_cues_primary(segments, asr_cues, meta['duration'], stats=stats)
     if any(c['source'] == 'asr' for c in cues):
@@ -572,7 +578,7 @@ def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
     detect_logos(directory, source, meta, settings, emit, warnings)
     return True
 
-ERASE_VERSION = 9
+ERASE_VERSION = 10
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
 def erases_static(r):
@@ -698,7 +704,7 @@ REGIONS_STALE = 'Vùng phân tích đã đổi, hãy phân tích lại trước 
 
 def regions_key(cfg):
     """Hash of the whole applied analysis_regions (subtitle band, logos, screen text)."""
-    return cache_key(dict(v=1, no_hard_subs=cfg['no_hard_subs'], subtitle=cfg['subtitle'], logos=cfg['logos'], screen_text=cfg['screen_text']))
+    return cache_key(dict(v=2, no_hard_subs=cfg['no_hard_subs'], subtitles=analysis_regions.subtitle_regions(cfg), logos=cfg['logos'], screen_text=cfg['screen_text']))
 
 def regions_stale(directory, job):
     """True when the job's saved analysis_regions differ from the ones regions.json / subtrack.json / clean.mp4 were built
@@ -753,15 +759,20 @@ def region_rows(directory, source, meta, settings, emit, warnings, cfg):
                 warnings.append('Chưa đọc được chữ trên màn hình: '+str(exc))
     track = read(directory/'subtrack.json', {}) or {}
     lines = sorted(track.get('segments') or [], key=lambda x: (x['s'], x['e']))
-    box = track.get('box') if track.get('version') == 2 else None
-    if box and lines:
+    tracks = track.get('regions', []) if track.get('version') == 3 else [track]
+    if lines:
         if __package__:
             from .subtitle_lines import erase_windows
         else:
             from subtitle_lines import erase_windows
-        for n, w in enumerate(erase_windows(lines, duration), 1):
-            rows.append(dict(id=f'subline-{n}', kind='subtitle', x=box[0], y=box[1], width=box[2], height=box[3], start=w['s'], end=w['e'],
-                             text=lines[w['line']].get('text', ''), translation='', enabled=True, auto=False, confirmed=True, label=''))
+        for index, item in enumerate(tracks):
+            box = item.get('box') if item.get('version') == 2 else None
+            if not box:
+                continue
+            own = item.get('segments', [])
+            for n, w in enumerate(erase_windows(own, duration), 1):
+                rows.append(dict(id=f'subline-{index}-{n}', region=index, kind='subtitle', x=box[0], y=box[1], width=box[2], height=box[3], start=w['s'], end=w['e'],
+                                 text=own[w['line']].get('text', ''), translation='', enabled=True, auto=False, confirmed=True, label=''))
     old_logos = {r['id']: r for r in existing if str(r.get('id', '')).startswith('userlogo-')}
     for n, b in enumerate(cfg['logos'], 1):
         row = dict(id=f'userlogo-{n}', kind='static', x=b[0], y=b[1], width=b[2], height=b[3], start=0.0, end=duration, text='', translation='',
@@ -795,7 +806,7 @@ def prepare(job_dir, settings, emit):
     # cache stamp changed. Only a new band or explicit source reset rebuilds cues.
     if cfg is not None and read(directory/'cues.json',[]):
         built = read(directory/'source-build.json', {}) or {}
-        if built.get('source_key') == analysis_regions.source_key(cfg):
+        if analysis_regions.source_matches(cfg, built.get('source_key')):
             fresh_transcript = False
     if fresh_transcript:
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
@@ -808,8 +819,13 @@ def prepare(job_dir, settings, emit):
         key = analysis_regions.source_key(cfg)
         built = read(directory/'source-build.json', {}) or {}
         have = read(directory/'cues.json', [])
-        if fresh_transcript or not have or built.get('source_key') != key:
-            if have and not fresh_transcript:  # the band changed: rebuilt from the new reading, the old cues stay recoverable
+        if fresh_transcript or not have or not analysis_regions.source_matches(cfg, built.get('source_key')):
+            if have:
+                if __package__:
+                    from .translation_history import save_snapshot
+                else:
+                    from translation_history import save_snapshot
+                save_snapshot(directory, have, source='before_reanalyze')
                 shutil.copy2(directory/'cues.json', directory/f"cues.before-regions-{time.strftime('%Y%m%d-%H%M%S')}.json")
             build_source(directory, source, audio, meta, settings, emit, warnings, cfg=cfg, key=key)
         region_rows(directory, source, meta, settings, emit, warnings, cfg)

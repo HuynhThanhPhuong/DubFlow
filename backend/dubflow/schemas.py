@@ -24,6 +24,9 @@ class Cue(BaseModel):
     source_partial: bool | None = None
     ocr_empty: bool | None = None
     box: list[FiniteFloat] | None = Field(default=None, max_length=4)
+    region: int | None = Field(default=None, ge=0, le=5)
+    orientation: Literal['h', 'v'] | None = None
+    text_height: FiniteFloat | None = Field(default=None, gt=0)
 
 
 class Character(BaseModel):
@@ -144,9 +147,15 @@ class DetectLogosRequest(BaseModel):
 Box = Annotated[list[FiniteFloat], Field(min_length=4, max_length=4)]  # [x, y, width, height] in source-video pixels
 
 
+class SubtitleRegionIn(BaseModel):
+    box: Box
+    orientation: Literal['h', 'v'] | None = None
+
+
 class AnalysisRegionsIn(BaseModel):
     no_hard_subs: bool = False
     subtitle: Box | None = None
+    subtitles: list[SubtitleRegionIn | Box] | None = Field(default=None, max_length=6)
     logos: list[Box] = Field(default_factory=list, max_length=20)
     screen_text: list[Box] = Field(default_factory=list, max_length=20)
 

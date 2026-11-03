@@ -165,6 +165,11 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
     and the previous one) is never merged into it.
     A member may carry `votes` {reading: weight} (from lines_from_samples); otherwise its text, weighted by duration,
     is its only reading."""
+    groups = {}
+    for sg in segments:
+        groups.setdefault(sg.get('region'), []).append(sg)
+    if len(groups) > 1:
+        return sorted([s for rows in groups.values() for s in merge_fragments(rows, gap_same, gap_fuzzy)], key=lambda s: (float(s['s']), float(s['e'])))
     out = []
     for sg in sorted(segments, key=lambda x: (float(x['s']), float(x['e']))):
         votes = dict(sg.get('votes') or {sg.get('text', ''): max(1e-3, float(sg['e']) - float(sg['s']))})
@@ -462,6 +467,9 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
                    source_agreement=_agreement(text, asr_text))
         if all(k in sg for k in ('x0', 'y0', 'x1', 'y1')):
             cue['box'] = [sg['x0'], sg['y0'], sg['x1'], sg['y1']]
+        for field in ('region', 'box', 'orientation', 'text_height'):
+            if field in sg:
+                cue[field] = sg[field]
         cue['source_mismatch'] = cue['source_agreement'] < .6
         if hits:
             cue['asr_text'] = asr_text

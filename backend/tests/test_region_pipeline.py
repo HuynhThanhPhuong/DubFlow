@@ -130,7 +130,7 @@ class RegionPrepareTests(unittest.TestCase):
                          [('ocr+asr', '你好吗朋友'), ('ocr', '再见了朋友们'), ('ocr', '最后一句话了')])
         asr = [c for c in cues if c['source'] == 'asr']
         self.assertEqual([c['id'] for c in asr], ['a2'])
-        self.assertEqual(cues[0]['box'], [100, 170, 220, 200])
+        self.assertEqual(cues[0]['box'], [60, 160, 260, 210])  # selected region, xyxy
         build = p.read(self.d / 'source-build.json')
         self.assertEqual((build['mode'], build['ocr_cues'], build['asr_cues'], build['asr_dropped']), ('regions', 3, 1, 1))
 

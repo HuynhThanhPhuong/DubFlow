@@ -685,6 +685,9 @@ def subband(directory, request):
     or is replaced), which gives the edges a precision of half a step. A band that did not change since the last
     read is not read again. The readings become lines with subtitle_lines.subtitle_lines (fragments of one line
     merged, most complete reading kept)."""
+    if request.get('subtitles'):
+        from multi_regions import read_regions
+        return read_regions(directory, request, subband)
     import cv2
     import numpy as np
     import subprocess
@@ -704,6 +707,14 @@ def subband(directory, request):
 
     def read_band(image):
         """(text, (x0, y0, x1, y1) in frame pixels) of the band image; ('', None) when nothing is read."""
+        if request.get('orientation') == 'v':
+            from vertical_ocr import unfold_vertical
+            unfolded, glyph_height = unfold_vertical(image)
+            result, _ = reader(unfolded, use_cls=False)
+            text = order_lines([(min(xs), min(ys), max(xs), max(ys), text.strip())
+                                for poly, text, score in (result or []) if score >= .6 and text.strip()
+                                for xs, ys in [zip(*poly)]])
+            return text, (bx, by, bx+bw, by+bh) if text else None
         result, _ = reader(image, use_cls=False)
         rows = [(min(xs), min(ys), max(xs), max(ys), text.strip())
                 for box, text, score in (result or []) if score >= .6 and text.strip()
@@ -1015,6 +1026,9 @@ def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=
 def erase(directory, request):
     """Remove burned-in subtitle glyphs and the enabled static regions (logos, fixed text) from every frame
     -> clean.mp4 (video re-encoded, source audio muxed)."""
+    if (read(Path(directory)/'subtrack.json', {}) or {}).get('version') == 3:
+        from multi_regions import erase_regions
+        return erase_regions(directory, request, erase)
     import subprocess
     import cv2
     import numpy as np
@@ -1284,7 +1298,7 @@ def erase(directory, request):
     lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
                     mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
                     cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
-    write(directory/'erase.json', dict(version=9, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
+    write(directory/'erase.json', dict(version=10, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],
