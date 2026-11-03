@@ -67,7 +67,7 @@ it("editor: awaiting_regions shows the picker, Lưu & phân tích saves then ana
   fireEvent.click(screen.getByLabelText("Video không có sub cứng"));
   fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
   await waitFor(() => expect(calls).toContain("POST /api/jobs/a/analyze"));
-  expect(body).toEqual({ no_hard_subs: true, subtitle: null, logos: [], screen_text: [] });
+  expect(body).toEqual({ no_hard_subs: true, subtitle: null, subtitles: [], logos: [], screen_text: [] });
   expect(calls.indexOf("PUT /api/jobs/a/analysis-regions")).toBeLessThan(calls.indexOf("POST /api/jobs/a/analyze"));
 });
 

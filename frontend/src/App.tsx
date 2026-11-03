@@ -43,6 +43,7 @@ import { PipelineSteps } from "./PipelineSteps";
 import { JobActivity } from "./JobActivity";
 import { RegionPicker } from "./RegionPicker";
 import type { RegionDraft } from "./RegionPicker";
+import { subtitleRegions, sameRegions } from "./analysisRegions";
 import "./editor-interactions.css";
 import { ImportDialog, SettingsDialog, VoiceDialog } from "./Dialogs";
 const REGIONS_STALE =
@@ -53,7 +54,7 @@ const subtitleBandChanged = (
 ) =>
   !!a &&
   (a.no_hard_subs !== b.no_hard_subs ||
-    JSON.stringify(a.subtitle ?? null) !== JSON.stringify(b.subtitle ?? null));
+    JSON.stringify(subtitleRegions(a)) !== JSON.stringify(subtitleRegions(b)));
 
 export default function App() {
   const [studioSettings, setStudioSettings] = useState<StudioSettings | null>(
@@ -289,7 +290,7 @@ export default function App() {
     if (
       name === "analyze" &&
       draft &&
-      JSON.stringify(draft.regions) !== JSON.stringify(job.analysis_regions)
+      !sameRegions(draft.regions, job.analysis_regions)
     ) {
       await saveRegions(draft.regions, true);
       return;
@@ -397,7 +398,7 @@ export default function App() {
       const draft = regionDrafts[job.id];
       if (
         draft &&
-        JSON.stringify(draft.regions) !== JSON.stringify(job.analysis_regions)
+        !sameRegions(draft.regions, job.analysis_regions)
       )
         await api.saveAnalysisRegions(job.id, draft.regions);
       setJob(await api.resetSource(job.id));
@@ -522,12 +523,11 @@ export default function App() {
   const regionsPending =
     !!currentJob &&
     !!regionDraft &&
-    JSON.stringify(regionDraft.regions) !==
-      JSON.stringify(currentJob.analysis_regions);
+    !sameRegions(regionDraft.regions, currentJob.analysis_regions);
   const missing = cues.filter((c) => !c.text.trim()).length;
   return (
     <div
-      className={`simple studio-app page-${route.page}${route.page === "editor" && currentJob ? " editor-active" : ""}`}
+      className={`simple studio-app page-${route.page}${route.page === "editor" && currentJob ? " editor-active" : ""}${pickerVisible ? " picker-active" : ""}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}
@@ -815,7 +815,8 @@ export default function App() {
                       job={currentJob}
                       busy={busy}
                       draft={regionDraft}
-                      pending={regionsPending}
+                      time={now}
+                      onSeek={seekTo}
                       onDraft={(draft) =>
                         setRegionDrafts((rows) =>
                           JSON.stringify(rows[currentJob.id]) ===
@@ -832,7 +833,7 @@ export default function App() {
                         job={currentJob}
                         cues={cues}
                         onTime={setNow}
-                        seek={seek}
+                        seek={{ ...seek, time: now }}
                         draft={dirty}
                         onOpenRegions={() => {
                           setPickerDismissed(null);

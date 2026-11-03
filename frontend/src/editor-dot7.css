@@ -590,16 +590,17 @@
 }
 .region-picker .region-picker-head {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex-shrink: 0;
 }
 .region-picker-heading,
-.region-actions {
+.rp-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .region-picker-heading {
   justify-content: space-between;
@@ -610,7 +611,9 @@
   flex-wrap: nowrap;
   padding: 1px 2px;
   min-height: 31px;
-  overflow-x: auto;
+  overflow: visible;
+  min-width: 0;
+  gap: 5px;
 }
 .region-picker .region-picker-tools .button {
   white-space: nowrap;
@@ -627,6 +630,43 @@
   max-height: none;
   min-height: 0;
   border-radius: 7px;
+}
+.region-picker-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  display: block;
+}
+.rp-actions {
+  flex-shrink: 0;
+}
+.rp-actions .button {
+  white-space: nowrap;
+  font-size: 10px;
+  padding: 5px 8px;
+}
+button.rp-label {
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  min-height: 0;
+  cursor: pointer;
+  white-space: normal;
+  width: max-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1400px) {
+  .region-picker .region-picker-head {
+    flex-wrap: wrap;
+  }
+  .rp-actions {
+    margin-left: auto;
+  }
 }
 .region-picker .region-picker-frame {
   flex-shrink: 0;
@@ -819,12 +859,12 @@
     aspect-ratio: 16 / 9;
   }
   .region-picker-head {
-    min-height: 114px;
+    min-height: 0;
   }
   .region-picker-heading {
     align-items: flex-start;
   }
-  .region-actions .button {
+  .rp-actions .button {
     font-size: 10px;
     padding: 4px 7px;
   }
@@ -853,5 +893,83 @@
   .studio-app .sentence,
   .sentence-reveal {
     transition: none;
+  }
+}
+
+/* Dot8: one toolbar, scoped to avoid colliding with region-overlay actions. */
+.studio-app .region-picker .region-picker-head {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  height: auto;
+  min-height: 36px;
+  gap: 8px;
+  margin: 0;
+}
+.studio-app .region-picker .region-picker-tools {
+  height: auto;
+  min-height: 30px;
+  gap: 4px;
+}
+.region-picker-tools label {
+  white-space: nowrap;
+}
+.studio-app .region-picker .region-picker-tools .button {
+  padding: 4px 6px;
+  min-height: 30px;
+}
+@media (max-width: 1100px) {
+  .studio-app .region-picker .region-picker-head {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 900px) {
+  .studio-app .region-picker .region-picker-tools {
+    flex-wrap: wrap;
+  }
+  .studio-app.editor-active.picker-active {
+    height: 100dvh;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: clip;
+  }
+  .studio-app.editor-active.picker-active .simple-main {
+    margin: 0;
+    padding: 8px 12px;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    overflow: clip;
+  }
+  .picker-active .editor-membership,
+  .picker-active .mode-readonly,
+  .picker-active .workflow-row,
+  .picker-active .simple-script,
+  .picker-active .editor-title-copy p {
+    display: none !important;
+  }
+  .studio-app.editor-active.picker-active .simple-work {
+    flex: 1;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .studio-app.editor-active.picker-active .video-column {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
+    height: 100%;
+    overflow: clip;
+  }
+  .studio-app.editor-active.picker-active .region-picker {
+    height: 100%;
+  }
+  .studio-app.editor-active.picker-active .region-picker-stage {
+    flex: 1 1 0;
+    min-height: 0;
+    aspect-ratio: auto;
+  }
+  .picker-active .editor-actionbar {
+    margin-top: 5px;
   }
 }

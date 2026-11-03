@@ -87,7 +87,7 @@ export function Player({
   useEffect(() => {
     setView(preferred);
     setError("");
-    setNow(0);
+    setNow(Number.isFinite(seek.time) ? seek.time : 0);
     setPlaying(false);
   }, [job.id, job.output_url]);
   useEffect(() => {
@@ -275,7 +275,7 @@ export function Player({
       video.current.currentTime = seek.time;
       setNow(seek.time);
     }
-  }, [seek]);
+  }, [seek.token]);
   useEffect(() => {
     const onFullscreenChange = () => {
       if (document.fullscreenElement) return;

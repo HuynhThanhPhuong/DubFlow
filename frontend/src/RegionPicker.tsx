@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as RPointerEvent } from "react";
 import { Trash2 } from "lucide-react";
-import { api } from "./api";
-import type { AnalysisRegions, Job, RegionRect } from "./types";
+import { mediaUrl } from "./api";
+import { subtitleRegions } from "./analysisRegions";
+import type { AnalysisRegions, Job, RegionRect, SubtitleRegion } from "./types";
 import { normalizeBox, toDisplay, toSource, type Box } from "./regionGeometry";
 import { fitVideoRect } from "./SubtitlePreview";
 import { Button } from "./ui";
@@ -28,7 +29,7 @@ const toRect = (b: Box): RegionRect => [
   Math.max(1, Math.round(b.height)),
 ];
 export const regionsValid = (r: AnalysisRegions | null | undefined) =>
-  !!r && (r.no_hard_subs || !!r.subtitle);
+  !!r && (r.no_hard_subs || subtitleRegions(r).length > 0);
 
 interface Sel {
   kind: Kind;
@@ -39,7 +40,8 @@ export interface RegionDraft {
   time: number;
   tool: Kind;
   selected: Sel | null;
-  subtitleDraft: RegionRect | null;
+  subtitleDraft?: RegionRect | null;
+  subtitleDrafts?: SubtitleRegion[];
 }
 interface Drag {
   mode: "draw" | "move" | "resize";
@@ -56,7 +58,8 @@ export function RegionPicker({
   onSave,
   draft,
   onDraft,
-  pending = false,
+  time: sharedTime,
+  onSeek,
 }: {
   job: Job;
   busy?: boolean;
@@ -64,17 +67,29 @@ export function RegionPicker({
   draft?: RegionDraft;
   onDraft?: (draft: RegionDraft) => void;
   pending?: boolean;
+  time?: number;
+  onSeek?: (time: number) => void;
 }) {
   const initial = draft?.regions ?? job.analysis_regions;
   const duration = job.duration ?? 0;
-  const [t, setT] = useState(
-    () => draft?.time ?? Math.min(Math.max(duration, 0), 5),
-  );
+  const t = sharedTime ?? draft?.time ?? 0;
+  const video = useRef<HTMLVideoElement>(null);
+  const latestTime = useRef(t);
+  latestTime.current = t;
   const [noHard, setNoHard] = useState(initial?.no_hard_subs ?? false);
-  const [subtitle, setSubtitle] = useState<Box | null>(() => {
-    const box = draft?.subtitleDraft ?? initial?.subtitle;
-    return box ? toBox(box) : null;
-  });
+  const [subtitles, setSubtitles] = useState<SubtitleRegion[]>(
+    () => draft?.subtitleDrafts ?? subtitleRegions(initial),
+  );
+  const seekVideo = () => {
+    const el = video.current;
+    if (
+      el &&
+      el.readyState >= 1 &&
+      Math.abs(el.currentTime - latestTime.current) > 0.005
+    )
+      el.currentTime = latestTime.current;
+  };
+  useEffect(seekVideo, [t]);
   const [logos, setLogos] = useState<Box[]>((initial?.logos ?? []).map(toBox));
   const [texts, setTexts] = useState<Box[]>(
     (initial?.screen_text ?? []).map(toBox),
@@ -121,37 +136,45 @@ export function RegionPicker({
   }, []);
   useEffect(() => {
     if (noHard && tool === "subtitle") setTool("logo");
-  }, [noHard, tool]);
+    if (noHard && selected?.kind === "subtitle") setSelected(null);
+  }, [noHard, tool, selected]);
   const draftListener = useRef(onDraft);
   draftListener.current = onDraft;
   useEffect(() => {
     draftListener.current?.({
       regions: {
         no_hard_subs: noHard,
-        subtitle: noHard || !subtitle ? null : toRect(subtitle),
+        subtitle: noHard ? null : (subtitles[0]?.box ?? null),
+        subtitles: noHard ? [] : subtitles,
         logos: logos.map(toRect),
         screen_text: texts.map(toRect),
       },
       time: t,
       tool,
       selected,
-      subtitleDraft: subtitle ? toRect(subtitle) : null,
+      subtitleDrafts: subtitles,
     });
-  }, [noHard, subtitle, logos, texts, t, tool, selected]);
+  }, [noHard, subtitles, logos, texts, t, tool, selected]);
 
   const get = (s: Sel): Box | undefined =>
     s.kind === "subtitle"
-      ? (subtitle ?? undefined)
+      ? subtitles[s.index]
+        ? toBox(subtitles[s.index].box)
+        : undefined
       : (s.kind === "logo" ? logos : texts)[s.index];
   const put = (s: Sel, box: Box) => {
-    if (s.kind === "subtitle") setSubtitle(box);
+    if (s.kind === "subtitle")
+      setSubtitles((rows) =>
+        rows.map((r, i) => (i === s.index ? { ...r, box: toRect(box) } : r)),
+      );
     else {
       const set = s.kind === "logo" ? setLogos : setTexts;
       set((rows) => rows.map((r, i) => (i === s.index ? box : r)));
     }
   };
   const remove = (s: Sel) => {
-    if (s.kind === "subtitle") setSubtitle(null);
+    if (s.kind === "subtitle")
+      setSubtitles((rows) => rows.filter((_, i) => i !== s.index));
     else
       (s.kind === "logo" ? setLogos : setTexts)((rows) =>
         rows.filter((_, i) => i !== s.index),
@@ -174,6 +197,15 @@ export function RegionPicker({
         setTool(kind);
         e.preventDefault();
       }
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && onSeek) {
+        e.preventDefault();
+        onSeek(
+          Math.max(
+            0,
+            Math.min(duration, t + (e.key === "ArrowRight" ? 1 : -1)),
+          ),
+        );
+      }
       if (e.key === "Delete" && selected) {
         remove(selected);
         e.preventDefault();
@@ -181,7 +213,7 @@ export function RegionPicker({
     };
     document.addEventListener("keydown", shortcut);
     return () => document.removeEventListener("keydown", shortcut);
-  }, [busy, noHard, selected]);
+  }, [busy, noHard, selected, subtitles, logos, texts, t, duration, onSeek]);
   const point = (e: { clientX: number; clientY: number }) => {
     const b = stage.current?.getBoundingClientRect();
     return toSource(
@@ -207,6 +239,10 @@ export function RegionPicker({
   const stageDown = (e: RPointerEvent<HTMLDivElement>) => {
     if (!rect.width || !vw || busy) return;
     if (tool === "subtitle" && noHard) return;
+    if (tool === "subtitle" && subtitles.length >= 6) {
+      setError("Tối đa 6 vùng sub.");
+      return;
+    }
     e.preventDefault();
     capture(e);
     const p = point(e);
@@ -289,8 +325,15 @@ export function RegionPicker({
     if (d.mode === "draw") {
       if (moved < 4) return;
       if (tool === "subtitle") {
-        setSubtitle(box);
-        setSelected({ kind: "subtitle", index: 0 });
+        if (subtitles.length >= 6) return;
+        setSubtitles((rows) => [
+          ...rows,
+          {
+            box: toRect(box),
+            orientation: box.height > 1.5 * box.width ? "v" : "h",
+          },
+        ]);
+        setSelected({ kind: "subtitle", index: subtitles.length });
       } else if (tool === "logo") {
         setLogos((rows) => [...rows, box]);
         setSelected({ kind: "logo", index: logos.length });
@@ -302,7 +345,7 @@ export function RegionPicker({
   };
 
   const submit = async (analyze: boolean) => {
-    if (!noHard && !subtitle) {
+    if (!noHard && !subtitles.length) {
       setError('Hãy vẽ dải sub Trung hoặc chọn "Video không có sub cứng".');
       return;
     }
@@ -310,7 +353,8 @@ export function RegionPicker({
     await onSave(
       {
         no_hard_subs: noHard,
-        subtitle: noHard || !subtitle ? null : toRect(subtitle),
+        subtitle: noHard ? null : (subtitles[0]?.box ?? null),
+        subtitles: noHard ? [] : subtitles,
         logos: logos.map(toRect),
         screen_text: texts.map(toRect),
       },
@@ -335,10 +379,33 @@ export function RegionPicker({
         style={{ left: d.left, top: d.top, width: d.width, height: d.height }}
         onPointerDown={(e) => boxDown(e, sel)}
       >
-        <span className={`rp-label${near ? " inside" : ""}`}>
-          {LABELS[kind]}
-          {kind !== "subtitle" ? ` ${index + 1}` : ""}
-        </span>
+        {kind === "subtitle" ? (
+          <button
+            type="button"
+            className={`rp-label${near ? " inside" : ""}`}
+            disabled={busy}
+            title="Bấm để đổi hướng chữ"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelected(sel);
+              setSubtitles((rows) =>
+                rows.map((r, i) =>
+                  i === index
+                    ? { ...r, orientation: r.orientation === "v" ? "h" : "v" }
+                    : r,
+                ),
+              );
+            }}
+          >
+            Sub Trung {index + 1} ·{" "}
+            {subtitles[index].orientation === "v" ? "dọc" : "ngang"}
+          </button>
+        ) : (
+          <span className={`rp-label${near ? " inside" : ""}`}>
+            {LABELS[kind]} {index + 1}
+          </span>
+        )}
         {isSel &&
           !busy &&
           CORNERS.map((c) => (
@@ -358,28 +425,6 @@ export function RegionPicker({
   return (
     <section className="region-picker" aria-label="Chọn vùng phân tích">
       <div className="region-picker-head">
-        <div className="region-picker-heading">
-          <strong>Vùng phân tích</strong>
-          <div className="region-actions">
-            <Button
-              className="icon-danger"
-              disabled={!selected || busy}
-              aria-label="Xoá vùng đã chọn"
-              title="Xoá vùng đang chọn (Delete)"
-              onClick={() => selected && remove(selected)}
-            >
-              <Trash2 size={14} /> Xoá vùng
-            </Button>
-            <Button
-              variant="save"
-              disabled={busy}
-              title="Áp dụng các vùng đã chọn và đưa video vào hàng đợi phân tích"
-              onClick={() => void submit(true)}
-            >
-              Lưu &amp; phân tích
-            </Button>
-          </div>
-        </div>
         <div
           className="region-picker-bar region-picker-tools"
           role="group"
@@ -418,6 +463,25 @@ export function RegionPicker({
             Video không có sub cứng
           </label>
         </div>
+        <div className="rp-actions">
+          <Button
+            className="icon-danger"
+            disabled={!selected || busy}
+            aria-label="Xoá vùng đã chọn"
+            title="Xoá vùng đang chọn (Delete)"
+            onClick={() => selected && remove(selected)}
+          >
+            <Trash2 size={14} /> Xoá vùng
+          </Button>
+          <Button
+            variant="save"
+            disabled={busy}
+            title="Áp dụng các vùng đã chọn và đưa video vào hàng đợi phân tích"
+            onClick={() => void submit(true)}
+          >
+            Lưu &amp; phân tích
+          </Button>
+        </div>
       </div>
       <div
         className="region-picker-stage"
@@ -431,65 +495,38 @@ export function RegionPicker({
           setLive(null);
         }}
       >
-        <img
-          src={api.frameUrl(job.id, t)}
-          alt="Khung hình video"
-          draggable={false}
-          onLoad={(e) => {
+        <video
+          ref={video}
+          src={mediaUrl(job.source_url_path)}
+          aria-label="Khung hình video"
+          muted
+          playsInline
+          preload="auto"
+          onLoadedMetadata={(e) => {
             setNat({
-              w: e.currentTarget.naturalWidth,
-              h: e.currentTarget.naturalHeight,
+              w: e.currentTarget.videoWidth,
+              h: e.currentTarget.videoHeight,
             });
+            e.currentTarget.currentTime = latestTime.current;
             measure();
           }}
+          onSeeked={seekVideo}
         />
         {rect.width > 0 && vw > 0 && (
           <>
-            {subtitle && !noHard && renderBox("subtitle", 0, subtitle)}
+            {!noHard &&
+              subtitles.map((r, i) => renderBox("subtitle", i, toBox(r.box)))}
             {logos.map((b, i) => renderBox("logo", i, b))}
             {texts.map((b, i) => renderBox("text", i, b))}
             {drawing && <div className={`rp-box rp-${tool}`} style={drawing} />}
           </>
         )}
       </div>
-      <div className="region-picker-bar region-picker-frame">
-        <Button
-          disabled={t <= 0}
-          title="Lùi khung hình 5 giây"
-          onClick={() => setT((v) => Math.max(0, v - 5))}
-        >
-          -5 giây
-        </Button>
-        <input
-          type="range"
-          aria-label="Chọn khung hình"
-          min={0}
-          max={Math.max(duration, 1)}
-          step={1}
-          value={Math.min(t, Math.max(duration, 1))}
-          onChange={(e) => setT(Number(e.target.value))}
-        />
-        <Button
-          disabled={duration > 0 && t >= duration}
-          title="Tiến khung hình 5 giây"
-          onClick={() => setT((v) => Math.min(duration || v + 5, v + 5))}
-        >
-          +5 giây
-        </Button>
-        <span className="muted">{Math.round(t)}s</span>
-      </div>
       {error && (
         <p role="alert" className="error small">
           {error}
         </p>
       )}
-      <div className="region-picker-foot">
-        <span className={`small ${pending ? "region-draft-note" : "muted"}`}>
-          {pending
-            ? "Vùng nháp được giữ trong phiên. Lưu & phân tích trước khi xuất."
-            : "Kéo để vẽ, kéo góc để đổi cỡ. Phím 1/2/3 chọn công cụ, Delete xoá vùng."}
-        </span>
-      </div>
     </section>
   );
 }
