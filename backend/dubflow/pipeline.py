@@ -1165,9 +1165,9 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height):
     if __package__:
-        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout
     else:
-        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y
+        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout
     st = style_for(width, height)
     font_size = ass_size(st['size'])  # libass cell height of the visible size
     out = f'''[Script Info]
@@ -1201,16 +1201,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     lane_of=assign_lanes(cues)
     for index in sorted(range(len(cues)),key=lambda i:cues[i]['start']):
         cue=cues[index]
-        box=cue.get('box')
-        if box and len(box)==4:
-            x,y,align=(box[0]+box[2])/2,(box[1]+box[3])/2,5
-        else:
-            x,y,align=width/2,height-st['margin_v'],2
-        # Real overlapping dialogue stays legible instead of occupying one position.
-        y=lane_y(y,lane_of[index],font_size)
-        available=available_width(box,width)
-        lines,size=fit_lines(cue['text'],st['size'],available,st['max_lines'])
-        out += event(cue['start'],cue['end'],'\n'.join(lines),x,y,ass_size(size),align)
+        fit = region_layout(cue, width, height, st)
+        y = fit['y'] if lane_of[index] == 0 else lane_y(fit['y'], lane_of[index], ass_size(fit['size']))
+        out += event(cue['start'],cue['end'],'\n'.join(fit['lines']),fit['x'],y,ass_size(fit['size']),fit['align'])
     # Timed OCR boxes for the same on-screen note also share one typography.
     note_groups=[]
     for r in regions:

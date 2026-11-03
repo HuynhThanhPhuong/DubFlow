@@ -89,10 +89,12 @@ def assign_lanes(cues) -> list[int]:
     """Lane per cue (input order): first free lane scanning cues in start order.
     Mirrored exactly by frontend SubtitlePreview.assignLanes."""
     order = sorted(range(len(cues)), key=lambda i: cues[i]['start'])
-    ends: list[float] = []
+    groups = {}
     lanes = [0] * len(cues)
     for i in order:
         c = cues[i]
+        group = ('region', c['region']) if c.get('region') is not None and c.get('box') else ('legacy',)
+        ends = groups.setdefault(group, [])
         lane = next((k for k, end in enumerate(ends) if end <= c['start']), len(ends))
         if lane == len(ends):
             ends.append(c['end'])
@@ -111,8 +113,41 @@ def available_width(box, width: int) -> float:
     return max(20, 2 * min(x, width - x) - 20)
 
 
-def overflows(text: str, box, width: int, height: int) -> bool:
+def region_layout(cue, width: int, height: int, st=None):
+    """Pixel layout shared with the browser. Cue boxes use xyxy, regions use xywh."""
+    st = st or style_for(width, height)
+    text, box = cue.get('text', ''), cue.get('box')
+    if not box or len(box) != 4:
+        lines, size = fit_lines(text, st['size'], available_width(None, width), st['max_lines'])
+        return dict(x=width/2, y=height-st['margin_v'], align=2, size=size, lines=lines,
+                    available=available_width(None, width), overflow=len(lines) > st['max_lines'])
+    x0, y0, x1, y1 = box
+    bw, bh = max(1, x1-x0), max(1, y1-y0)
+    minimum, maximum = st['size']*.6, st['size']
+    vertical = cue.get('orientation') == 'v'
+    if vertical:
+        lines = str(text).split()
+        longest = max((_units(word) for word in lines), default=1)
+        limit = min(maximum, bw*1.2/max(longest, .01), bh/max(1, len(lines))/ASS_CELL)
+        size = max(minimum, limit)
+        # Account for ASS cell rounding when fitting total line height.
+        if ass_size(size)*len(lines) > bh and size > minimum:
+            size = max(minimum, size-.5/ASS_CELL)
+        overflow = longest*size > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01
+        available = bw*1.2
+    else:
+        maximum = max(minimum, min(maximum, cue.get('text_height') or maximum))
+        size, lines = maximum, _wrap(text, maximum, bw)
+        while (len(lines) > 2 or any(_units(line)*size > bw+.01 for line in lines)) and size > minimum+.01:
+            size = max(minimum, size-maximum*.01)
+            lines = _wrap(text, size, bw)
+        overflow = len(lines) > 2 or any(_units(line)*size > bw+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01
+        if len(lines) > 2:
+            lines = [lines[0], ' '.join(lines[1:])]
+        available = bw
+    return dict(x=(x0+x1)/2, y=(y0+y1)/2, align=5, size=size, lines=lines, available=available, overflow=overflow)
+
+
+def overflows(text: str, box, width: int, height: int, orientation=None, text_height=None) -> bool:
     """True when the cue still needs more than max_lines after the 15% shrink."""
-    st = style_for(width, height)
-    lines, _ = fit_lines(text, st['size'], available_width(box, width), st['max_lines'])
-    return len(lines) > st['max_lines']
+    return region_layout(dict(text=text, box=box, orientation=orientation, text_height=text_height), width, height)['overflow']

@@ -53,7 +53,7 @@ class ReviewTests(unittest.TestCase):
         flags=[f for f in report['flags'] if f['code']=='LINES_OVERFLOW']
         self.assertEqual([f['cue_ids'] for f in flags],[['long']])
         self.assertEqual(flags[0]['severity'],'review')
-        self.assertEqual(flags[0]['message'],'Câu quá dài, vượt 2 dòng sub; nên rút gọn lời Việt.')
+        self.assertEqual(flags[0]['message'],'Chữ tràn vùng; nên rút gọn lời Việt.')
         self.assertNotIn('LINES_OVERFLOW',[f['code'] for f in review.quality_report(self.folder,self.job)['flags']])
 
     def test_ocr_empty_flag(self):

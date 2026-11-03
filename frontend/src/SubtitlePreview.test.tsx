@@ -106,7 +106,7 @@ it("uses the shared Roboto style scaled to the displayed height and the cue box 
     />,
   );
   const [boxed, bottom] = Array.from(container.querySelectorAll<HTMLElement>(".vietnamese-preview"));
-  expect(parseFloat(boxed.style.fontSize)).toBeCloseTo(29.5, 1);
+  expect(parseFloat(boxed.style.fontSize)).toBeCloseTo(78 / (2701/2048) * .5, 3);
   expect(boxed.style.getPropertyValue("-webkit-text-stroke-width") || (boxed.style as unknown as Record<string, string>).webkitTextStrokeWidth).toBeTruthy();
   expect(parseFloat(boxed.style.left)).toBeCloseTo((700 / 1920) * 100, 3);
   expect(parseFloat(boxed.style.top)).toBeCloseTo((950 / 1080) * 100, 3);

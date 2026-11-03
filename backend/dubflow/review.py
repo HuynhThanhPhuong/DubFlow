@@ -238,8 +238,8 @@ def quality_report(folder, job, state=None):
             flag('SPEECH_TOO_LONG',[c['id']], 'Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.')
         if not text and c['id'] in failed_ids:
             flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
-        if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height'])):
-            flag('LINES_OVERFLOW',[c['id']], 'Câu quá dài, vượt 2 dòng sub; nên rút gọn lời Việt.')
+        if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height']),c.get('orientation'),c.get('text_height')):
+            flag('LINES_OVERFLOW',[c['id']], 'Chữ tràn vùng; nên rút gọn lời Việt.')
         assignment=current_assignment(c,state)
         if job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):
             flag('SPEAKER_UNCONFIRMED',[c['id']], 'Nhân vật nói chưa chắc chắn; hệ thống cần phân nhóm giọng hoặc sửa nhãn ngay ở Lời dịch.')
@@ -266,6 +266,7 @@ def quality_report(folder, job, state=None):
         active=[o for o in active if o['end']>c['start']]
         for other in active:
             if other['end']>c['start']:
+                if c.get('region') is not None and other.get('region') is not None and c['region'] != other['region'] and c.get('box') and other.get('box'):continue
                 if c.get('overlap_group') and c.get('overlap_group')==other.get('overlap_group'):continue
                 flag('CUE_OVERLAP',[other['id'],c['id']], 'Hai cue chồng thời gian; xác nhận chồng thoại thật và vị trí hiển thị.')
         active.append(c)

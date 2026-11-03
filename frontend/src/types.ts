@@ -26,9 +26,11 @@ export interface JobQueueInfo {
 }
 /** [x, y, w, h] in source-video pixels */
 export type RegionRect = [number, number, number, number];
+export interface SubtitleRegion { box: RegionRect; orientation: 'h' | 'v' }
 export interface AnalysisRegions {
   no_hard_subs: boolean;
   subtitle: RegionRect | null;
+  subtitles?: (SubtitleRegion | RegionRect)[] | null;
   logos: RegionRect[];
   screen_text: RegionRect[];
 }
@@ -131,6 +133,9 @@ export interface Cue {
   source_partial?: boolean;
   ocr_empty?: boolean;
   box?: number[] | null;
+  region?: number | null;
+  orientation?: 'h' | 'v' | null;
+  text_height?: number | null;
 }
 export interface Region {
   id: string;

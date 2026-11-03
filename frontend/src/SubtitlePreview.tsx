@@ -59,11 +59,15 @@ export function fitLines(text: string, size: number, maxWidth: number, maxLines 
 }
 
 // Exact mirror of backend subtitle_style.assign_lanes / lane_y (first free lane in start order).
-export function assignLanes(cues: { start: number; end: number }[]): number[] {
+export function assignLanes(cues: { start: number; end: number; region?: number | null; box?: number[] | null }[]): number[] {
   const order = cues.map((_, i) => i).sort((a, b) => cues[a].start - cues[b].start || a - b);
-  const ends: number[] = [];
+  const groups = new Map<string, number[]>();
   const lanes: number[] = new Array(cues.length).fill(0);
   for (const i of order) {
+    const c = cues[i];
+    const group = c.region != null && c.box ? `region-${c.region}` : 'legacy';
+    const ends = groups.get(group) ?? [];
+    groups.set(group, ends);
     let lane = ends.findIndex((end) => end <= cues[i].start);
     if (lane < 0) {
       lane = ends.length;
@@ -74,6 +78,39 @@ export function assignLanes(cues: { start: number; end: number }[]): number[] {
   return lanes;
 }
 export const laneY = (y: number, lane: number, fs: number) => Math.max(fs * 1.5, y - lane * fs * 3);
+
+const assSize = (size: number) => Math.max(8, Math.round(size*LIBASS_CELL));
+/** Mirror of backend subtitle_style.region_layout. Cue box is xyxy. */
+export function regionLayout(cue: Pick<Cue,'text'|'box'|'orientation'|'text_height'>, width: number, height: number, custom?: SubtitleStyle | null) {
+  const st=custom ?? {size:Math.round(height*(height>width?.045:.055)),margin_v:Math.round(height*.04),max_lines:2};
+  const box=cue.box;
+  if (!box || box.length!==4) {
+    const available=Math.max(20,width-20);
+    const fit=fitLines(cue.text,st.size,available,st.max_lines);
+    return {...fit,x:width/2,y:height-st.margin_v,available,overflow:fit.lines.length>st.max_lines};
+  }
+  const [x0,y0,x1,y1]=box;
+  const bw=Math.max(1,x1-x0), bh=Math.max(1,y1-y0), minimum=st.size*.6;
+  let maximum=st.size, size=maximum, lines:string[], overflow:boolean, available:number;
+  if(cue.orientation==='v') {
+    lines=cue.text.split(/\s+/).filter(Boolean);
+    const longest=Math.max(...lines.map(units),1);
+    size=Math.max(minimum,Math.min(maximum,bw*1.2/Math.max(longest,.01),bh/Math.max(1,lines.length)/LIBASS_CELL));
+    if(assSize(size)*lines.length>bh && size>minimum) size=Math.max(minimum,size-.5/LIBASS_CELL);
+    overflow=longest*size>bw*1.2+.01 || assSize(size)*lines.length>bh+.01;
+    available=bw*1.2;
+  } else {
+    maximum=Math.max(minimum,Math.min(maximum,cue.text_height || maximum));
+    size=maximum; lines=wrapText(cue.text,size,bw);
+    while((lines.length>2 || lines.some(line=>units(line)*size>bw+.01)) && size>minimum+.01) {
+      size=Math.max(minimum,size-maximum*.01); lines=wrapText(cue.text,size,bw);
+    }
+    overflow=lines.length>2 || lines.some(line=>units(line)*size>bw+.01) || assSize(size)*lines.length>bh+.01;
+    if(lines.length>2) lines=[lines[0],lines.slice(1).join(' ')];
+    available=bw;
+  }
+  return {x:(x0+x1)/2,y:(y0+y1)/2,size,lines,overflow,available};
+}
 
 type MaskRegion = Partial<Region> & {preview_mask_url?: string};
 type TimedRegion = Region & { boxes?: MaskRegion[]; preview_mask_url?: string };
@@ -157,12 +194,10 @@ export function SubtitlePreview({
         ))}
       {active.map(({ c, lane }) => {
         const box = c.box && c.box.length === 4 ? c.box : null;
-        const x = box ? (box[0] + box[2]) / 2 : width / 2;
-        const y = box ? (box[1] + box[3]) / 2 : height - st.margin_v;
-        const fs = Math.max(8, Math.round(st.size * LIBASS_CELL));
-        const yLane = laneY(y, lane, fs);
-        const available = Math.max(20, 2 * Math.min(x, width - x) - 20);
-        const fit = fitLines(c.text, st.size, available, st.max_lines);
+        const fit=regionLayout(c,width,height,st);
+        const fs=assSize(fit.size);
+        const x=Math.round(fit.x), y=Math.round(fit.y);
+        const yLane = lane===0 ? y : laneY(y, lane, fs);
         return (
           <div
             key={c.id}
@@ -171,8 +206,9 @@ export function SubtitlePreview({
             style={{
               left: `${(x / width) * 100}%`,
               top: `${(yLane / height) * 100}%`,
-              maxWidth: `${(available / width) * 100}%`,
-              fontSize: ratio ? fit.size * ratio : 16,
+              maxWidth: `${(fit.available / width) * 100}%`,
+              fontSize: ratio ? fs / LIBASS_CELL * ratio : 16,
+              lineHeight: LIBASS_CELL,
               WebkitTextStrokeWidth: outline * 2,
             }}
           >
