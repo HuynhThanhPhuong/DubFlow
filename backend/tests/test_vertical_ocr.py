@@ -1,6 +1,38 @@
 import unittest
 
 class VerticalOCRTests(unittest.TestCase):
+    def test_staggered_columns_do_not_merge_when_their_row_projections_touch(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest('OCR environment required')
+        from dubflow.vertical_ocr import unfold_vertical
+        image = np.zeros((100, 80, 3), np.uint8)
+        for x, y, color in [(5, 5, 240), (5, 35, 250), (35, 20, 220), (35, 50, 230)]:
+            cv2.rectangle(image, (x, y), (x+19, y+19), (color, color, color), -1)
+        strip, _ = unfold_vertical(image)
+        self.assertEqual(strip.shape[1], 4*56)
+        self.assertEqual([int(c.max()) for c in np.array_split(strip, 4, axis=1)], [220, 230, 240, 250])
+
+    def test_chuan_disconnected_radicals_are_not_split_into_columns(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest('OCR environment required')
+        from pathlib import Path
+        from dubflow.vertical_ocr import unfold_vertical
+        image = cv2.imread(str(Path(__file__).parent/'fixtures'/'vertical-chuan.png'))
+        strip, _ = unfold_vertical(image)
+        self.assertEqual(strip.shape[1], 2*56)
+        # Two real columns of the same disconnected character retain their order.
+        left = (image.astype(float)*(250/255)).astype(np.uint8)
+        right = (image.astype(float)*(220/255)).astype(np.uint8)
+        strip, _ = unfold_vertical(np.concatenate([left, right], axis=1))
+        self.assertEqual(strip.shape[1], 4*56)
+        self.assertEqual([int(c.max()) for c in np.array_split(strip, 4, axis=1)], [220, 220, 250, 250])
+
     def test_gold_vertical_strokes_are_detected_below_white_threshold(self):
         try:
             import cv2

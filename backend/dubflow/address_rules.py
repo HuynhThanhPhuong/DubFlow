@@ -29,8 +29,10 @@ def locked_setting(choice: str) -> dict | None:
     return {'era': choice, 'note': 'Người dùng khóa bối cảnh: ' + SETTING_LABELS[choice]} if choice != 'auto' else None
 
 
-def setting_instruction(choice: str = 'auto') -> str:
+def setting_instruction(choice: str = 'auto', *, chat: bool = False) -> str:
     choice = normalize_setting(choice)
     if choice == 'auto':
+        if chat:
+            return 'BỐI CẢNH: Tự động. Đọc toàn bộ SRT và xác định thời đại ở bước 1 trước khi dịch; giữ nhất quán thời đại đó trong toàn bộ bản dịch. Chỉ trả về SRT theo yêu cầu định dạng.'
         return 'BỐI CẢNH: Tự động. Tự xác định ở bước 1 trước khi dịch; nếu context.setting đã có thì kế thừa, không tự đổi thời đại giữa các phần.'
     return f'BỐI CẢNH KHÓA: {SETTING_LABELS[choice]} ({choice}) do người dùng chọn. Bắt buộc dùng thời đại này; không được tự đổi kể cả khi lời thoại gợi ý khác.'

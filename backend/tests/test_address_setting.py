@@ -143,13 +143,16 @@ class AddressSettingTests(unittest.TestCase):
         self.assertEqual(out.failed, [])
         self.assertTrue(all('source_dialogue' not in c for c in fake.calls[1:]))
 
-    def test_overview_exceeding_input_budget_never_calls_provider(self):
+    def test_oversized_overview_is_read_in_bounded_blocks_before_translation(self):
         items = make_items(200)
         source = [{'id': i.id, 'zh': i.zh, 'speaker': i.speaker} for i in items]
         fake = SettingProvider()
         out = run(self.folder, items, p=prefs(max_input_tokens=5000), fake=fake, source_dialogue=source)
-        self.assertEqual(fake.calls, [])
-        self.assertIn('Tăng giới hạn token đầu vào', out.error)
+        self.assertIsNone(out.error)
+        self.assertEqual(len(out.texts), 200)
+        scans = [c for c in fake.calls if not c['items']]
+        self.assertGreater(len(scans), 1)
+        self.assertEqual([row for c in scans for row in c['source_dialogue']], source)
 
     def test_inherited_context_does_not_change_cancelled_chunk_boundaries(self):
         items = make_items(100)

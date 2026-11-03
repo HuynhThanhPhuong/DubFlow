@@ -38,7 +38,22 @@ def unfold_vertical(image):
     # Require local contrast to avoid turning flat highlights into characters.
     low = cv2.erode(gray, np.ones((7, 7), np.uint8))
     mask = bright & (gray.astype(np.int16)-low.astype(np.int16) > 20)
-    cols = [(a, b) for a, b in _runs(mask.sum(axis=0) >= max(2, h*.012), max(2, round(w*.045))) if b-a >= 4]
+    # Estimate a character cell from horizontal bands before finding columns.
+    # Disconnected radicals (e.g. 川) are narrower than a whole character; treating
+    # each x projection as a column would also slice every tall stroke into rows.
+    projections = _runs(mask.sum(axis=0) >= max(2, h*.012), max(2, round(w*.045)))
+    # Measure rows within each x-run: staggered true columns can overlap in y,
+    # turning a global y-projection into one falsely enormous character cell.
+    heights = [d-c for a, b in projections
+               for c, d in _runs(mask[:, a:b].any(axis=1), max(1, round(w*.025))) if d-c >= 4]
+    cell = float(np.median(heights)) if heights else 0
+    cols = []
+    for a, b in projections:
+        if cols and b-cols[-1][0] <= cell*1.25 and a-cols[-1][1] <= cell*.5:
+            cols[-1][1] = b
+        else:
+            cols.append([a, b])
+    cols = [(a, b) for a, b in cols if b-a >= 4]
     tiles, heights, glyphs = [], [], []
     for x0, x1 in reversed(cols):
         cw = x1-x0

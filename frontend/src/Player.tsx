@@ -46,10 +46,19 @@ export function Player({
   const [view, setView] = useState<"source" | "preview" | "output">(preferred);
   const [error, setError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
+  const pendingSeek = useRef<number | null>(null);
   const frame = useRef<HTMLDivElement>(null);
   const [regions, setRegions] = useState<Region[]>([]);
   const [rect, setRect] = useState(fitVideoRect(0, 0, 0, 0));
   const [now, setNow] = useState(Number.isFinite(seek.time) ? seek.time : 0);
+  const seekVideo = (target: number, notify = false) => {
+    const el = video.current;
+    if (!el || !Number.isFinite(target)) return;
+    pendingSeek.current = el.seeking || Math.abs(el.currentTime - target) > 0.05 ? target : null;
+    el.currentTime = target;
+    setNow(target);
+    if (notify) onTime(target);
+  };
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [drawing, setDrawing] = useState(false);
@@ -271,10 +280,7 @@ export function Player({
     setPlaying(false);
   }, [source]);
   useEffect(() => {
-    if (video.current && Number.isFinite(seek.time)) {
-      video.current.currentTime = seek.time;
-      setNow(seek.time);
-    }
+    seekVideo(seek.time);
   }, [seek.token]);
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -439,10 +445,22 @@ export function Player({
             playsInline
             preload="metadata"
             onLoadedMetadata={(e) => {
-              e.currentTarget.currentTime = Math.min(
+              const target = Math.min(
                 now,
                 e.currentTarget.duration || now,
               );
+              seekVideo(target);
+            }}
+            onSeeked={(e) => {
+              const target = pendingSeek.current;
+              if (target == null) return;
+              if (Math.abs(e.currentTarget.currentTime - target) > 0.05) {
+                e.currentTarget.currentTime = target;
+                return;
+              }
+              pendingSeek.current = null;
+              setNow(target);
+              onTime(target);
             }}
             aria-label={
               view === "source"
@@ -457,6 +475,7 @@ export function Player({
               )
             }
             onTimeUpdate={(e) => {
+              if (pendingSeek.current != null) return;
               setNow(e.currentTarget.currentTime);
               onTime(e.currentTarget.currentTime);
             }}
@@ -552,10 +571,10 @@ export function Player({
           aria-label="Lùi 5 giây"
           onClick={() => {
             if (video.current)
-              video.current.currentTime = Math.max(
+              seekVideo(Math.max(
                 0,
-                video.current.currentTime - 5,
-              );
+                (pendingSeek.current ?? video.current.currentTime) - 5,
+              ), true);
           }}
         >
           <SkipBack size={16} />
@@ -566,10 +585,10 @@ export function Player({
           aria-label="Tiến 5 giây"
           onClick={() => {
             if (video.current)
-              video.current.currentTime = Math.min(
+              seekVideo(Math.min(
                 job.duration ?? video.current.duration,
-                video.current.currentTime + 5,
-              );
+                (pendingSeek.current ?? video.current.currentTime) + 5,
+              ), true);
           }}
         >
           <SkipForward size={16} />

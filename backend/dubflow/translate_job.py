@@ -20,7 +20,7 @@ from .textcheck import needs_translation
 from .address_rules import ADDRESS_RULES, locked_setting, normalize_setting, setting_instruction, valid_setting
 from .translate_api import LABELS, ProviderError, QuotaExhausted, RateLimited, ServerBusy, Usage
 
-PROMPT_VERSION = 'p3-5-address'
+PROMPT_VERSION = 'p3-6-context-scan'
 CACHE_FILE = 'translation-cache-v2.json'
 CONTEXT_FILE = 'translation-context.json'
 RUNS_DIR = 'translation-runs'
@@ -97,6 +97,15 @@ SCHEMA = {
 }
 CONTEXT_KEYS = {'characters': lambda e: e.get('name'), 'address': lambda e: (e.get('from'), e.get('to')),
                 'glossary': lambda e: e.get('zh')}
+OVERVIEW_OUTPUT_TOKENS = 512
+OVERVIEW_INSTRUCTION = (
+    '\nĐÂY LÀ BƯỚC ĐỌC BỐI CẢNH, chưa dịch. items rỗng: trả items=[]; '
+    'characters/address/glossary để mảng rỗng. source_dialogue là một phần liên tiếp của toàn bộ nguồn. '
+    'context.setting ở bước này chỉ là kết luận TẠM từ các phần đã đọc: được sửa khi phần mới cung cấp '
+    'bằng chứng khác, trừ BỐI CẢNH KHÓA của người dùng. Tổng hợp bằng chứng cũ và mới trong setting.note '
+    '(tối đa 400 ký tự); quyết định thời đại từ tổng thể, không chỉ từ một từ. '
+    'Hệ thống sẽ đọc hết nguồn trước khi dùng setting cuối cùng để dịch.')
+_DEFAULT_OVERVIEW = object()
 
 
 @dataclass
@@ -248,8 +257,7 @@ def _translation_chunks(items, mode, prefs, terminology, setting='auto', metadat
     if fits_first(first):
         return chunks
     if not fits_first(first[:1]):
-        raise ProviderError('Toàn bộ lời gốc để xác định bối cảnh vượt giới hạn token đầu vào. '
-                            'Tăng giới hạn token đầu vào trong Cài đặt → Dịch rồi thử lại.')
+        return chunks  # Read an oversized source separately, before translating any items.
     low, high = 1, len(first)
     while low + 1 < high:
         mid = (low + high) // 2
@@ -260,6 +268,42 @@ def _translation_chunks(items, mode, prefs, terminology, setting='auto', metadat
     return [first[:low], *_split(list(items)[low:], mode, prefs, terminology, _extra_tokens(setting, metadata))]
 
 
+def _complete_context(context):
+    return isinstance(context, dict) and not context.get('overview_pending') and valid_setting(context.get('setting'))
+
+
+def _overview_blocks(items, mode, prefs, terminology, setting, metadata, source_dialogue):
+    """All source rows, in order, bounded independently from translation chunks."""
+    if not items or not source_dialogue:
+        return []
+    first_context = _merge_context({}, None)
+    if locked := locked_setting(setting):
+        first_context['setting'] = locked
+    extra = _extra_tokens(setting, metadata, source_dialogue, first_context)
+    if _est_in(items[:1], mode, prefs, terminology, extra) <= prefs.max_input_tokens:
+        return []
+    def fits(rows):
+        # Reserve room for the bounded rolling evidence note and scan instruction.
+        extra = _extra_tokens(setting, metadata, rows)
+        extra += math.ceil(len(OVERVIEW_INSTRUCTION)/SYSTEM_CHARS_PER_TOKEN) + 400
+        return _est_in([], mode, prefs, terminology, extra) <= prefs.max_input_tokens * (1-CONTEXT_RESERVE)
+    blocks, start = [], 0
+    while start < len(source_dialogue):
+        if not fits(source_dialogue[start:start+1]):
+            raise ProviderError('Một câu lời gốc để xác định bối cảnh vượt giới hạn token đầu vào. '
+                                'Tăng giới hạn token đầu vào trong Cài đặt → Dịch rồi thử lại.')
+        low, high = start+1, len(source_dialogue)+1
+        while low+1 < high:
+            mid = (low+high)//2
+            if fits(source_dialogue[start:mid]):
+                low = mid
+            else:
+                high = mid
+        blocks.append(source_dialogue[start:low])
+        start = low
+    return blocks
+
+
 def plan_translation(items: list[Item], mode: str, prefs, terminology: str = '', *,
                      setting='auto', metadata=None, source_dialogue=None, initial_context=None) -> Plan:
     """Chỉ ước tính và chia phần, không gọi mạng."""
@@ -268,14 +312,19 @@ def plan_translation(items: list[Item], mode: str, prefs, terminology: str = '',
     initial = _merge_context({}, initial_context)
     if locked := locked_setting(setting):
         initial['setting'] = locked
+    scans = [] if _complete_context(initial_context) else _overview_blocks(
+        items, mode, prefs, terminology, setting, metadata, source_dialogue)
     est = [_chunk_est(c, mode, prefs, terminology,
                       _extra_tokens(setting, metadata,
-                                    source_dialogue if n == 0 and not valid_setting((initial_context or {}).get('setting')) else None,
+                                    source_dialogue if n == 0 and not scans and not _complete_context(initial_context) else None,
                                     initial))
            for n, c in enumerate(chunks)]
+    for block in scans:
+        extra = _extra_tokens(setting, metadata, block) + math.ceil(len(OVERVIEW_INSTRUCTION)/SYSTEM_CHARS_PER_TOKEN) + 400
+        est.append((_est_in([], mode, prefs, terminology, extra), min(OVERVIEW_OUTPUT_TOKENS, prefs.max_output_tokens)))
     tin, tout = sum(e[0] for e in est), sum(e[1] for e in est)
     cost = _est_cost(prefs, tin, tout) if prefs.tier == 'paid' else None
-    return Plan(chunks, len(chunks), tin, tout, cost)
+    return Plan(chunks, len(chunks)+len(scans), tin, tout, cost)
 
 
 def _merge_context(base: dict, new) -> dict:
@@ -411,7 +460,7 @@ class _Run:
         self.cache = _load_json(self.dir / CACHE_FILE, {})
         self.texts: dict[str, str] = {}
         self.failed: list[str] = []
-        self.context = _merge_context({}, initial_context)
+        self.context = _merge_context({}, initial_context if not (initial_context or {}).get('overview_pending') else None)
         self.needs_overview = not valid_setting(self.context.get('setting'))
         if locked := locked_setting(self.setting):
             self.context['setting'] = locked
@@ -449,17 +498,23 @@ class _Run:
             self.sleep(step)
             left -= step
 
-    def request(self, part: list[Item]):
+    def request(self, part: list[Item], *, overview=_DEFAULT_OVERVIEW, scan=False):
         if self.stop():
             raise _Pause('cancelled')
         payload = [_payload_item(i, self.mode, self.prefs) for i in part]
-        overview = self.source_dialogue if self.needs_overview else None
+        if overview is _DEFAULT_OVERVIEW:
+            overview = self.source_dialogue if self.needs_overview else None
+        system = self.system + (OVERVIEW_INSTRUCTION if scan else '')
         extra = _extra_tokens(self.setting, self.metadata, overview, self.context)
+        if scan:
+            extra += math.ceil(len(OVERVIEW_INSTRUCTION)/SYSTEM_CHARS_PER_TOKEN)
         if overview is not None and _est_in(part, self.mode, self.prefs, self.terminology, extra) > self.prefs.max_input_tokens:
             raise ProviderError('Lời gốc và ngữ cảnh dịch vượt giới hạn token đầu vào. '
                                 'Tăng giới hạn token đầu vào trong Cài đặt → Dịch rồi thử lại.')
         if self.paid and not self.allow and self.prefs.cost_cap_usd is not None:
             est = _est_cost(self.prefs, *_chunk_est(part, self.mode, self.prefs, self.terminology, extra))
+            if scan:
+                est += _est_cost(self.prefs, 0, min(OVERVIEW_OUTPUT_TOKENS, self.prefs.max_output_tokens))
             if self.before + self.spent + est > self.prefs.cost_cap_usd:
                 raise _Pause('cost_cap')
         user = _user(payload, self.terminology, self.context, self.metadata, overview)
@@ -472,7 +527,7 @@ class _Run:
                 if self.limiter is not None:
                     self.limiter.acquire(self.stop)
                 reply = call_cancellable(
-                    lambda: self.provider.generate(self.system, user, SCHEMA, self.prefs.max_output_tokens),
+                    lambda: self.provider.generate(system, user, SCHEMA, self.prefs.max_output_tokens),
                     self.stop, getattr(self.provider, 'abort', None))
                 break
             except Abandoned:
@@ -508,13 +563,41 @@ class _Run:
         if self.paid:
             self.spent += _cost(self.prefs, u.input_tokens, u.output_tokens + u.thinking_tokens)
         data = reply.data if isinstance(reply.data, dict) else {}
-        self.context = _merge_context(self.context, data.get('context'))
+        if scan:
+            proposed = valid_setting((data.get('context') or {}).get('setting')) if isinstance(data.get('context'), dict) else None
+            if reply.truncated or not proposed:
+                self.context['overview_pending'] = True
+                raise ProviderError('Phản hồi đọc bối cảnh bị cắt hoặc không hợp lệ; chưa đọc hết lời gốc. Hãy thử dịch tiếp.')
+            proposed['note'] = proposed['note'][:400]
+            self.context = _merge_context({}, {'setting': proposed})
+            self.context['overview_pending'] = True
+        else:
+            self.context = _merge_context(self.context, data.get('context'))
         if locked := locked_setting(self.setting):
             self.context['setting'] = locked
-        if valid_setting(self.context.get('setting')):
+        if not scan and valid_setting(self.context.get('setting')):
             self.needs_overview = False
         _atomic_json(self.dir / CONTEXT_FILE, self.context)
         return reply
+
+    def scan_source(self, blocks):
+        for index, block in enumerate(blocks):
+            if self.stop():
+                raise _Pause('cancelled')
+            self.prefix = f'Đọc bối cảnh {index+1}/{len(blocks)}: '
+            key = 'overview:' + self.key([{'block': index, 'source_dialogue': block}])
+            hit = self.cache.get(key)
+            if isinstance(hit, dict) and valid_setting((hit.get('context') or {}).get('setting')):
+                self.context = dict(hit['context'])
+            else:
+                self.request([], overview=block, scan=True)
+                if not valid_setting(self.context.get('setting')):
+                    raise ProviderError('Chưa xác định được bối cảnh từ lời gốc. Hãy chọn Hiện đại hoặc Cổ trang rồi thử lại.')
+                self.cache[key] = {'context': self.context}
+                _atomic_json(self.dir / CACHE_FILE, self.cache)
+        self.context.pop('overview_pending', None)
+        self.needs_overview = False
+        _atomic_json(self.dir / CONTEXT_FILE, self.context)
 
     def say(self, note: str) -> None:
         """Báo trạng thái đang chạy cho worker (hiện ở thanh tiến độ và nhật ký); không bao giờ làm hỏng lần dịch."""
@@ -588,6 +671,12 @@ class _Run:
         self.n_chunks = len(chunks)
         total, done = len(self.items), 0
         try:
+            if self.needs_overview:
+                scans = _overview_blocks(self.items, self.mode, self.prefs, self.terminology,
+                                         self.setting, self.metadata, self.source_dialogue)
+                if scans:
+                    self.ctx = dict(done=0, total=total, unit='câu')
+                    self.scan_source(scans)
             self.ctx = dict(done=0, total=total, unit='câu', batches=len(chunks))
             self.say(f'chia {total} câu thành {len(chunks)} lô.')
             self.report(0, total)

@@ -123,7 +123,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
         from .address_rules import normalize_setting, valid_setting
         value['setting'] = normalize_setting(job.get('setting'))
         context = read_json(folder / 'translation-context.json', {})
-        value['translation_context'] = {'setting': valid_setting(context.get('setting'))} if isinstance(context, dict) and valid_setting(context.get('setting')) else None
+        value['translation_context'] = ({'setting': valid_setting(context.get('setting'))}
+                                        if isinstance(context, dict) and not context.get('overview_pending')
+                                        and valid_setting(context.get('setting')) else None)
         value['source_url_path'] = base + '/source'
         value['poster_url'] = base + '/poster' if (folder / 'poster.jpg').exists() else None
         value['output_url'] = base + '/output' if (folder / 'output.mp4').exists() and job['status'] == 'done' else None
