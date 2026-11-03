@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Cue, Region, SubtitleStyle } from "./types";
 import "./subtitle-preview.css";
+import advances from "../../backend/dubflow/assets/fonts/Roboto-Bold.metrics.json";
 
 export function fitVideoRect(
   width: number,
@@ -30,14 +31,26 @@ const units = (s: string) =>
     if (!/[\p{L}\p{N}]/u.test(c)) return n + 0.33;
     return n + (c !== c.toLowerCase() ? 0.68 : 0.54);
   }, 0);
-function wrapText(text: string, size: number, maxWidth: number): string[] {
+const regionUnits = (text: string) =>
+  [...text.normalize("NFC")].reduce(
+    (n, c) =>
+      n +
+      ((advances as Record<string, number>)[c] ?? (/\p{M}/u.test(c) ? 0 : 1)),
+    0,
+  );
+function wrapText(
+  text: string,
+  size: number,
+  maxWidth: number,
+  measure = units,
+): string[] {
   const maxUnits = Math.max(1, maxWidth / size);
   const lines: string[] = [];
   for (const paragraph of String(text).split("\n")) {
     let line = "";
     for (const word of paragraph.split(/\s+/).filter(Boolean)) {
       const proposed = (line + " " + word).trim();
-      if (line && units(proposed) > maxUnits) {
+      if (line && measure(proposed) > maxUnits) {
         lines.push(line);
         line = word;
       } else line = proposed;
@@ -47,7 +60,12 @@ function wrapText(text: string, size: number, maxWidth: number): string[] {
   return lines;
 }
 // Mirror of backend subtitle_style.fit_lines: shrink up to 15% to fit max_lines.
-export function fitLines(text: string, size: number, maxWidth: number, maxLines = 2) {
+export function fitLines(
+  text: string,
+  size: number,
+  maxWidth: number,
+  maxLines = 2,
+) {
   const first = wrapText(text, size, maxWidth);
   if (first.length <= maxLines) return { lines: first, size };
   for (let step = 1; step < 15; step++) {
@@ -59,13 +77,22 @@ export function fitLines(text: string, size: number, maxWidth: number, maxLines 
 }
 
 // Exact mirror of backend subtitle_style.assign_lanes / lane_y (first free lane in start order).
-export function assignLanes(cues: { start: number; end: number; region?: number | null; box?: number[] | null }[]): number[] {
-  const order = cues.map((_, i) => i).sort((a, b) => cues[a].start - cues[b].start || a - b);
+export function assignLanes(
+  cues: {
+    start: number;
+    end: number;
+    region?: number | null;
+    box?: number[] | null;
+  }[],
+): number[] {
+  const order = cues
+    .map((_, i) => i)
+    .sort((a, b) => cues[a].start - cues[b].start || a - b);
   const groups = new Map<string, number[]>();
   const lanes: number[] = new Array(cues.length).fill(0);
   for (const i of order) {
     const c = cues[i];
-    const group = c.region != null && c.box ? `region-${c.region}` : 'legacy';
+    const group = c.region != null && c.box ? `region-${c.region}` : "legacy";
     const ends = groups.get(group) ?? [];
     groups.set(group, ends);
     let lane = ends.findIndex((end) => end <= cues[i].start);
@@ -77,42 +104,93 @@ export function assignLanes(cues: { start: number; end: number; region?: number 
   }
   return lanes;
 }
-export const laneY = (y: number, lane: number, fs: number) => Math.max(fs * 1.5, y - lane * fs * 3);
+export const laneY = (y: number, lane: number, fs: number) =>
+  Math.max(fs * 1.5, y - lane * fs * 3);
 
-const assSize = (size: number) => Math.max(8, Math.round(size*LIBASS_CELL));
+const assSize = (size: number) => Math.max(8, Math.round(size * LIBASS_CELL));
 /** Mirror of backend subtitle_style.region_layout. Cue box is xyxy. */
-export function regionLayout(cue: Pick<Cue,'text'|'box'|'orientation'|'text_height'>, width: number, height: number, custom?: SubtitleStyle | null) {
-  const st=custom ?? {size:Math.round(height*(height>width?.045:.055)),margin_v:Math.round(height*.04),max_lines:2};
-  const box=cue.box;
-  if (!box || box.length!==4) {
-    const available=Math.max(20,width-20);
-    const fit=fitLines(cue.text,st.size,available,st.max_lines);
-    return {...fit,x:width/2,y:height-st.margin_v,available,overflow:fit.lines.length>st.max_lines};
+export function regionLayout(
+  cue: Pick<Cue, "text" | "box" | "orientation" | "text_height">,
+  width: number,
+  height: number,
+  custom?: SubtitleStyle | null,
+) {
+  const st = custom ?? {
+    size: Math.round(height * (height > width ? 0.045 : 0.055)),
+    margin_v: Math.round(height * 0.04),
+    max_lines: 2,
+    outline: Math.round(((3 * height) / 1080) * 10) / 10,
+  };
+  const box = cue.box;
+  if (!box || box.length !== 4) {
+    const available = Math.max(20, width - 20);
+    const fit = fitLines(cue.text, st.size, available, st.max_lines);
+    return {
+      ...fit,
+      x: width / 2,
+      y: height - st.margin_v,
+      available,
+      overflow: fit.lines.length > st.max_lines,
+    };
   }
-  const [x0,y0,x1,y1]=box;
-  const bw=Math.max(1,x1-x0), bh=Math.max(1,y1-y0), minimum=st.size*.6;
-  let maximum=st.size, size=maximum, lines:string[], overflow:boolean, available:number;
-  if(cue.orientation==='v') {
-    lines=cue.text.split(/\s+/).filter(Boolean);
-    const longest=Math.max(...lines.map(units),1);
-    size=Math.max(minimum,Math.min(maximum,bw*1.2/Math.max(longest,.01),bh/Math.max(1,lines.length)/LIBASS_CELL));
-    if(assSize(size)*lines.length>bh && size>minimum) size=Math.max(minimum,size-.5/LIBASS_CELL);
-    overflow=longest*size>bw*1.2+.01 || assSize(size)*lines.length>bh+.01;
-    available=bw*1.2;
+  const [x0, y0, x1, y1] = box;
+  const bw = Math.max(1, x1 - x0),
+    bh = Math.max(1, y1 - y0),
+    minimum = st.size * 0.6;
+  const stroke = 2 * st.outline;
+  let maximum = st.size,
+    size = maximum,
+    lines: string[],
+    overflow: boolean,
+    available: number;
+  if (cue.orientation === "v") {
+    lines = cue.text.split(/\s+/).filter(Boolean);
+    const longest = lines.length ? Math.max(...lines.map(regionUnits)) : 1;
+    size = Math.max(
+      minimum,
+      Math.min(
+        maximum,
+        Math.max(1, bw * 1.2 - stroke) / Math.max(longest, 0.01),
+        bh / Math.max(1, lines.length) / LIBASS_CELL,
+      ),
+    );
+    while ((longest * assSize(size) / LIBASS_CELL + stroke > bw * 1.2 + 0.01 || assSize(size) * lines.length > bh + 0.01) && size > minimum + 0.01)
+      size = Math.max(minimum, size - maximum * 0.01);
+    overflow =
+      longest * assSize(size) / LIBASS_CELL + stroke > bw * 1.2 + 0.01 ||
+      assSize(size) * lines.length > bh + 0.01;
+    available = bw * 1.2;
   } else {
-    maximum=Math.max(minimum,Math.min(maximum,cue.text_height || maximum));
-    size=maximum; lines=wrapText(cue.text,size,bw);
-    while((lines.length>2 || lines.some(line=>units(line)*size>bw+.01)) && size>minimum+.01) {
-      size=Math.max(minimum,size-maximum*.01); lines=wrapText(cue.text,size,bw);
+    maximum = Math.max(minimum, Math.min(maximum, cue.text_height || maximum));
+    const room = Math.max(1, bw - stroke);
+    size = maximum;
+    lines = wrapText(cue.text, assSize(size) / LIBASS_CELL, room, regionUnits);
+    while (
+      (lines.length > 2 ||
+        lines.some((line) => regionUnits(line) * assSize(size) / LIBASS_CELL > room + 0.01) || assSize(size) * lines.length > bh + 0.01) &&
+      size > minimum + 0.01
+    ) {
+      size = Math.max(minimum, size - maximum * 0.01);
+      lines = wrapText(cue.text, assSize(size) / LIBASS_CELL, room, regionUnits);
     }
-    overflow=lines.length>2 || lines.some(line=>units(line)*size>bw+.01) || assSize(size)*lines.length>bh+.01;
-    if(lines.length>2) lines=[lines[0],lines.slice(1).join(' ')];
-    available=bw;
+    overflow =
+      lines.length > 2 ||
+      lines.some((line) => regionUnits(line) * assSize(size) / LIBASS_CELL > room + 0.01) ||
+      assSize(size) * lines.length > bh + 0.01;
+    if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
+    available = bw;
   }
-  return {x:(x0+x1)/2,y:(y0+y1)/2,size,lines,overflow,available};
+  return {
+    x: (x0 + x1) / 2,
+    y: (y0 + y1) / 2,
+    size,
+    lines,
+    overflow,
+    available,
+  };
 }
 
-type MaskRegion = Partial<Region> & {preview_mask_url?: string};
+type MaskRegion = Partial<Region> & { preview_mask_url?: string };
 type TimedRegion = Region & { boxes?: MaskRegion[]; preview_mask_url?: string };
 export function SubtitlePreview({
   cues,
@@ -137,7 +215,9 @@ export function SubtitlePreview({
 }) {
   const lyrics = cues.filter((c) => c.text.trim());
   const laneOf = assignLanes(lyrics);
-  const active = lyrics.map((c, i) => ({ c, lane: laneOf[i] })).filter(({ c }) => c.start <= now && now < c.end);
+  const active = lyrics
+    .map((c, i) => ({ c, lane: laneOf[i] }))
+    .filter(({ c }) => c.start <= now && now < c.end);
   const measured = regions
     .flatMap((parent) =>
       (parent.boxes ?? [parent]).map((box) => ({
@@ -164,7 +244,7 @@ export function SubtitlePreview({
     font: "Roboto",
     bold: true,
     size: Math.round(height * (height > width ? 0.045 : 0.055)),
-    outline: Math.round((3 * height) / 1080 * 10) / 10,
+    outline: Math.round(((3 * height) / 1080) * 10) / 10,
     max_lines: 2,
     margin_v: Math.round(height * 0.04),
   };
@@ -184,7 +264,15 @@ export function SubtitlePreview({
             className="preview-source-mask"
             aria-hidden="true"
             style={{
-              ...(r.preview_mask_url ? {maskImage: `url("${r.preview_mask_url}")`, WebkitMaskImage: `url("${r.preview_mask_url}")`, maskMode: 'luminance' as const, maskSize: '100% 100%', WebkitMaskSize:'100% 100%'} : {}),
+              ...(r.preview_mask_url
+                ? {
+                    maskImage: `url("${r.preview_mask_url}")`,
+                    WebkitMaskImage: `url("${r.preview_mask_url}")`,
+                    maskMode: "luminance" as const,
+                    maskSize: "100% 100%",
+                    WebkitMaskSize: "100% 100%",
+                  }
+                : {}),
               left: `${(r.x / width) * 100}%`,
               top: `${(r.y / height) * 100}%`,
               width: `${(Math.min(r.width, width - r.x) / width) * 100}%`,
@@ -194,10 +282,11 @@ export function SubtitlePreview({
         ))}
       {active.map(({ c, lane }) => {
         const box = c.box && c.box.length === 4 ? c.box : null;
-        const fit=regionLayout(c,width,height,st);
-        const fs=assSize(fit.size);
-        const x=Math.round(fit.x), y=Math.round(fit.y);
-        const yLane = lane===0 ? y : laneY(y, lane, fs);
+        const fit = regionLayout(c, width, height, st);
+        const fs = assSize(fit.size);
+        const x = Math.round(fit.x),
+          y = Math.round(fit.y);
+        const yLane = lane === 0 ? y : laneY(y, lane, fs);
         return (
           <div
             key={c.id}
@@ -207,7 +296,7 @@ export function SubtitlePreview({
               left: `${(x / width) * 100}%`,
               top: `${(yLane / height) * 100}%`,
               maxWidth: `${(fit.available / width) * 100}%`,
-              fontSize: ratio ? fs / LIBASS_CELL * ratio : 16,
+              fontSize: ratio ? (fs / LIBASS_CELL) * ratio : 16,
               lineHeight: LIBASS_CELL,
               WebkitTextStrokeWidth: outline * 2,
             }}

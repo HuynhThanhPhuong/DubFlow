@@ -138,7 +138,7 @@ it("offsets overlapping cues by the same lane rule as the ASS export", () => {
     <SubtitlePreview cues={cues} now={1.5} regions={[]} width={1920} height={1080} rect={fitVideoRect(960, 540, 1920, 1080)} blurOriginal={false} subtitleStyle={style} />,
   );
   const tops = Array.from(container.querySelectorAll<HTMLElement>(".vietnamese-preview")).map((e) => parseFloat(e.style.top));
-  // fs = round(59 * 2701/2048) = 78 -> lane 1 is 3*78 px above
+  // The 20px-tall source region reaches the 60% minimum: ASS cell size is 47.
   expect(tops[0]).toBeCloseTo((1000 / 1080) * 100, 3);
-  expect(tops[1]).toBeCloseTo(((1000 - 3 * 78) / 1080) * 100, 3);
+  expect(tops[1]).toBeCloseTo(((1000 - 3 * 47) / 1080) * 100, 3);
 });

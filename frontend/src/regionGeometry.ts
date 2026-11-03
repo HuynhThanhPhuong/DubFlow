@@ -10,6 +10,20 @@ export interface Box {
   width: number;
   height: number;
 }
+
+/** Keep clickable subtitle labels inside the displayed video and apart from each other. */
+export function placeRegionLabel(box: {left:number;top:number}, rect: VideoRect, used: VideoRect[]): VideoRect {
+  const width=Math.min(112,rect.width), height=16;
+  const left=Math.max(rect.left,Math.min(box.left,rect.left+rect.width-width));
+  const preferred=Math.max(rect.top,Math.min(box.top-height,rect.top+rect.height-height));
+  const overlaps=(top:number)=>used.some(r=>left<r.left+r.width && left+width>r.left && top<r.top+r.height && top+height>r.top);
+  let top=preferred;
+  for(let offset=0;offset<24;offset++) {
+    const candidate=preferred+(offset%2 ? -1:1)*Math.ceil(offset/2)*(height+2);
+    if(candidate>=rect.top && candidate+height<=rect.top+rect.height && !overlaps(candidate)) {top=candidate;break;}
+  }
+  const label={left,top,width,height};used.push(label);return label;
+}
 export const MIN_BOX = 8;
 
 const clamp = (v: number, lo: number, hi: number) =>

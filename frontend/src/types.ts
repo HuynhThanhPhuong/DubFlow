@@ -26,7 +26,10 @@ export interface JobQueueInfo {
 }
 /** [x, y, w, h] in source-video pixels */
 export type RegionRect = [number, number, number, number];
-export interface SubtitleRegion { box: RegionRect; orientation: 'h' | 'v' }
+export interface SubtitleRegion {
+  box: RegionRect;
+  orientation: "h" | "v";
+}
 export interface AnalysisRegions {
   no_hard_subs: boolean;
   subtitle: RegionRect | null;
@@ -127,14 +130,14 @@ export interface Cue {
   source_ids?: string[];
   overlap_group?: string | null;
   auto_flags?: string[];
-  source?: 'ocr' | 'asr' | 'ocr+asr';
+  source?: "ocr" | "asr" | "ocr+asr";
   asr_text?: string;
   source_mismatch?: boolean;
   source_partial?: boolean;
   ocr_empty?: boolean;
   box?: number[] | null;
   region?: number | null;
-  orientation?: 'h' | 'v' | null;
+  orientation?: "h" | "v" | null;
   text_height?: number | null;
 }
 export interface Region {
@@ -235,13 +238,31 @@ export interface DefaultOverlay {
   opacity: number;
 }
 
-export interface ExportReason { code: string; message: string; cue_count: number; cue_ids: string[] }
-export interface ExportQuality { draft_allowed: boolean; reasons: ExportReason[] }
+export interface ExportReason {
+  code: string;
+  message: string;
+  cue_count: number;
+  cue_ids: string[];
+}
+export interface ExportQuality {
+  draft_allowed: boolean;
+  reasons: ExportReason[];
+}
 export interface TranslationSnapshot {
-  id: string; created_at: string; source: string; status: string; cue_count: number; total_count: number;
-  provider?: string; model?: string; requests?: number; input_tokens?: number; output_tokens?: number;
-  cost_usd?: number | null; error?: string | null;
-  cues?: Pick<Cue, 'start' | 'end' | 'original' | 'text'>[];
+  id: string;
+  created_at: string;
+  source: string;
+  status: string;
+  cue_count: number;
+  total_count: number;
+  provider?: string;
+  model?: string;
+  requests?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_usd?: number | null;
+  error?: string | null;
+  cues?: Pick<Cue, "start" | "end" | "original" | "text">[];
   matches?: (string | null)[];
   matched_count?: number;
   unmatched_count?: number;

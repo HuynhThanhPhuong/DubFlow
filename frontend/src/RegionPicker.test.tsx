@@ -65,6 +65,7 @@ describe("RegionPicker", () => {
     expect(
       screen.getByRole("button", { name: "Sub Trung 2 · dọc" }),
     ).toBeTruthy();
+    expect(screen.getByRole('button',{name:'Sub Trung 2 · dọc'}).style.width).toBe('112px');
     fireEvent.click(screen.getByRole("button", { name: "Sub Trung 2 · dọc" }));
     fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
     expect(onSave.mock.calls[0][0].subtitles).toEqual([
@@ -118,6 +119,19 @@ describe("RegionPicker", () => {
     fireEvent.keyDown(document, { key: "Delete" });
     expect(screen.queryByTestId("rp-logo-0")).toBeNull();
     expect(screen.queryByRole("button", { name: "Lưu vùng" })).toBeNull();
+  });
+  it("uses the latest seek before metadata and corrects a stale seek completion", () => {
+    const props={job,onSave:vi.fn(),onSeek:vi.fn()};
+    const {rerender}=render(<RegionPicker {...props} time={1} />);
+    const video=screen.getByLabelText('Khung hình video') as HTMLVideoElement;
+    rerender(<RegionPicker {...props} time={17} />);
+    rerender(<RegionPicker {...props} time={4.25} />);
+    Object.defineProperty(video,'readyState',{value:1});
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(4.25);
+    video.currentTime=17;
+    fireEvent.seeked(video);
+    expect(video.currentTime).toBe(4.25);
   });
   it("draws boxes in source pixels under letterboxing and saves them", () => {
     const onSave = vi.fn();

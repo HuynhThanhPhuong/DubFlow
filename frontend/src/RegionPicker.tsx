@@ -4,7 +4,7 @@ import { Trash2 } from "lucide-react";
 import { mediaUrl } from "./api";
 import { subtitleRegions } from "./analysisRegions";
 import type { AnalysisRegions, Job, RegionRect, SubtitleRegion } from "./types";
-import { normalizeBox, toDisplay, toSource, type Box } from "./regionGeometry";
+import { normalizeBox, toDisplay, toSource, placeRegionLabel, type Box, type VideoRect } from "./regionGeometry";
 import { fitVideoRect } from "./SubtitlePreview";
 import { Button } from "./ui";
 
@@ -362,6 +362,7 @@ export function RegionPicker({
     );
   };
 
+  const placedLabels: VideoRect[] = [];
   const renderBox = (kind: Kind, index: number, stored: Box) => {
     const sel: Sel = { kind, index };
     const box =
@@ -371,6 +372,7 @@ export function RegionPicker({
     const d = toDisplay(box, rect, vw, vh);
     const isSel = selected?.kind === kind && selected.index === index;
     const near = d.top - rect.top < 16;
+    const label = kind === 'subtitle' ? placeRegionLabel(d, rect, placedLabels) : null;
     return (
       <div
         key={`${kind}-${index}`}
@@ -384,6 +386,7 @@ export function RegionPicker({
             type="button"
             className={`rp-label${near ? " inside" : ""}`}
             disabled={busy}
+            style={label ? {left:label.left-d.left,top:label.top-d.top,bottom:'auto',width:label.width,height:label.height,maxWidth:'none',whiteSpace:'nowrap'} : undefined}
             title="Bấm để đổi hướng chữ"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
