@@ -480,7 +480,13 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
         d = c['end'] - c['start']
         if d <= 0:
             continue
-        covered = sum(_overlap(c['start'], c['end'], o['start'], o['end']) for o in ocr_cues)
+        # Simultaneous independent boxes cover one time interval, not two.
+        covered, last_end = 0.0, float(c['start'])
+        for o in sorted(ocr_cues, key=lambda o: o['start']):
+            a, b = max(c['start'], o['start'], last_end), min(c['end'], o['end'])
+            if b > a:
+                covered += b-a
+                last_end = b
         han = chinese(c['original'])
         # speech a moment before / after the line it belongs to (the subtitle appears slightly late or leaves late) is
         # the same utterance; the same words further away are another utterance and stay (the user can review them)

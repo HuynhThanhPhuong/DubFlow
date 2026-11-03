@@ -54,7 +54,9 @@ def erase_regions(directory, request, erase_band):
             source = target/'clean.mp4'
         shutil.copyfile(source, directory/'clean.tmp.mp4')
         (directory/'clean.tmp.mp4').replace(directory/'clean.mp4')
-    stamp = dict(stamps[0], version=10, region_passes=len(stamps),
+    fills = [s.get('fill') for s in stamps]
+    fill = 'lama' if all(f=='lama' for f in fills) else 'smooth' if all(f=='smooth' for f in fills) else 'lama+smooth'
+    stamp = dict(stamps[0], version=10, region_passes=len(stamps), fill=fill,
                  lama=all(s.get('lama') for s in stamps),
                  runtime_fallback=any(s.get('runtime_fallback') for s in stamps),
                  warnings=list(dict.fromkeys(w for s in stamps for w in s.get('warnings', []))),

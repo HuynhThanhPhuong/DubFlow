@@ -88,7 +88,7 @@ class SubtitleMaskTests(unittest.TestCase):
         self.assertEqual(ass.count('Dialogue:'),1)
         self.assertIn(r'\an2\pos(60,86)',ass)
         self.assertIn('0:00:00.00,0:00:02.00',ass)
-        self.assertEqual(ass.count(r'\fs8}'),1)
+        self.assertEqual(ass.count(r'\fs8\q2}'),1)
 
     def test_ocr_height_does_not_change_vietnamese_size(self):
         ass=p.make_ass([dict(start=0,end=2,text='Đây là lời Việt')],

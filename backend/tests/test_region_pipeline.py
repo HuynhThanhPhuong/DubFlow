@@ -17,6 +17,20 @@ BOX = [60, 160, 200, 50]
 
 
 class RegionPrepareTests(unittest.TestCase):
+    def test_asr_failure_with_drawn_subtitles_continues_real_ocr(self):
+        p.write(self.d/'job.json', dict(source_path='source.mp4', mode='vietsub', analysis_regions=self.cfg()))
+        def stage(name, directory, settings, payload, **kwargs):
+            if name == 'transcribe':
+                raise p.NeedsReview('Whisper unavailable: paging file too small')
+            return self.stage(name, directory, settings, payload, **kwargs)
+        with patch.object(p,'probe',return_value=dict(duration=12,width=320,height=240,fps=25)), patch.object(p,'engine',side_effect=stage):
+            with self.assertRaises(p.NeedsReview):
+                p.prepare(self.d,SimpleNamespace(ocr_python=sys.executable),lambda *a:None)
+        self.assertEqual(len(p.read(self.d/'cues.json', [])),3)
+        self.assertTrue(all(c['source']=='ocr' for c in p.read(self.d/'cues.json')))
+        self.assertIn('subband',self.names())
+        self.assertTrue(any('Chỗ không có sub' in w for w in p.read(self.d/'analysis-warnings.json',[])))
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(dir=p.ROOT)
         self.d = Path(self._tmp.name)

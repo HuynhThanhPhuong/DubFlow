@@ -9,6 +9,14 @@ from dubflow.schemas import Cue
 
 
 class RegionsDot8Tests(unittest.TestCase):
+    def test_asr_coverage_uses_union_of_simultaneous_region_intervals(self):
+        lines=[dict(s=0,e=3,text='甲乙丙丁',region=i) for i in range(2)]
+        asr=[dict(id='speech',start=0,end=10,speaker='s',original='另外还有独立的没有字幕的声音',text='')]
+        cues=build_source_cues_primary(lines,asr,10)
+        speech=[c for c in cues if c['source']=='asr']
+        self.assertEqual(len(speech),1)
+        self.assertEqual((speech[0]['start'],speech[0]['end']),(3,10))
+
     def test_legacy_and_explicit_regions_normalize_identically(self):
         old = ar.normalize(dict(subtitle=[10, 20, 100, 30]), 1280, 720)
         new = ar.normalize(dict(subtitles=[dict(box=[10, 20, 100, 30], orientation='h')]), 1280, 720)
@@ -51,6 +59,35 @@ class RegionsDot8Tests(unittest.TestCase):
             matches, unmatched = history.match_cues(snap['cues'], list(reversed(cues)))
             self.assertEqual(unmatched, 0)
             self.assertEqual([(i, c['region']) for i, c in matches], [(1, 0), (0, 1)])
+
+    def test_history_can_restore_unique_dialogue_after_moving_a_region(self):
+        old=dict(start=1,end=3,original='你好朋友',text='Xin chào',region=0,box=[100,500,500,570],orientation='h')
+        current=dict(old,text='',box=[105,505,505,575])
+        matches,unmatched=history.match_cues([old],[current])
+        self.assertEqual(unmatched,0)
+        self.assertEqual(matches,[(0,old)])
+
+    def test_history_reserves_surviving_box_before_spatial_fallback(self):
+        left = dict(start=1, end=3, original='你好', text='Bên trái', region=0, box=[0, 0, 100, 30])
+        right = dict(left, text='Bên phải', region=1, box=[200, 0, 300, 30])
+        current = [dict(right, text='', region=0)]  # deleting the left box renumbers the right one
+        matches, unmatched = history.match_cues([left, right], current)
+        self.assertEqual(matches, [(0, right)])
+        self.assertEqual(unmatched, 1)
+
+    def test_old_applied_stamp_is_exportable_without_forcing_source_reset(self):
+        cfg=ar.usable(dict(no_hard_subs=False,subtitle=[10,20,100,30],logos=[],screen_text=[]))
+        old_source=ar._key(dict(v=2,no_hard_subs=False,subtitle=cfg['subtitle']))
+        self.assertTrue(ar.source_matches(cfg,old_source))
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            p.write(folder/'regions.json',[])
+            p.write(folder/p.REGIONS_APPLIED,dict(key=p.cache_key(dict(v=1,no_hard_subs=False,subtitle=cfg['subtitle'],logos=[],screen_text=[]))))
+            self.assertFalse(p.regions_stale(folder,dict(analysis_regions=cfg)))
+            (folder/p.REGIONS_APPLIED).unlink()
+            p.write(folder/'ocr-complete.json',dict(region_mode=True,screen_key=ar.screen_key(cfg)))
+            p.write(folder/'source-build.json',dict(source_key=old_source))
+            self.assertFalse(p.regions_stale(folder,dict(analysis_regions=cfg)))
 
 
 if __name__ == '__main__':

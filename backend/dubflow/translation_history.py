@@ -54,27 +54,35 @@ def _original(text):
 
 def match_cues(saved, current):
     """One-to-one, text AND time. Never guess across repeated or distant dialogue."""
-    matched=[];used=set();unmatched=0
-    for old in saved:
+    matched={};used=set();options={}
+    for n,old in enumerate(saved):
         if not old.get('text','').strip():
             continue
         candidates=[]
         for i,c in enumerate(current):
-            if i in used or not _original(old.get('original')) or _original(old.get('original'))!=_original(c.get('original')):
+            if not _original(old.get('original')) or _original(old.get('original'))!=_original(c.get('original')):
                 continue
-            if old.get('region') is not None and c.get('region') is not None:
-                # A region index can change after deletion/reordering; spatial identity wins.
-                if old.get('box') and c.get('box'):
-                    if old['box'] != c['box']:
-                        continue
-                elif old['region'] != c['region']:
-                    continue
             ds,de=abs(old['start']-c['start']),abs(old['end']-c['end'])
             if ds<=.75 and de<=.75:
-                candidates.append((ds+de,i))
-        candidates.sort()
-        if not candidates or (len(candidates)>1 and abs(candidates[0][0]-candidates[1][0])<1e-6):
-            unmatched+=1;continue
-        index=candidates[0][1];used.add(index)
-        matched.append((index,old))
-    return matched,unmatched
+                spatial=1
+                if old.get('region') is not None and c.get('region') is not None:
+                    if old.get('box') and c.get('box'):
+                        spatial=0 if old['box']==c['box'] else 1
+                    elif old['region']==c['region']:
+                        spatial=0
+                # Prefer spatial identity for simultaneous repeated words, while
+                # unique text/time remains restorable after moving a region.
+                candidates.append((spatial,ds+de,i))
+        options[n]=sorted(candidates)
+    # Reserve surviving boxes across the entire snapshot before allowing a moved
+    # or legacy line to match by text/time. Region indexes can change on deletion.
+    for spatial in (0,1):
+        for n,candidates in options.items():
+            if n in matched:
+                continue
+            choices=[c for c in candidates if c[0]==spatial and c[2] not in used]
+            if not choices or (len(choices)>1 and abs(choices[0][1]-choices[1][1])<1e-6):
+                continue
+            index=choices[0][2];used.add(index)
+            matched[n]=(index,saved[n])
+    return [matched[n] for n in sorted(matched)],len(options)-len(matched)

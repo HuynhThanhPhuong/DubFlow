@@ -202,8 +202,11 @@ def run_task(task, settings, store):
             message = 'Không thể hoàn tất tác vụ. Hãy kiểm tra last-error.log, cấu hình và tệp nguồn rồi thử lại.'
         (folder / 'last-error.log').write_text(traceback.format_exc(), encoding='utf-8')
         cues = read_json(folder / 'cues.json')
+        warnings = {}
+        if review and task['action'] == 'analyze':
+            warnings['warnings'] = [translate_message(w) for w in read_json(folder/'analysis-warnings.json', latest.get('warnings', []))]
         store.update_job(jid, status='awaiting_review' if review else 'failed', stage='awaiting_review' if review else 'failed',
-                         error=message, cue_count=len(cues), activity=push_activity(latest, message), **idle, progress=45 if review else latest['progress'])
+                         error=message, cue_count=len(cues), activity=push_activity(latest, message), **idle, **warnings, progress=45 if review else latest['progress'])
         store.event(jid, 'awaiting_review' if review else 'failed', message, 45 if review else 0)
         store.finish_task(task['id'], 'review' if review else 'failed')
 

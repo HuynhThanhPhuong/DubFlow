@@ -1186,6 +1186,9 @@ def erase(directory, request):
                     continue
                 gray_crop = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
                 part = glyph_mask(gray_crop, k)
+                if track.get('orientation') == 'v':
+                    from vertical_ocr import vertical_strokes
+                    part = part | vertical_strokes(frame[y0:y1, x0:x1], k)
                 if foot is not None and foot[seg_index[id(s)]] is not None and foot[seg_index[id(s)]].shape == part.shape:
                     part = part | foot[seg_index[id(s)]]  # the line's whole footprint, also on frames the detector missed
                 tb = s.get('tb')

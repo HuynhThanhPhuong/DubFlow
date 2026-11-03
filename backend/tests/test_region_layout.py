@@ -1,4 +1,4 @@
-﻿import tempfile
+import tempfile
 import unittest
 from pathlib import Path
 from dubflow import pipeline as p, review
@@ -6,6 +6,25 @@ from dubflow import subtitle_style as style
 
 
 class RegionLayoutTests(unittest.TestCase):
+    def test_horizontal_shrinks_two_lines_to_fit_box_height(self):
+        cue=dict(text='Chúng ta cùng nhau trở về nhà', box=[100,500,400,570], text_height=40)
+        fit=style.region_layout(cue,1280,720)
+        self.assertFalse(fit['overflow'])
+        self.assertLessEqual(style.ass_size(fit['size'])*len(fit['lines']),70)
+
+    def test_vertical_width_uses_quantized_ass_font_size(self):
+        cue=dict(text='Bình an nhé', box=[0,0,58,500], orientation='v')
+        fit=style.region_layout(cue,1280,720)
+        self.assertFalse(fit['overflow'])
+        actual_size=style.ass_size(fit['size'])/style.ASS_CELL
+        self.assertLessEqual(max(map(style.region_units,fit['lines']))*actual_size+4,58*1.2)
+    def test_wide_words_and_half_pixel_centers_match_real_font_and_browser(self):
+        cue=dict(start=0,end=2,text='wwwwww',box=[100,500,200,600],orientation='h',region=0)
+        self.assertTrue(style.region_layout(cue,1280,720)['overflow'])
+        cue.update(text='Xin chào',box=[45,657,360,709])
+        self.assertIn(r'\pos(203,683)',p.make_ass([cue],[],1280,720))
+        self.assertIn(r'\q2',p.make_ass([cue],[],1280,720))
+
     def test_horizontal_uses_region_center_width_and_measured_text_height(self):
         cue = dict(id='a', start=1, end=4, text='Chúng ta cùng nhau trở về nhà', box=[100, 500, 500, 570], region=0, orientation='h', text_height=28)
         fit = style.region_layout(cue, 1280, 720)

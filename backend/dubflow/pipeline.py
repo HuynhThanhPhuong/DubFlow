@@ -716,7 +716,10 @@ def regions_stale(directory, job):
         return False
     applied = read(directory/REGIONS_APPLIED, None)
     if isinstance(applied, dict) and applied.get('key'):
-        return applied['key'] != regions_key(cfg)
+        subs = analysis_regions.subtitle_regions(cfg)
+        legacy_ok = not subs or (len(subs) == 1 and subs[0]['orientation'] == 'h')
+        legacy = cache_key(dict(v=1, no_hard_subs=cfg['no_hard_subs'], subtitle=cfg['subtitle'], logos=cfg['logos'], screen_text=cfg['screen_text']))
+        return applied['key'] != regions_key(cfg) and not (legacy_ok and applied['key'] == legacy)
     marker = read(directory/'ocr-complete.json', {}) or {}
     if not marker.get('region_mode'):
         return True  # built by the old automatic search, not from these regions
@@ -727,7 +730,7 @@ def regions_stale(directory, job):
     except (KeyError, TypeError, ValueError):
         return True
     return not (marker.get('screen_key') == analysis_regions.screen_key(cfg)
-                and built.get('source_key') == analysis_regions.source_key(cfg) and logos == cfg['logos'])
+                and analysis_regions.source_matches(cfg, built.get('source_key')) and logos == cfg['logos'])
 
 def region_rows(directory, source, meta, settings, emit, warnings, cfg):
     """regions.json for a job with user-drawn regions.
@@ -810,8 +813,14 @@ def prepare(job_dir, settings, emit):
             fresh_transcript = False
     if fresh_transcript:
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
-        engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
-        write(directory/'transcribe.json', dict(key=transcribe_key))
+        try:
+            engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
+            write(directory/'transcribe.json', dict(key=transcribe_key))
+        except NeedsReview as exc:
+            if cfg is None or not cfg['subtitle']:
+                raise
+            warnings.append('Chưa nhận dạng được giọng nói; tiếp tục đọc sub trong vùng đã chọn. Chỗ không có sub có thể thiếu lời: '+str(translate_message(str(exc))))
+            write(directory/'source-asr-cues.json', [])
         if cfg is None:
             build_source(directory, source, audio, meta, settings, emit, warnings)
     if cfg is not None:
@@ -864,6 +873,7 @@ def prepare(job_dir, settings, emit):
         load_state(directory)
         write(directory/'source-evidence.json',source_evidence(cues,read(directory/'regions.json',[])))
     # Translation never runs here: the user starts it (or types the text) after reviewing the source.
+    write(directory/'analysis-warnings.json', warnings)
     if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review source transcript and enter Vietnamese text in cues; offline manual translation is the default')
     if not cues:
@@ -1165,9 +1175,9 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height):
     if __package__:
-        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout, pixel_round
     else:
-        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout
+        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout, pixel_round
     st = style_for(width, height)
     font_size = ass_size(st['size'])  # libass cell height of the visible size
     out = f'''[Script Info]
@@ -1184,7 +1194,7 @@ Style: Default,{st['font']},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     def event(start,end,text,x,y,size,align=5):
-        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({round(x)},{round(y)})\\fs{max(8,round(size))}}}{ass_escape(text)}\n'
+        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({pixel_round(x)},{pixel_round(y)})\\fs{max(8,pixel_round(size))}\\q2}}{ass_escape(text)}\n'
     if __package__:
         from .subtitle_mask import refined_regions
     else:

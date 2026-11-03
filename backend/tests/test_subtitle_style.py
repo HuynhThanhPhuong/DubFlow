@@ -67,7 +67,8 @@ class SubtitleStyleTests(unittest.TestCase):
         self.assertEqual(assign_lanes(cues), [0, 1, 0])
         ass = p.make_ass(cues, [], 1920, 1080)
         ys = [int(y) for y in re.findall(r'\\pos\(960,(\d+)\)', ass)]
-        self.assertEqual(ys, [1000, 1000 - 3 * 78, 1000])
+        # The short source box reaches the 60% minimum, ASS cell size 47.
+        self.assertEqual(ys, [1000, 1000 - 3 * 47, 1000])
 
     def test_filter_path_apostrophe(self):
         self.assertEqual(ffmpeg_filter_path(Path('C:/it\'s/f')).split('/')[1], "it'\\''s")

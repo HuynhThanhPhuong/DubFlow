@@ -1,8 +1,22 @@
 """Vietnamese subtitle style shared by ASS export and the web preview."""
 from pathlib import Path
+import json
+import math
+import unicodedata
 
 FONT_FILE = 'Roboto-Bold.ttf'
 FONTS_DIR = Path(__file__).resolve().parent / 'assets' / 'fonts'
+_ADVANCES = json.loads((FONTS_DIR/'Roboto-Bold.metrics.json').read_text(encoding='utf8'))
+
+
+def pixel_round(value):
+    """Same positive-pixel rounding as JavaScript Math.round."""
+    return math.floor(value+.5)
+
+
+def region_units(text):
+    return sum(_ADVANCES.get(c, 0 if unicodedata.category(c).startswith('M') else 1)
+               for c in unicodedata.normalize('NFC', text))
 
 
 # libass sizes \fs as the font cell height (Roboto winAscent+winDescent = 2701/2048 em).
@@ -11,14 +25,14 @@ ASS_CELL = 2701 / 2048
 
 def style_for(width: int, height: int) -> dict:
     # size = visible em size; portrait video uses a smaller ratio.
-    return dict(font='Roboto', bold=True, size=round(height * (.045 if height > width else .055)),
-                outline=round(3 * height / 1080, 1), max_lines=2,
-                margin_v=round(height * .04))
+    return dict(font='Roboto', bold=True, size=pixel_round(height * (.045 if height > width else .055)),
+                outline=pixel_round(3 * height / 1080 * 10)/10, max_lines=2,
+                margin_v=pixel_round(height * .04))
 
 
 def ass_size(size: float) -> int:
     """ASS font size that renders glyphs with a visible em of `size`."""
-    return max(8, round(size * ASS_CELL))
+    return max(8, pixel_round(size * ASS_CELL))
 
 
 # Mean Roboto Bold advance widths in em, measured with PIL on Vietnamese text
@@ -40,14 +54,14 @@ def _units(value: str) -> float:
     return total
 
 
-def _wrap(text: str, size: float, max_width: float) -> list[str]:
+def _wrap(text: str, size: float, max_width: float, measure=_units) -> list[str]:
     max_units = max(1.0, max_width / size)
     lines = []
     for paragraph in str(text).split('\n'):
         line = ''
         for word in paragraph.split():
             proposed = (line + ' ' + word).strip()
-            if line and _units(proposed) > max_units:
+            if line and measure(proposed) > max_units:
                 lines.append(line)
                 line = word
             else:
@@ -123,25 +137,27 @@ def region_layout(cue, width: int, height: int, st=None):
                     available=available_width(None, width), overflow=len(lines) > st['max_lines'])
     x0, y0, x1, y1 = box
     bw, bh = max(1, x1-x0), max(1, y1-y0)
+    stroke = 2*st.get('outline', 0)
     minimum, maximum = st['size']*.6, st['size']
     vertical = cue.get('orientation') == 'v'
     if vertical:
         lines = str(text).split()
-        longest = max((_units(word) for word in lines), default=1)
-        limit = min(maximum, bw*1.2/max(longest, .01), bh/max(1, len(lines))/ASS_CELL)
+        longest = max((region_units(word) for word in lines), default=1)
+        limit = min(maximum, max(1,bw*1.2-stroke)/max(longest, .01), bh/max(1, len(lines))/ASS_CELL)
         size = max(minimum, limit)
-        # Account for ASS cell rounding when fitting total line height.
-        if ass_size(size)*len(lines) > bh and size > minimum:
-            size = max(minimum, size-.5/ASS_CELL)
-        overflow = longest*size > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01
+        # Fit the size libass actually renders after integer font-cell rounding.
+        while (longest*ass_size(size)/ASS_CELL+stroke > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01) and size > minimum+.01:
+            size = max(minimum, size-maximum*.01)
+        overflow = longest*ass_size(size)/ASS_CELL+stroke > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01
         available = bw*1.2
     else:
         maximum = max(minimum, min(maximum, cue.get('text_height') or maximum))
-        size, lines = maximum, _wrap(text, maximum, bw)
-        while (len(lines) > 2 or any(_units(line)*size > bw+.01 for line in lines)) and size > minimum+.01:
+        available = max(1,bw-stroke)
+        size, lines = maximum, _wrap(text, ass_size(maximum)/ASS_CELL, available, region_units)
+        while (len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01) and size > minimum+.01:
             size = max(minimum, size-maximum*.01)
-            lines = _wrap(text, size, bw)
-        overflow = len(lines) > 2 or any(_units(line)*size > bw+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01
+            lines = _wrap(text, ass_size(size)/ASS_CELL, available, region_units)
+        overflow = len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01
         if len(lines) > 2:
             lines = [lines[0], ' '.join(lines[1:])]
         available = bw
