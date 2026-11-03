@@ -79,16 +79,34 @@ class RegionPrepareTests(unittest.TestCase):
         self.prepare(self.cfg())
         cues = p.read(self.d / 'cues.json')
         for cue in cues:
-            cue.update(text='Lời Việt', source_ids=['asr-missing'])
+            cue.update(text='Lời Việt', source_ids=['a1'])
         p.write(self.d / 'cues.json', cues)
-        state = review.load_state(self.d)
-        state['source_cues'] = [dict(c, source_ids=['asr-missing']) for c in cues]
+        state = p.read(self.d / 'review-state.json')
+        state.pop('source_basis_version',None)
+        state['source_cues'] = [dict(c, source_ids=['a1']) for c in cues]
         p.write(self.d / 'review-state.json', state)
         self.assertTrue(review.require_export(self.d, dict(mode='vietsub', duration=12))['draft_allowed'])
         self.assertEqual(p.read(self.d / 'cues.json')[0]['text'], 'Lời Việt')
         repaired = (self.d / 'review-state.json').read_bytes()
         review.load_state(self.d)
         self.assertEqual((self.d / 'review-state.json').read_bytes(), repaired)
+
+    def test_modern_or_incomplete_legacy_provenance_is_never_auto_rebased(self):
+        from dubflow import review
+        for modern in (True,False):
+            with self.subTest(modern=modern):
+                self.prepare(self.cfg())
+                state=p.read(self.d/'review-state.json')
+                if not modern:state.pop('source_basis_version',None)
+                p.write(self.d/'review-state.json',state)
+                before=(self.d/'review-state.json').read_bytes()
+                cues=p.read(self.d/'cues.json')[1:]
+                for cue in cues:cue['text']='Lời Việt'
+                cues[0]['source_ids']=['a1']
+                p.write(self.d/'cues.json',cues)
+                report=review.quality_report(self.d,dict(mode='vietsub',duration=12))
+                self.assertFalse(report['draft_allowed'])
+                self.assertEqual((self.d/'review-state.json').read_bytes(),before)
 
     def test_missing_original_never_repairs_bad_region_links(self):
         from dubflow import review

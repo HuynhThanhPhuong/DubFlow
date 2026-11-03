@@ -49,11 +49,32 @@ def _load_state(folder):
     known={c['id'] for c in state.get('source_cues',[])}
     # Old region builds used ASR evidence IDs as review source IDs. Only repair
     # this generated-source format; incomplete/manual source mappings still block.
-    if ((read(folder/'source-build.json',{}) or {}).get('mode')=='regions' and cues
-        and all(c.get('original','').strip() and c.get('source') in ('ocr','ocr+asr','asr') for c in cues)
-        and any(set(c.get('source_ids') or [])-known for c in cues)):
+    if _legacy_region_links(folder,cues,state,known):
         state=_replace_source(folder,cues,state,reason='repair-region-source')
     return state
+
+
+def _legacy_region_links(folder,cues,state,known):
+    """Recognize the pre-v2 ASR-evidence defect without rebasing edited mappings."""
+    if state.get('source_basis_version',0)>=2 or not cues:
+        return False
+    if (read(folder/'source-build.json',{}) or {}).get('mode')!='regions':
+        return False
+    if not all(c.get('original','').strip() and c.get('source') in ('ocr','ocr+asr','asr') for c in cues):
+        return False
+    asr_ids={c['id'] for c in read(folder/'source-asr-cues.json',[])}
+    unknown=set()
+    for cue in cues:
+        linked=set(cue.get('source_ids') or [])
+        unknown.update(linked-known)
+        # Existing split/merge mappings are intentional provenance, not ASR evidence.
+        if any(sid in known and sid!=cue['id'] for sid in linked):
+            return False
+    if not unknown or not unknown.issubset(asr_ids):
+        return False
+    # Every original source unit must still be present. A deleted source cue must
+    # remain SOURCE_MISSING even when another cue also contains a dangling link.
+    return {c['id'] for c in cues}==known
 
 
 def replace_source(folder, cues):

@@ -701,7 +701,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
     def translation_history_detail(job_id: str,snapshot_id: str):
         snapshot=translation_history.get_snapshot(job_dir(job_id),snapshot_id)
         if snapshot is None:raise HTTPException(404,'Không tìm thấy bản dịch của video này.')
-        return snapshot
+        current=read_json(job_dir(job_id)/'cues.json',[])
+        matched,unmatched=translation_history.match_cues(snapshot['cues'],current)
+        indices={id(cue):i for i,cue in enumerate(snapshot['cues'])}
+        links=[None]*len(snapshot['cues'])
+        for index,old in matched:links[indices[id(old)]]=current[index]['id']
+        return dict(snapshot,matches=links,matched_count=len(matched),unmatched_count=unmatched)
 
     @app.post('/api/jobs/{job_id}/translation-history/{snapshot_id}/restore')
     def restore_translation_history(job_id: str,snapshot_id: str):

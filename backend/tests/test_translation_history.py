@@ -56,6 +56,17 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(restored,{'new-b':'Chào lần nữa','new-a':'Xin chào'})
         self.assertEqual(self.history()[0]['source'],'before_restore')
 
+    def test_comparison_preview_uses_the_same_one_to_one_unicode_matching_as_restore(self):
+        from dubflow.translation_history import save_snapshot
+        saved=[dict(self.cues[0],original='ＡＢＣ'),dict(self.cues[0],original='ＡＢＣ',text='Bản khác')]
+        snapshot=save_snapshot(self.folder,saved,source='gemini')
+        write(self.folder/'cues.json',[dict(self.cues[0],id='new',original='abc')])
+        detail=self.client.get(self.base+'/translation-history/'+snapshot['id']).json()
+        self.assertEqual(detail['matches'],['new',None])
+        self.assertEqual((detail['matched_count'],detail['unmatched_count']),(1,1))
+        restored=self.client.post(self.base+'/translation-history/'+snapshot['id']+'/restore').json()
+        self.assertEqual((restored['matched_count'],restored['unmatched_count']),(1,1))
+
     def test_partial_restore_keeps_unmatched_current_text_and_reports_count(self):
         from dubflow.translation_history import save_snapshot
         row=save_snapshot(self.folder,[self.cues[0],dict(self.cues[1],original='khác')],source='gemini',status='stopped')
