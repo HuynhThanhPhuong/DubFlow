@@ -50,6 +50,54 @@ class RegionPrepareTests(unittest.TestCase):
     def names(self):
         return [c[0] for c in self.calls]
 
+    def test_source_snapshot_covers_every_region_cue_after_rebuild(self):
+        from dubflow import review
+        self.prepare(self.cfg())
+        self.prepare(self.cfg(subtitle=[60, 150, 200, 60]))
+        cues = p.read(self.d / 'cues.json')
+        for cue in cues:
+            cue['text'] = 'Lời Việt'
+        p.write(self.d / 'cues.json', cues)
+        report = review.require_export(self.d, dict(mode='vietsub', duration=12))
+        self.assertEqual(report['coverage']['omitted'], 0)
+        self.assertEqual({c['id'] for c in review.load_state(self.d)['source_cues']},
+                         {sid for c in cues for sid in c['source_ids']})
+
+    def test_changed_audio_stamp_preserves_source_and_translation_with_same_band(self):
+        self.prepare(self.cfg())
+        cues = p.read(self.d / 'cues.json')
+        cues[0]['text'] = 'Bản dịch đã trả tiền'
+        cues[0]['original'] = 'Người dùng sửa lời gốc'
+        p.write(self.d / 'cues.json', cues)
+        p.write(self.d / 'transcribe.json', dict(key='old-key'))
+        self.prepare(self.cfg())
+        self.assertEqual(p.read(self.d / 'cues.json'), cues)
+        self.assertNotIn('transcribe', self.names())
+
+    def test_legacy_region_source_links_are_repaired_only_with_complete_source(self):
+        from dubflow import review
+        self.prepare(self.cfg())
+        cues = p.read(self.d / 'cues.json')
+        for cue in cues:
+            cue.update(text='Lời Việt', source_ids=['asr-missing'])
+        p.write(self.d / 'cues.json', cues)
+        state = review.load_state(self.d)
+        state['source_cues'] = [dict(c, source_ids=['asr-missing']) for c in cues]
+        p.write(self.d / 'review-state.json', state)
+        self.assertTrue(review.require_export(self.d, dict(mode='vietsub', duration=12))['draft_allowed'])
+        self.assertEqual(p.read(self.d / 'cues.json')[0]['text'], 'Lời Việt')
+        repaired = (self.d / 'review-state.json').read_bytes()
+        review.load_state(self.d)
+        self.assertEqual((self.d / 'review-state.json').read_bytes(), repaired)
+
+    def test_missing_original_never_repairs_bad_region_links(self):
+        from dubflow import review
+        self.prepare(self.cfg())
+        cues = p.read(self.d / 'cues.json')
+        cues[0].update(original='', text='Lời Việt', source_ids=['missing'])
+        p.write(self.d / 'cues.json', cues)
+        self.assertFalse(review.quality_report(self.d, dict(mode='vietsub', duration=12))['draft_allowed'])
+
     def test_only_the_drawn_band_is_read_and_nothing_is_detected(self):
         self.prepare(self.cfg(logos=[[5, 5, 40, 20]]))
         self.assertEqual(self.names(), ['transcribe', 'subband', 'erase'])

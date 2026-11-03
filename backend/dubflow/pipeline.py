@@ -526,7 +526,11 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
     cues = clamp_asr_to_ocr(cues)
     if not cues:
         warnings.append('Không tìm thấy sub trên hình lẫn lời nói; hãy thêm hoặc nhập cue thủ công.')
-    write(directory/'cues.json', cues)
+    if __package__:
+        from .review import replace_source
+    else:
+        from review import replace_source
+    replace_source(directory, cues)
     write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
         ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
@@ -787,6 +791,12 @@ def prepare(job_dir, settings, emit):
     fresh_transcript = not read(directory/'cues.json', []) or not stage_stamp_current(directory/'transcribe.json', transcribe_key)
     warnings = []
     cfg = analysis_regions.usable(job.get('analysis_regions'))
+    # Re-analysis of cleanup must not discard paid translations because an audio
+    # cache stamp changed. Only a new band or explicit source reset rebuilds cues.
+    if cfg is not None and read(directory/'cues.json',[]):
+        built = read(directory/'source-build.json', {}) or {}
+        if built.get('source_key') == analysis_regions.source_key(cfg):
+            fresh_transcript = False
     if fresh_transcript:
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)

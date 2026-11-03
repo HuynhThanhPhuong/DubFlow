@@ -15,6 +15,7 @@ class Cue(BaseModel):
     delay: float | None = None
     overrun: float | None = None
     source_ids: list[str] = Field(default_factory=list, max_length=1000)
+    asr_source_ids: list[str] = Field(default_factory=list, max_length=1000)
     overlap_group: str | None = Field(default=None, max_length=100)
     source: Literal['ocr', 'asr', 'ocr+asr'] | None = None
     asr_text: str | None = Field(default=None, max_length=20000)

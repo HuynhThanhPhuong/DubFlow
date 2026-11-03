@@ -45,6 +45,42 @@ def _load_state(folder):
                    characters=[], assignments={}, address_rules=[], scene_context='', omissions={},
                    resolutions={}, approval=None,source_video_sha256=file_hash(path) if path and path.is_file() else None)
         write(folder/'review-state.json',state)
+    cues=read(folder/'cues.json',[])
+    known={c['id'] for c in state.get('source_cues',[])}
+    # Old region builds used ASR evidence IDs as review source IDs. Only repair
+    # this generated-source format; incomplete/manual source mappings still block.
+    if ((read(folder/'source-build.json',{}) or {}).get('mode')=='regions' and cues
+        and all(c.get('original','').strip() and c.get('source') in ('ocr','ocr+asr','asr') for c in cues)
+        and any(set(c.get('source_ids') or [])-known for c in cues)):
+        state=_replace_source(folder,cues,state,reason='repair-region-source')
+    return state
+
+
+def replace_source(folder, cues):
+    """Publish a newly generated transcript and its review provenance together.
+
+    Displayed OCR lines are source units themselves. ASR IDs are evidence, not
+    links to review units (one ASR sentence may span several displayed lines).
+    """
+    with _SAVE_LOCK:
+        return _replace_source(Path(folder),cues,read(Path(folder)/'review-state.json'),reason='rebuild-source')
+
+
+def _replace_source(folder,cues,previous,reason):
+    cues=[dict(c) for c in cues]
+    for c in cues:
+        if c.get('source_ids') and c['source_ids']!=[c['id']]:
+            c['asr_source_ids']=c.get('asr_source_ids') or c['source_ids']
+        c['source_ids']=[c['id']]
+    state=dict(previous or dict(version=1,revision=0,characters=[],address_rules=[],scene_context='',source_video_sha256=None))
+    if previous:
+        archive=folder/'review-history';archive.mkdir(exist_ok=True)
+        write(archive/f"{reason}-{uuid.uuid4().hex}.json",dict(before=previous,time=stamp()))
+    state.update(source_cues=content([dict(c,text='') for c in cues]),source_basis_version=2,
+                 revision=state.get('revision',0)+1,assignments={},assignment_basis={},listener_basis={},
+                 omissions={},resolutions={},approval=None)
+    write(folder/'cues.json',cues)
+    write(folder/'review-state.json',state)
     return state
 
 
