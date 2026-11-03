@@ -74,13 +74,21 @@ def match_cues(saved, current):
                 # unique text/time remains restorable after moving a region.
                 candidates.append((spatial,ds+de,i))
         options[n]=sorted(candidates)
+    identities={}
+    for n,candidates in options.items():
+        old=saved[n]
+        if old.get('region') is not None and old.get('box'):
+            for _,_,index in candidates:
+                identities.setdefault(index,set()).add(tuple(old['box']))
+    ambiguous={i for i,boxes in identities.items() if len(boxes)>1}
     # Reserve surviving boxes across the entire snapshot before allowing a moved
     # or legacy line to match by text/time. Region indexes can change on deletion.
     for spatial in (0,1):
         for n,candidates in options.items():
             if n in matched:
                 continue
-            choices=[c for c in candidates if c[0]==spatial and c[2] not in used]
+            choices=[c for c in candidates if c[0]==spatial and c[2] not in used
+                     and (spatial==0 or c[2] not in ambiguous)]
             if not choices or (len(choices)>1 and abs(choices[0][1]-choices[1][1])<1e-6):
                 continue
             index=choices[0][2];used.add(index)

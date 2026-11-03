@@ -75,6 +75,12 @@ class RegionsDot8Tests(unittest.TestCase):
         self.assertEqual(matches, [(0, right)])
         self.assertEqual(unmatched, 1)
 
+    def test_history_does_not_guess_between_repeated_lines_after_boxes_move(self):
+        left = dict(start=1, end=3, original='你好', text='Bên trái', region=0, box=[0, 0, 100, 30])
+        right = dict(left, text='Bên phải', region=1, box=[200, 0, 300, 30])
+        moved = dict(right, text='', region=0, box=[205, 0, 305, 30])
+        self.assertEqual(history.match_cues([left, right], [moved]), ([], 2))
+
     def test_old_applied_stamp_is_exportable_without_forcing_source_reset(self):
         cfg=ar.usable(dict(no_hard_subs=False,subtitle=[10,20,100,30],logos=[],screen_text=[]))
         old_source=ar._key(dict(v=2,no_hard_subs=False,subtitle=cfg['subtitle']))
