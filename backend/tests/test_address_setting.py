@@ -99,7 +99,7 @@ class AddressSettingTests(unittest.TestCase):
         self.assertEqual(again.context['setting']['era'], 'ancient')
         self.assertEqual(len(again.texts), 2)
 
-    def test_cache_context_missing_or_wrong_era_does_not_override_lock(self):
+    def test_cache_with_wrong_era_is_not_reused_under_lock(self):
         items = make_items(2)
         run(self.folder, items, fake=SettingProvider(), setting='modern')
         cache_path = self.folder / tj.CACHE_FILE
@@ -109,8 +109,66 @@ class AddressSettingTests(unittest.TestCase):
         cache_path.write_text(json.dumps(cache), encoding='utf-8')
         fake = Fake()
         out = run(self.folder, items, fake=fake, setting='modern')
-        self.assertEqual(fake.calls, [])
+        self.assertEqual(len(fake.calls), 1)
         self.assertEqual(out.context['setting']['era'], 'modern')
+
+    def test_later_cache_with_other_era_does_not_mix_translation_settings(self):
+        items = make_items(40)
+        class EraText(Fake):
+            def __init__(self, era):
+                super().__init__()
+                self.era = era
+            def generate(self, system, user, schema, max_output_tokens):
+                body = json.loads(user)
+                self.calls.append(body)
+                return Reply({'context': {'setting': {'era': self.era, 'note': ''}},
+                    'items': [{'id': i['id'], 'vi': self.era} for i in body['items']]}, '', False, Usage(1, 1))
+        source = [{'id': i.id, 'zh': i.zh} for i in items]
+        run(self.folder, items[20:], p=prefs(max_output_tokens=1800), fake=EraText('ancient'), source_dialogue=source)
+        fresh = EraText('modern')
+        out = run(self.folder, items, p=prefs(max_output_tokens=1800), fake=fresh, source_dialogue=source)
+        self.assertEqual(out.texts['c0'], 'modern')
+        self.assertEqual(out.texts['c20'], 'modern')
+        self.assertEqual(len(fresh.calls), 2)
+
+    def test_full_source_budget_only_reduces_first_chunk(self):
+        items = [tj.Item(f'c{i}', '你好', i * 3, i * 3 + 2, 'A', 'cue') for i in range(100)]
+        source = [{'zh': i.zh, 'speaker': i.speaker} for i in items]
+        p = prefs(max_input_tokens=5000)
+        basic = tj.plan_translation(items, 'dub', p)
+        overview = tj.plan_translation(items, 'dub', p, source_dialogue=source)
+        self.assertLessEqual(len(overview.chunks), len(basic.chunks) + 1)
+        fake = SettingProvider()
+        out = run(self.folder, items, p=p, fake=fake, source_dialogue=source)
+        self.assertEqual(out.failed, [])
+        self.assertTrue(all('source_dialogue' not in c for c in fake.calls[1:]))
+
+    def test_overview_exceeding_input_budget_never_calls_provider(self):
+        items = make_items(200)
+        source = [{'id': i.id, 'zh': i.zh, 'speaker': i.speaker} for i in items]
+        fake = SettingProvider()
+        out = run(self.folder, items, p=prefs(max_input_tokens=5000), fake=fake, source_dialogue=source)
+        self.assertEqual(fake.calls, [])
+        self.assertIn('Tăng giới hạn token đầu vào', out.error)
+
+    def test_inherited_context_does_not_change_cancelled_chunk_boundaries(self):
+        items = make_items(100)
+        source = [{'id': i.id, 'zh': i.zh, 'speaker': i.speaker} for i in items]
+        stopped = []
+        class Stop(SettingProvider):
+            def generate(self, *args):
+                result = super().generate(*args)
+                stopped.append(True)
+                return result
+        p = prefs(max_input_tokens=5000)
+        first = run(self.folder, items, p=p, fake=Stop(), source_dialogue=source, should_stop=lambda: bool(stopped))
+        self.assertEqual(first.paused, 'cancelled')
+        plan = tj.plan_translation(items, 'dub', p, source_dialogue=source)
+        self.assertGreater(len(plan.chunks), 1)
+        second = SettingProvider()
+        run(self.folder, items, p=p, fake=second, source_dialogue=source, initial_context=first.context)
+        self.assertEqual(len(second.calls), len(plan.chunks) - 1)
+        self.assertTrue(set(first.texts).isdisjoint({i['id'] for c in second.calls for i in c['items']}))
 
     def test_plan_accounts_for_full_source_and_locked_choice(self):
         items = make_items(2)
@@ -148,6 +206,25 @@ class AddressSettingTests(unittest.TestCase):
 
 
 class SettingFlowTests(Base):
+    def test_cancelled_paid_result_is_reused_on_resume_with_accumulated_context(self):
+        self.configure()
+        self.make_job(regions=[])
+        owner = self
+        class StopWithContext(SettingFlowFake):
+            def generate(self, *args):
+                result = super().generate(*args)
+                result.data['context'].update(
+                    characters=[{'name': 'A', 'zh': '甲', 'note': 'sư phụ'}],
+                    address=[{'from': 'A', 'to': 'B', 'xung': 'vi sư', 'ho': 'con'}])
+                (owner.folder / 'cancel.request').touch()
+                return result
+        self.run_translate(StopWithContext())
+        self.assertEqual(self.cue_texts()['c2'], '')
+        resumed = SettingFlowFake()
+        self.run_translate(resumed)
+        self.assertEqual(resumed.calls, [], 'Không trả tiền lần nữa cho bản dịch đã có trong cache')
+        self.assertTrue(self.cue_texts()['c2'])
+
     def test_legacy_job_auto_and_choice_saved_prompt_and_request(self):
         self.configure()
         self.make_job()
@@ -222,6 +299,13 @@ class SettingFlowTests(Base):
         self.assertEqual(self.client.get(self.base + '/translate/estimate?setting=modern').status_code, 200)
         self.assertEqual(self.client.get(self.base + '/translate/estimate?setting=wrong').status_code, 422)
         self.assertEqual(self.client.get(self.base).json()['setting'], 'ancient')
+
+    def test_estimate_reports_oversized_overview_as_vietnamese_conflict(self):
+        self.configure(max_input_tokens=1000)
+        self.make_job(regions=[], cues=[dict(id='huge', original='师尊' * 5000, text='', start=0, end=3, speaker='A')])
+        response = self.client.get(self.base + '/translate/estimate')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('Tăng giới hạn token đầu vào', response.json()['detail'])
 
 
 class SettingFlowFake(SettingProvider):

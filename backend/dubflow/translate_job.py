@@ -233,15 +233,45 @@ def _extra_tokens(setting='auto', metadata=None, source_dialogue=None, context=N
             + math.ceil(len(setting_instruction(setting)) / SYSTEM_CHARS_PER_TOKEN))
 
 
+def _translation_chunks(items, mode, prefs, terminology, setting='auto', metadata=None, source_dialogue=None):
+    """Toàn bộ nguồn chỉ chiếm ngân sách phần đầu; context tích lũy dùng khoản dự phòng 15%."""
+    chunks = _split(list(items), mode, prefs, terminology, _extra_tokens(setting, metadata)) if items else []
+    if not chunks or source_dialogue is None:
+        return chunks
+    first_context = _merge_context({}, None)
+    if locked := locked_setting(setting):
+        first_context['setting'] = locked
+    extra = _extra_tokens(setting, metadata, source_dialogue, first_context)
+    def fits_first(part):
+        return _est_in(part, mode, prefs, terminology, extra) <= prefs.max_input_tokens
+    first = chunks[0]
+    if fits_first(first):
+        return chunks
+    if not fits_first(first[:1]):
+        raise ProviderError('Toàn bộ lời gốc để xác định bối cảnh vượt giới hạn token đầu vào. '
+                            'Tăng giới hạn token đầu vào trong Cài đặt → Dịch rồi thử lại.')
+    low, high = 1, len(first)
+    while low + 1 < high:
+        mid = (low + high) // 2
+        if fits_first(first[:mid]):
+            low = mid
+        else:
+            high = mid
+    return [first[:low], *_split(list(items)[low:], mode, prefs, terminology, _extra_tokens(setting, metadata))]
+
+
 def plan_translation(items: list[Item], mode: str, prefs, terminology: str = '', *,
                      setting='auto', metadata=None, source_dialogue=None, initial_context=None) -> Plan:
     """Chỉ ước tính và chia phần, không gọi mạng."""
     _need_mode(mode)
-    extra = _extra_tokens(setting, metadata, source_dialogue, initial_context)
-    # Chừa chỗ cho toàn bộ nguồn ở mọi phần khi chia để tránh phần đầu vượt ngân sách.
-    chunks = _split(list(items), mode, prefs, terminology, extra) if items else []
+    chunks = _translation_chunks(items, mode, prefs, terminology, setting, metadata, source_dialogue)
+    initial = _merge_context({}, initial_context)
+    if locked := locked_setting(setting):
+        initial['setting'] = locked
     est = [_chunk_est(c, mode, prefs, terminology,
-                      _extra_tokens(setting, metadata, source_dialogue if n == 0 else None, initial_context))
+                      _extra_tokens(setting, metadata,
+                                    source_dialogue if n == 0 and not valid_setting((initial_context or {}).get('setting')) else None,
+                                    initial))
            for n, c in enumerate(chunks)]
     tin, tout = sum(e[0] for e in est), sum(e[1] for e in est)
     cost = _est_cost(prefs, tin, tout) if prefs.tier == 'paid' else None
@@ -382,11 +412,10 @@ class _Run:
         self.texts: dict[str, str] = {}
         self.failed: list[str] = []
         self.context = _merge_context({}, initial_context)
+        self.needs_overview = not valid_setting(self.context.get('setting'))
         if locked := locked_setting(self.setting):
             self.context['setting'] = locked
-        # Cố định seed cho cả lần chạy; context tích lũy có thể đổi sau mỗi phần.
-        self.initial_context = _merge_context({}, self.context)
-        self.extra_tokens = _extra_tokens(self.setting, self.metadata, self.source_dialogue, self.context)
+        self.extra_tokens = _extra_tokens(self.setting, self.metadata)
         self.requests = 0
         self.usage = Usage(0, 0, 0)
         self.usages: list[dict] = []
@@ -404,9 +433,11 @@ class _Run:
         self.prefix = ''
 
     def key(self, payload_items: list[dict]) -> str:
+        # Context do model tích lũy được khôi phục khi dịch tiếp. Nó không phải đầu vào mới:
+        # đưa vào khóa sẽ làm mất cache các request đã trả tiền trước khi dừng.
         raw = json.dumps([PROMPT_VERSION, getattr(self.provider, 'name', ''), self.model, self.mode,
                           self.terminology, self.setting, self.metadata, self.source_dialogue,
-                          self.initial_context, payload_items], ensure_ascii=False, sort_keys=True)
+                          payload_items], ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
     def wait(self, seconds: float) -> None:
@@ -422,15 +453,16 @@ class _Run:
         if self.stop():
             raise _Pause('cancelled')
         payload = [_payload_item(i, self.mode, self.prefs) for i in part]
+        overview = self.source_dialogue if self.needs_overview else None
+        extra = _extra_tokens(self.setting, self.metadata, overview, self.context)
+        if overview is not None and _est_in(part, self.mode, self.prefs, self.terminology, extra) > self.prefs.max_input_tokens:
+            raise ProviderError('Lời gốc và ngữ cảnh dịch vượt giới hạn token đầu vào. '
+                                'Tăng giới hạn token đầu vào trong Cài đặt → Dịch rồi thử lại.')
         if self.paid and not self.allow and self.prefs.cost_cap_usd is not None:
-            est = _est_cost(self.prefs, *_chunk_est(part, self.mode, self.prefs, self.terminology,
-                _extra_tokens(self.setting, self.metadata,
-                              self.source_dialogue if self.requests == 0 or not valid_setting(self.context.get('setting')) else None,
-                              self.context)))
+            est = _est_cost(self.prefs, *_chunk_est(part, self.mode, self.prefs, self.terminology, extra))
             if self.before + self.spent + est > self.prefs.cost_cap_usd:
                 raise _Pause('cost_cap')
-        user = _user(payload, self.terminology, self.context, self.metadata,
-                     self.source_dialogue if not valid_setting(self.context.get('setting')) or self.requests == 0 else None)
+        user = _user(payload, self.terminology, self.context, self.metadata, overview)
         rate_try = busy_try = 0
         self.say(f'đang gửi tới {self.label}, chờ trả lời…')
         while True:
@@ -479,6 +511,8 @@ class _Run:
         self.context = _merge_context(self.context, data.get('context'))
         if locked := locked_setting(self.setting):
             self.context['setting'] = locked
+        if valid_setting(self.context.get('setting')):
+            self.needs_overview = False
         _atomic_json(self.dir / CONTEXT_FILE, self.context)
         return reply
 
@@ -505,12 +539,20 @@ class _Run:
         for i in ids:
             self.chunk_keys[i] = key
         hit = self.cache.get(key)
+        if isinstance(hit, dict):
+            expected = valid_setting(self.context.get('setting'))
+            cached_context = hit.get('context')
+            actual = valid_setting(cached_context.get('setting')) if isinstance(cached_context, dict) else None
+            if expected and (not actual or expected['era'] != actual['era']):
+                hit = None  # không dùng chữ đã dịch theo thời đại khác với phần hiện tại
         if isinstance(hit, dict) and isinstance(hit.get('items'), dict):
             cached = {i: v for i, v in hit['items'].items() if i in ids and isinstance(v, str) and v.strip()}
             self.texts.update(cached)
             self.context = _merge_context(self.context, hit.get('context'))
             if locked := locked_setting(self.setting):
                 self.context['setting'] = locked
+            if valid_setting(self.context.get('setting')):
+                self.needs_overview = False
             _atomic_json(self.dir / CONTEXT_FILE, self.context)
             self.failed += [i for i in ids if i not in cached]
             self.ctx['done'] = self.ctx.get('done', 0) + len(ids)
@@ -541,7 +583,8 @@ class _Run:
             self.failed = [i for i in self.failed if i not in good]
 
     def execute(self) -> None:
-        chunks = _split(self.items, self.mode, self.prefs, self.terminology, self.extra_tokens) if self.items else []
+        chunks = _translation_chunks(self.items, self.mode, self.prefs, self.terminology,
+                                     self.setting, self.metadata, self.source_dialogue)
         self.n_chunks = len(chunks)
         total, done = len(self.items), 0
         try:

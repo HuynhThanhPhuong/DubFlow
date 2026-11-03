@@ -23,6 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import Settings
 from .preferences import preferences, translation_ready
 from . import translate_run, timing
+from .translate_api import ProviderError
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
@@ -754,9 +755,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = job_or_404(job_id)
         prefs, folder = translate_preflight(job, scope)
         collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
-        result = translate_run.estimate(folder, scope, job.get('mode') or 'vietsub', prefs, terminology_for(job),
-                                        setting=setting or job.get('setting', 'auto'),
-                                        job={**job, 'collection_name': (collection or {}).get('name', '')})
+        try:
+            result = translate_run.estimate(folder, scope, job.get('mode') or 'vietsub', prefs, terminology_for(job),
+                                            setting=setting or job.get('setting', 'auto'),
+                                            job={**job, 'collection_name': (collection or {}).get('name', '')})
+        except ProviderError as exc:
+            raise HTTPException(409, str(exc)) from None
         if result is None:
             raise HTTPException(409, 'Không có câu nào cần dịch.')
         return result
