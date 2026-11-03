@@ -1,4 +1,5 @@
 export type Mode = "dub" | "tm" | "vietsub";
+export type AddressSetting = "auto" | "modern" | "ancient";
 export type StageStep = "analyze" | "translate" | "synthesize" | "render";
 export interface StageEstimate {
   seconds: number;
@@ -83,6 +84,8 @@ export interface Job {
   zip_url?: string | null;
   subtitle_style?: SubtitleStyle;
   translation_usage?: TranslationUsage | null;
+  setting?: AddressSetting;
+  translation_context?: { setting?: { era: "modern" | "ancient"; note: string } } | null;
   overlays?: Overlay[];
 }
 export interface TranslationUsage {

@@ -1,5 +1,6 @@
 import type {
   AnalysisRegions,
+  AddressSetting,
   Cue,
   TranslateEstimate,
   TranslateScope,
@@ -106,16 +107,16 @@ export const api = {
     request<Job>("/jobs", { method: "POST", body: data }),
   updateJob: (
     id: string,
-    data: { mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string },
+    data: { mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string; setting?: AddressSetting },
   ) => request<Job>(`/jobs/${key(id)}`, json("PUT", data)),
   action: (id: string, action: "analyze" | "translate" | "render" | "cancel") =>
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),
-  translateEstimate: (id: string, scope: TranslateScope) =>
-    request<TranslateEstimate>(`/jobs/${key(id)}/translate/estimate?scope=${scope}`),
-  translate: (id: string, scope: TranslateScope, allow_over_cap: boolean) =>
-    request<Job>(`/jobs/${key(id)}/translate`, json("POST", { scope, allow_over_cap })),
-  translatePrompt: async (id: string) => {
-    const response = await fetch(`/api/jobs/${key(id)}/translate-prompt`);
+  translateEstimate: (id: string, scope: TranslateScope, setting?: AddressSetting) =>
+    request<TranslateEstimate>(`/jobs/${key(id)}/translate/estimate?scope=${scope}${setting ? `&setting=${setting}` : ""}`),
+  translate: (id: string, scope: TranslateScope, allow_over_cap: boolean, setting?: AddressSetting) =>
+    request<Job>(`/jobs/${key(id)}/translate`, json("POST", { scope, allow_over_cap, setting })),
+  translatePrompt: async (id: string, setting?: AddressSetting) => {
+    const response = await fetch(`/api/jobs/${key(id)}/translate-prompt${setting ? `?setting=${setting}` : ""}`);
     if (!response.ok) throw new ApiError(response.status, "Không lấy được lệnh mẫu.");
     return response.text();
   },

@@ -4,12 +4,14 @@ import { api } from "./api";
 import { isBusy } from "./helpers";
 import type {
   Cue,
+  AddressSetting,
   Job,
   Mode,
   TranslateEstimate,
   TranslateScope,
 } from "./types";
 import { Button, Modal } from "./ui";
+import { TranslationContext } from "./TranslationContext";
 
 const modeLabels: Record<Mode, string> = {
   dub: "lồng tiếng",
@@ -117,6 +119,7 @@ export function TranslatePanel({
   const scope: TranslateScope = scopeChoice ?? (stale ? "all" : "missing");
   const effectiveScope: TranslateScope = pause ? "missing" : scope;
   const forceCap = pause === "cost_cap";
+  const setting = job.setting ?? "auto";
   const off = disabled || working || isBusy(job);
   const guard = async (fn: () => Promise<void>) => {
     setWorking(true);
@@ -131,14 +134,14 @@ export function TranslatePanel({
   const askEstimate = () =>
     guard(async () => {
       setDialogError("");
-      setEstimate(await api.translateEstimate(job.id, effectiveScope));
+      setEstimate(await api.translateEstimate(job.id, effectiveScope, setting));
       setOpen(false);
     });
   const confirm = async (allowOverCap: boolean) => {
     setWorking(true);
     setDialogError("");
     try {
-      onJob(await api.translate(job.id, effectiveScope, allowOverCap));
+      onJob(await api.translate(job.id, effectiveScope, allowOverCap, setting));
       setEstimate(null);
       onNotice("Đã gửi vào hàng đợi xử lý.");
     } catch (e) {
@@ -185,56 +188,78 @@ export function TranslatePanel({
                 công bên dưới.
               </p>
             )}
-            {ready && (
-              <>
-                {!pause && (
-                  <fieldset className="translate-scope" disabled={off}>
-                    <legend>Phạm vi dịch</legend>
-                    <label>
-                      <input
-                        type="radio"
-                        name="translate-scope"
-                        checked={scope === "missing"}
-                        onChange={() => setScope("missing")}
-                      />
-                      Chỉ câu chưa có lời
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="translate-scope"
-                        checked={scope === "all"}
-                        onChange={() => setScope("all")}
-                      />
-                      Dịch lại tất cả
-                    </label>
-                    {scope === "all" && (
-                      <p className="warning small">
-                        Dịch lại tất cả sẽ ghi đè cả những lời Việt bạn đã sửa.
-                      </p>
-                    )}
-                    <div className="translate-scope-action">
-                      <Button
-                        variant="primary"
-                        disabled={off}
-                        onClick={() => void askEstimate()}
-                      >
-                        {buttonLabel}
-                      </Button>
-                    </div>
-                  </fieldset>
-                )}
-                {pause && (
-                  <Button
-                    variant="primary"
-                    disabled={off}
-                    onClick={() => void askEstimate()}
-                  >
-                    {buttonLabel}
-                  </Button>
-                )}
-              </>
-            )}
+            <div className={`translate-options${ready ? " has-api" : ""}`}>
+              <label className="translate-setting">
+                Bối cảnh xưng hô
+                <select
+                  value={setting}
+                  disabled={off}
+                  onChange={(e) => {
+                    const next = e.target.value as AddressSetting;
+                    void guard(async () => {
+                      onJob(await api.updateJob(job.id, { setting: next }));
+                      onNotice("Đã lưu bối cảnh xưng hô.");
+                    });
+                  }}
+                >
+                  <option value="auto">Tự động</option>
+                  <option value="modern">Hiện đại</option>
+                  <option value="ancient">Cổ trang</option>
+                </select>
+              </label>
+              {ready && (
+                <>
+                  {!pause && (
+                    <fieldset className="translate-scope" disabled={off}>
+                      <legend>Phạm vi dịch</legend>
+                      <label>
+                        <input
+                          type="radio"
+                          name="translate-scope"
+                          checked={scope === "missing"}
+                          onChange={() => setScope("missing")}
+                        />
+                        Chỉ câu chưa có lời
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="translate-scope"
+                          checked={scope === "all"}
+                          onChange={() => setScope("all")}
+                        />
+                        Dịch lại tất cả
+                      </label>
+                      {scope === "all" && (
+                        <p className="warning small">
+                          Dịch lại tất cả sẽ ghi đè cả những lời Việt bạn đã
+                          sửa.
+                        </p>
+                      )}
+                      <div className="translate-scope-action">
+                        <Button
+                          variant="primary"
+                          disabled={off}
+                          onClick={() => void askEstimate()}
+                        >
+                          {buttonLabel}
+                        </Button>
+                      </div>
+                    </fieldset>
+                  )}
+                  {pause && (
+                    <Button
+                      variant="primary"
+                      disabled={off}
+                      onClick={() => void askEstimate()}
+                    >
+                      {buttonLabel}
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+            <TranslationContext job={job} />
             <fieldset className="translate-scope translate-import">
               <legend>Dịch bằng AI chat / nhập file</legend>
               <div className="translate-import-row">
@@ -242,8 +267,12 @@ export function TranslatePanel({
                   className="button secondary"
                   href={`/api/jobs/${encodeURIComponent(job.id)}/source-subtitles.srt`}
                   download
-                  aria-disabled={!canExport}
+                  aria-disabled={!canExport || off}
                   onClick={(e) => {
+                    if (off) {
+                      e.preventDefault();
+                      return;
+                    }
                     if (!canExport) {
                       e.preventDefault();
                       onError(
@@ -254,7 +283,7 @@ export function TranslatePanel({
                       return;
                     }
                     void guard(async () => {
-                      setPrompt(await api.translatePrompt(job.id));
+                      setPrompt(await api.translatePrompt(job.id, setting));
                       setOpen(false);
                     });
                   }}

@@ -3,6 +3,7 @@ import type { Job } from "./types";
 import { isBusy } from "./helpers";
 import { agoText, liveLine } from "./stepProgress";
 import { Button, Modal } from "./ui";
+import { TranslationContext } from "./TranslationContext";
 
 const clock = (iso: string) => {
   const d = new Date(iso);
@@ -16,6 +17,7 @@ export function JobDetailsDialog({ job, notes, onClose }: { job: Job; notes: str
   const newestFirst = [...rows].reverse();
   return (
     <Modal title="Chi tiết" onClose={onClose} className="job-details-dialog">
+      <TranslationContext job={job} />
       <div className="job-details-tabs" role="tablist" aria-label="Chi tiết dự án">
         <button type="button" role="tab" id="tab-activity" aria-selected={tab === "activity"} aria-controls="panel-activity" onClick={() => setTab("activity")}>
           Hoạt động ({rows.length})
@@ -68,7 +70,7 @@ export function JobActivity({ job, notes = [] }: { job: Job; notes?: string[] })
   useEffect(() => setOpen(false), [job.id]);
   const rows = job.activity ?? [];
   const live = busy || job.stopping || job.deleting ? liveLine(job, now) : null;
-  if (!live && !rows.length && !notes.length) return null;
+  if (!live && !rows.length && !notes.length && !job.translation_context?.setting) return null;
   const stuck = job.status === "queued" && !!job.queue && !job.queue.worker_alive;
   const ago = busy ? agoText(job.updated_at, now) : "";
   return (

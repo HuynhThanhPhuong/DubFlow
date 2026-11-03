@@ -73,7 +73,7 @@ it("shows the estimate, posts nothing on cancel, posts with over-cap consent", a
   fireEvent.click(await screen.findByRole("button", { name: "Vẫn dịch, cho phép vượt trần" }));
   await waitFor(() => expect(calls.some((c) => c.path === "/api/jobs/job1/translate")).toBe(true));
   const post = calls.find((c) => c.path === "/api/jobs/job1/translate");
-  expect(JSON.parse(String(post?.init?.body))).toEqual({ scope: "missing", allow_over_cap: true });
+  expect(JSON.parse(String(post?.init?.body))).toEqual({ scope: "missing", allow_over_cap: true, setting: "auto" });
 });
 it("shows usage, the stale-mode note and a resume button for a cost-cap pause", async () => {
   location.hash = "#editor?job=job1";

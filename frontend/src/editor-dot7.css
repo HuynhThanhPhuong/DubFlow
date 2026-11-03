@@ -370,6 +370,54 @@
   gap: 8px;
   padding: 9px 10px;
 }
+.translation-popover .translate-setting {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  font-size: var(--control-font);
+}
+.translation-popover .translate-options {
+  display: grid;
+  gap: 12px;
+}
+.translation-popover .translate-options.has-api {
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.65fr);
+  align-items: start;
+}
+.translation-popover .translate-options.has-api .translate-setting {
+  grid-column: 2;
+  grid-row: 1;
+}
+.translation-popover .translate-options.has-api > .translate-scope,
+.translation-popover .translate-options.has-api > .button {
+  grid-column: 1;
+  grid-row: 1;
+}
+.translation-popover .translate-options .translate-scope {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 420px) {
+  .translation-popover .translate-options.has-api {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .translation-popover .translate-options.has-api .translate-setting {
+    grid-column: 1;
+    grid-row: 2;
+  }
+}
+.translation-context {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.translation-context p {
+  margin: 0;
+}
+.job-details-dialog > .translation-context {
+  padding: 0 20px 12px;
+  flex-shrink: 0;
+  max-height: 100px;
+  overflow: auto;
+}
 .translation-popover .translate-scope label {
   display: flex;
   flex-direction: row;
