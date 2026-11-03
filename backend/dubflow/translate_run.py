@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from .translate_api import LABELS, ProviderError, make_provider
 from .textcheck import needs_translation
 from .translate_job import Item, RateLimiter, plan_translation, run_translation
+from .translation_history import save_snapshot
 
 REQUEST_FILE = 'translate-request.json'
 USAGE_FILE = 'translation-usage.json'
@@ -161,14 +162,26 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     prefs = prefs_ns(settings)
     provider = None
     stop_file = folder / 'cancel.request'
+    source_cues = _read(folder/'cues.json',[])
+    last_snapshot = None
+    def snapshot(texts, requests=0, usage=None, cost=None, status='partial', error=None, update=False):
+        nonlocal last_snapshot
+        rows=[dict(c,text=texts.get(c['id'],'')) for c in source_cues]
+        last_snapshot=save_snapshot(folder,rows,source=name,status=status,
+            snapshot_id=last_snapshot['id'] if update and last_snapshot else None,
+            metadata=dict(provider=name,model=model,requests=requests,
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens+usage.thinking_tokens if usage else 0,
+                cost_usd=cost,error=scrub(error,key) if error else None))
     try:
         provider = make_provider(name, key, model, thinking=settings.thinking)
         limiter = RateLimiter(Path(settings.data_dir) / RATE_FILE, prefs.rate_rpm, prefs.rate_rpd, scope=f'{name}/{model}')
         outcome = run_translation(folder, items, mode, prefs, provider, limiter=limiter,
                                   terminology=terminology, allow_over_cap=allow,
                                   spent_before=spent_so_far(folder) if prefs.tier == 'paid' else 0.0,
-                                  should_stop=stop_file.exists, on_event=on_event)
+                                  should_stop=stop_file.exists, on_event=on_event, on_result=snapshot)
     except ProviderError as exc:  # lỗi trước khi có request nào (tạo provider)
+        snapshot({},status='error',error=str(exc))
         raise TranslateFailed(scrub(str(exc), key)) from None
     finally:
         if provider is not None:
@@ -176,6 +189,8 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     # Request đã gửi luôn được ghi vào số liệu dùng. Khi hủy thì không ghi chữ vào cues.json
     # (người dùng có thể đang sửa); bản dịch đã trả tiền vẫn nằm trong cache.
     cancelled = outcome.paused == 'cancelled' or stop_file.exists()
+    status='stopped' if cancelled or outcome.paused else 'error' if not outcome.texts else 'partial' if outcome.failed or outcome.error else 'done'
+    snapshot(outcome.texts,outcome.requests,outcome.usage,outcome.cost_usd,status,outcome.error,update=True)
     if not cancelled:
         apply_outcome(folder, items, outcome, scope, terminology)
     _add_usage(folder, name, model, mode, outcome)

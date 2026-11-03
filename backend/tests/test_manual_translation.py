@@ -48,7 +48,7 @@ class ManualTranslationTests(unittest.TestCase):
         self.assertIn('text/plain', r.headers['content-type'])
         for phrase in ('Giữ nguyên số thứ tự và dòng thời gian', 'Mỗi khối 1-2 dòng', 'Không gộp hay tách khối', 'đúng định dạng SRT'):
             self.assertIn(phrase, r.text)
-        self.assertIn('ký tự trên mỗi giây', r.text)
+        self.assertNotIn('ký tự trên mỗi giây', r.text)
         self.assertNotIn('KHÔNG chuyển thành lời kể', r.text)
         tm = self.client.get(base + '?mode=tm').text
         self.assertIn('KHÔNG chuyển thành lời kể', tm)

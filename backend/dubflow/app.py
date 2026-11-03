@@ -29,7 +29,7 @@ from .media import atomic_json, contained, parse_srt, poster, probe, read_json, 
 from . import logos as logo_lib
 from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
-from . import analysis_regions, lifecycle
+from . import analysis_regions, lifecycle, translation_history
 from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale
 from .store import Store, push_activity
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
@@ -106,7 +106,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = job_or_404(job_id)
         if job.get('deleting'):
             raise HTTPException(409, 'Dự án đang được xóa.')
-        if job['status'] in BUSY:
+        if job['status'] in BUSY or any(t['job_id']==job_id for t in store.active_tasks()):
             raise HTTPException(409, 'Tạm dừng tác vụ trước khi sửa dự án.')
         return job
 
@@ -301,7 +301,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.get('/api/jobs/{job_id}')
     def get_job(job_id: str):
-        return public_job(job_or_404(job_id))
+        job=job_or_404(job_id)
+        if job['status'] not in BUSY and not any(t['job_id']==job_id for t in store.active_tasks()) and (job_dir(job_id)/'cues.json').exists():
+            review.load_state(job_dir(job_id))
+        return public_job(job)
 
     @app.put('/api/jobs/{job_id}')
     def update_job(job_id: str, values: JobUpdate):
@@ -328,6 +331,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.get('/api/jobs/{job_id}/cues')
     def get_cues(job_id: str):
+        if (job_dir(job_id)/'cues.json').exists():review.load_state(job_dir(job_id))
         cs = sorted(read_json(job_dir(job_id) / 'cues.json'),key=lambda c:(c['start'],c['end']))
         if cs:
             report=review.quality_report(job_dir(job_id),review_job(job_or_404(job_id)))
@@ -406,6 +410,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
         for c in touched:
             c['translation_dependency'] = review.translation_dependency(c, state, stored, collection_terms)
         atomic_json(folder / 'cues.json', stored)
+        translation_history.save_snapshot(folder,stored,source='ai_chat')
         store.update_job(job_id, cue_count=len(stored))
         invalidate(job_id)
         return stored
@@ -425,6 +430,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 for flag in ('ocr_empty', 'source_mismatch', 'source_partial'):  # stale after a manual edit of the source text
                     c.pop(flag, None)
         atomic_json(job_dir(job_id) / 'cues.json', values)
+        translation_history.save_snapshot(job_dir(job_id),values,source='manual')
         store.update_job(job_id, cue_count=len(values))
         invalidate(job_id)
         return values
@@ -674,16 +680,51 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = writable(job_id)
         if analysis_regions.usable(job.get('analysis_regions')) is None:
             raise HTTPException(409, analysis_regions.NOT_READY)
-        if reset_source:
+        def reset():
             folder = job_dir(job_id)
             cues = folder / 'cues.json'
             if cues.exists():
+                translation_history.save_snapshot(folder,read_json(cues,[]),source='before_reanalyze')
                 stamp = time.strftime('%Y%m%d-%H%M%S')
                 shutil.copy2(cues, folder / f'cues.before-reset-{stamp}.json')
             for name in ('cues.json', 'subtrack.json', 'source-build.json', 'source-asr-cues.json'):
                 (folder / name).unlink(missing_ok=True)
-            store.update_job(job_id, cue_count=0)
-        return dispatch(job_id, 'analyze')
+        result=dispatch(job_id, 'analyze',reset if reset_source else None)
+        if reset_source:store.update_job(job_id,cue_count=0)
+        return result
+
+    @app.get('/api/jobs/{job_id}/translation-history')
+    def list_translation_history(job_id: str):
+        return translation_history.list_snapshots(job_dir(job_id))
+
+    @app.get('/api/jobs/{job_id}/translation-history/{snapshot_id}')
+    def translation_history_detail(job_id: str,snapshot_id: str):
+        snapshot=translation_history.get_snapshot(job_dir(job_id),snapshot_id)
+        if snapshot is None:raise HTTPException(404,'Không tìm thấy bản dịch của video này.')
+        return snapshot
+
+    @app.post('/api/jobs/{job_id}/translation-history/{snapshot_id}/restore')
+    def restore_translation_history(job_id: str,snapshot_id: str):
+        folder=job_dir(job_id)
+        snapshot=translation_history_detail(job_id,snapshot_id)
+        try:
+            with store.edit_idle_job(job_id) as job:
+                review.load_state(folder)
+                cues=read_json(folder/'cues.json',[])
+                matched,unmatched=translation_history.match_cues(snapshot['cues'],cues)
+                if not matched:raise ValueError('Không có câu dịch nào khớp lời gốc và thời gian để khôi phục.')
+                before=translation_history.save_snapshot(folder,cues,source='before_restore')
+                state=review.load_state(folder)
+                for index,old in matched:
+                    cues[index].update(text=old['text'],status='pending',asr_edits=None,take_url=None,delay=None,overrun=None)
+                    for key in ('take_path','path'):cues[index].pop(key,None)
+                for index,_ in matched:
+                    cues[index]['translation_dependency']=review.translation_dependency(cues[index],state,cues,terminology_for(job))
+                atomic_json(folder/'cues.json',cues)
+                job.update(status='awaiting_review',stage='awaiting_review',progress=45,error=None,ready_count=0,cue_count=len(cues))
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from None
+        return dict(matched_count=len(matched),unmatched_count=unmatched,before_snapshot_id=before['id'])
 
     def translate_preflight(job, scope):
         prefs = preferences(store, settings)
@@ -768,15 +809,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
     @app.post('/api/jobs/{job_id}/render')
     def render_job(job_id: str, body: RenderRequest | None = None):
         job = writable(job_id)
-        if regions_stale(job_dir(job_id), job):
-            raise HTTPException(409, REGIONS_STALE)
-        cs = sorted([Cue(**c) for c in read_json(job_dir(job_id) / 'cues.json')],key=lambda c:(c.start,c.end))
-        if not cs:
-            raise HTTPException(409, 'Chưa có lời dịch. Phân tích video hoặc nhập SRT trước.')
-        validate_cues(cs, job, require_text=True)
         kind=body.kind if body else 'auto'
         try:review.require_export(job_dir(job_id),review_job(job),kind)
-        except ValueError as exc:raise HTTPException(409,str(exc)) from None
+        except review.ExportBlocked as exc:
+            raise HTTPException(409,dict(message=str(exc),reasons=exc.reasons)) from None
+        cs = sorted([Cue(**c) for c in read_json(job_dir(job_id) / 'cues.json')],key=lambda c:(c.start,c.end))
+        validate_cues(cs, job, require_text=True)
         if job['mode'] == 'tm' and not job.get('voice_id'):
             raise HTTPException(409, 'Chọn giọng thuyết minh trước khi xử lý.')
         store.update_job(job_id,export_kind=kind)

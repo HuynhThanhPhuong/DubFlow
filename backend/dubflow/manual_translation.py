@@ -6,8 +6,7 @@ import re
 TIME = re.compile(r'\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{3}')
 
 _MODE_RULES = {
-    'vietsub': 'Đây là phụ đề (vietsub). Mỗi khối chỉ tối đa {cps:g} ký tự trên mỗi giây hiển thị, tính theo thời lượng '
-               'của chính khối đó (số ký tự tối đa = thời lượng giây x {cps:g}). Văn phong ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
+    'vietsub': 'Đây là phụ đề (vietsub). Văn phong ngắn gọn, dễ đọc lướt, bỏ từ đệm không cần thiết.',
     'tm': 'Đây là thuyết minh: một giọng đọc duy nhất đọc lại lời thoại đã dịch. Vẫn dịch từng câu như lời nhân vật nói '
           '(giữ ngôi và xưng hô của nhân vật), KHÔNG chuyển thành lời kể ngôi thứ ba. Câu văn nói tự nhiên, dễ đọc thành tiếng; '
           'độ dài tự nhiên, tương đương lời gốc (khoảng 1-1,3 âm tiết cho mỗi chữ Hán); KHÔNG kéo dài cho đủ thời lượng; '

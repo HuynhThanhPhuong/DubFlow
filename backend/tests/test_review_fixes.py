@@ -277,7 +277,8 @@ class StaleRegionsTests(AppCase):
         self.assertIsNone(shown['clean_url'])
         self.assertEqual(self.client.get(f"/api/jobs/{j['id']}/clean").status_code, 404)
         r = self.client.post(f"/api/jobs/{j['id']}/render")
-        self.assertEqual((r.status_code, r.json()['detail']), (409, 'Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.'))
+        self.assertEqual(r.status_code,409)
+        self.assertIn(dict(code='REGIONS_STALE',message='Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.',cue_count=0,cue_ids=[]),r.json()['detail']['reasons'])
         self.assertEqual(self.store.active_tasks(), [])
         # the analysis re-stamps the regions it used: everything is current again
         atomic_json(d / p.REGIONS_APPLIED, dict(key=p.regions_key(analysis_regions.usable(new))))

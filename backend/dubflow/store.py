@@ -83,6 +83,22 @@ class Store:
             db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), job_id))
         return job
 
+    @contextmanager
+    def edit_idle_job(self, job_id):
+        """Serialize file edits with queue claims/enqueues and other guarded edits."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT body FROM jobs WHERE id=?',(job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            job=json.loads(row['body'])
+            active=db.execute("SELECT 1 FROM tasks WHERE job_id=? AND state IN ('pending','running')",(job_id,)).fetchone()
+            if job.get('deleting') or job.get('status') in BUSY_STATUSES or active:
+                raise ValueError('Video đang được xử lý. Hãy dừng và chờ tác vụ kết thúc trước khi sửa.')
+            yield job
+            job['updated_at']=now()
+            db.execute('UPDATE jobs SET body=? WHERE id=?',(json.dumps(job,ensure_ascii=False),job_id))
+
     def begin_delete(self, job_id):
         """Atomically (one BEGIN IMMEDIATE transaction) check that the job is idle, has no pending/running task and mark
         it `deleting`. From then on enqueue/claim/begin_processing refuse it, so nothing can start between the check and the

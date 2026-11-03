@@ -261,6 +261,12 @@ def quality_report(folder, job, state=None):
                 flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} rất ngắn (dưới nửa giây, tối đa 2 ký tự), có thể là nhiễu OCR; kiểm tra rồi bỏ qua hoặc dịch.")
             else:
                 flag('SCREEN_TEXT_UNTRANSLATED',[], f"Chữ trên hình {r['id']} chưa có bản dịch.",'error')
+    if __package__:
+        from .pipeline import regions_stale, REGIONS_STALE
+    else:
+        from pipeline import regions_stale, REGIONS_STALE
+    if regions_stale(folder,job):
+        flag('REGIONS_STALE',[],REGIONS_STALE,'error')
     technical=not any(f['severity']=='error' for f in flags)
     unresolved=[f for f in flags if f['severity']=='review' and not f['resolved']]
     approval=state.get('approval') or {}
@@ -268,10 +274,29 @@ def quality_report(folder, job, state=None):
     return dict(fingerprint=fp,revision=state['revision'],technical_status='passed' if technical else 'failed',
         review_status='human_reviewed' if final else 'in_review' if state.get('resolutions') else 'unreviewed',
         export_status='final_allowed' if final else 'draft_allowed' if technical else 'blocked',
-        draft_allowed=technical,final_allowed=final,flags=flags,source_evidence=evidence,
+        draft_allowed=technical,final_allowed=final,flags=flags,reasons=export_reasons(flags,cues,state),source_evidence=evidence,
         coverage=dict(source=len(known),covered=len(known&covered),omitted=len(known-covered),output=len(cues)),
         limitations=['Máy chỉ gắn cờ nghi vấn; không chứng nhận nghĩa hoặc chất lượng giọng.',
                      'Liên kết OCR là ứng viên, chưa phải căn từng từ hoặc lip-sync.'])
+
+
+def export_reasons(flags,cues,state):
+    groups={};current={c['id'] for c in cues}
+    for f in flags:
+        if f['severity']!='error':continue
+        group=groups.setdefault(f['code'],dict(code=f['code'],message=f['message'],cue_count=0,cue_ids=[]))
+        for cid in f['cue_ids']:
+            links=[cid] if cid in current else [c['id'] for c in cues if cid in c.get('source_ids',[])]
+            for linked in links:
+                if linked not in group['cue_ids']:group['cue_ids'].append(linked)
+        group['cue_count']=len(group['cue_ids'])
+    return list(groups.values())
+
+
+class ExportBlocked(ValueError):
+    def __init__(self,message,reasons):
+        super().__init__(message)
+        self.reasons=reasons
 
 
 def public_state(folder, job):
@@ -325,5 +350,7 @@ def require_export(folder, job, kind='draft'):
     write(Path(folder)/'quality-report.json',report)
     allowed=report['final_allowed'] if kind=='final' else report['draft_allowed']
     if not allowed:
-        raise ValueError('Chưa thể xuất bản hoàn thiện: nội dung chưa được duyệt hoặc còn lỗi.' if kind=='final' else 'Chưa thể xuất: còn lỗi dữ liệu hoặc câu chưa dịch. Sửa trực tiếp ở Lời dịch hoặc Tuỳ chỉnh.')
+        message='Chưa thể xuất bản hoàn thiện: nội dung chưa được duyệt hoặc còn lỗi.' if kind=='final' else 'Chưa thể xuất: còn lỗi dữ liệu hoặc câu chưa dịch. Sửa trực tiếp ở Lời dịch hoặc Tuỳ chỉnh.'
+        reasons=report['reasons'] or [dict(code='REVIEW_REQUIRED',message=message,cue_count=0,cue_ids=[])]
+        raise ExportBlocked(message,reasons)
     return report

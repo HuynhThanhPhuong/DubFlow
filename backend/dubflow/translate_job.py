@@ -338,7 +338,7 @@ class _Pause(Exception):
 
 class _Run:
     def __init__(self, directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-                 spent_before=0.0, should_stop=None, on_progress=None, on_event=None):
+                 spent_before=0.0, should_stop=None, on_progress=None, on_event=None, on_result=None):
         _need_mode(mode)
         self.dir, self.mode, self.prefs, self.provider = Path(directory), mode, prefs, provider
         self.limiter, self.terminology, self.allow, self.sleep = limiter, terminology, allow_over_cap, sleep
@@ -361,6 +361,7 @@ class _Run:
         self.n_chunks = 0
         self.on_progress = on_progress
         self.on_event = on_event
+        self.on_result = on_result
         self.label = getattr(provider, 'label', None) or LABELS.get(getattr(provider, 'name', ''), 'Nhà cung cấp dịch')
         self.ctx: dict = {}  # lô đang chạy: done, total, unit, batch, batches, batch_size
         self.prefix = ''
@@ -448,6 +449,8 @@ class _Run:
     def accept(self, reply, part: list[Item]) -> tuple[dict[str, str], list[str]]:
         good, bad = _check(reply, part, self.mode, self.prefs)
         self.texts.update(good)
+        if self.on_result:
+            self.on_result(dict(self.texts), self.requests, self.usage, self.spent if self.paid else None)
         return good, bad
 
     def run_chunk(self, part: list[Item]) -> None:
@@ -528,9 +531,9 @@ class _Run:
 
 def run_translation(directory: Path, items: list[Item], mode: str, prefs, provider, *, limiter,
                     terminology: str = '', allow_over_cap: bool = False, sleep=time.sleep,
-                    spent_before: float = 0.0, should_stop=None, on_progress=None, on_event=None) -> Outcome:
+                    spent_before: float = 0.0, should_stop=None, on_progress=None, on_event=None, on_result=None) -> Outcome:
     run = _Run(directory, items, mode, prefs, provider, limiter, terminology, allow_over_cap, sleep,
-               spent_before, should_stop, on_progress, on_event)
+               spent_before, should_stop, on_progress, on_event, on_result)
     Path(directory).mkdir(parents=True, exist_ok=True)
     error = None
     try:

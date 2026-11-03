@@ -92,6 +92,51 @@ class Base(unittest.TestCase):
         return {c['id']: c['text'] for c in p.read(self.folder / 'cues.json')}
 
 
+class HistoryCheckpointTests(Base):
+    def test_each_successful_request_is_durable_before_the_next_request(self):
+        self.configure(max_input_tokens=1800, max_output_tokens=300)
+        cues=[dict(id=f'c{i}',start=i*3,end=i*3+3,speaker='A',original=LONG,text='') for i in range(6)]
+        self.make_job(cues=cues,regions=[])
+        owner=self
+        class CheckpointFake(Fake):
+            def generate(self,*args):
+                if self.sent:
+                    rows=list((owner.folder/'translation-history').glob('*.json'))
+                    owner.assertTrue(rows,'Previous paid result must exist before another request')
+                    owner.assertGreater(p.read(rows[-1])['cue_count'],0)
+                return super().generate(*args)
+        fake=CheckpointFake()
+        self.run_translate(fake)
+        self.assertGreater(len(fake.sent),1)
+        history=self.client.get(self.base+'/translation-history').json()
+        self.assertGreaterEqual(len(history),len(fake.sent))
+        self.assertEqual(history[0]['cue_count'],6)
+        self.assertEqual(history[0]['status'],'done')
+        self.assertEqual(history[0]['input_tokens'],10*len(fake.sent))
+
+    def test_cancelled_result_stays_in_history_even_when_cues_are_not_applied(self):
+        self.configure()
+        self.make_job(regions=[])
+        owner=self
+        class StopAfterReply(Fake):
+            def generate(self,*args):
+                result=super().generate(*args)
+                (owner.folder/'cancel.request').touch()
+                return result
+        self.run_translate(StopAfterReply())
+        history=self.client.get(self.base+'/translation-history').json()
+        self.assertEqual((history[0]['status'],history[0]['cue_count']),('stopped',2))
+        self.assertEqual(self.cue_texts()['c2'],'')
+
+    def test_failed_zero_result_is_recorded_without_secrets(self):
+        self.configure()
+        self.make_job()
+        self.run_translate(Fake(error=ProviderError('lỗi '+KEY)))
+        rows=self.client.get(self.base+'/translation-history').json()
+        self.assertEqual((rows[0]['status'],rows[0]['cue_count']),('error',0))
+        self.assertNotIn(KEY,json.dumps(rows))
+
+
 class SettingsTests(Base):
     def test_settings_redacts_all_provider_keys(self):
         keys = {'gemini': 'g-key-111', 'openai': 'o-key-222', 'anthropic': 'a-key-333'}
