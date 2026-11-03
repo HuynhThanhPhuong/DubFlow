@@ -123,13 +123,13 @@ const cueStub = (calls: string[], job: unknown, extra: (p: string, i: RequestIni
     return extra(path, init);
   });
 
-it("editor: regions_stale shows a warning and disables Xuất video", async () => {
+it("editor: regions_stale shows a warning and allows opening the export report", async () => {
   location.hash = "#editor?job=a";
   cueStub([], { ...reviewed, regions_stale: true });
   render(<App />);
   await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.getByText("Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.")).toBeTruthy();
-  expect((screen.getByRole("button", { name: "Xuất video" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Xuất video" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 it("editor: stopping shows Đang dừng… and disables cancel; queue chip too", async () => {
@@ -182,7 +182,7 @@ it("editor: picker Lưu & phân tích is blocked while Vietnamese edits are unsa
   expect(calls.some((c) => c.includes("analysis-regions") || c.endsWith("/analyze"))).toBe(false);
 });
 
-it("editor: picker Lưu vùng with an unchanged band is allowed while dirty", async () => {
+it("editor: leaving the region picker keeps the draft without saving while dirty", async () => {
   location.hash = "#editor?job=a";
   const calls: string[] = [];
   cueStub(calls, reviewed, (path) => (path === "/api/jobs/a/analysis-regions" ? new Response("{}", { status: 200 }) : undefined));
@@ -192,8 +192,10 @@ it("editor: picker Lưu vùng with an unchanged band is allowed while dirty", as
   render(<App />);
   fireEvent.change(await screen.findByLabelText("Lời Việt câu 1"), { target: { value: "Bản nháp" } });
   fireEvent.click(screen.getAllByRole("button", { name: "Vùng phân tích" })[0]);
-  fireEvent.click(await screen.findByRole("button", { name: "Lưu vùng" }));
-  await waitFor(() => expect(calls).toContain("PUT /api/jobs/a/analysis-regions"));
+  await screen.findByRole('button',{name:'Lưu & phân tích'});
+  fireEvent.click(screen.getByRole('button',{name:'Biên tập video'}));
+  expect(calls).not.toContain('PUT /api/jobs/a/analysis-regions');
+  expect((screen.getByLabelText('Lời Việt câu 1') as HTMLTextAreaElement).value).toBe('Bản nháp');
 });
 
 it("editor: Player offers Vùng phân tích instead of Dò logo when regions exist", async () => {

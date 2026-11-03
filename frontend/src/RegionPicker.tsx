@@ -10,12 +10,37 @@ import { Button } from "./ui";
 type Kind = "subtitle" | "logo" | "text";
 type Corner = "nw" | "ne" | "sw" | "se";
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
-const LABELS: Record<Kind, string> = { subtitle: "Dải sub Trung", logo: "Logo", text: "Chữ trên màn hình" };
-const toBox = (r: RegionRect): Box => ({ x: r[0], y: r[1], width: r[2], height: r[3] });
-const toRect = (b: Box): RegionRect => [Math.round(b.x), Math.round(b.y), Math.max(1, Math.round(b.width)), Math.max(1, Math.round(b.height))];
-export const regionsValid = (r: AnalysisRegions | null | undefined) => !!r && (r.no_hard_subs || !!r.subtitle);
+const LABELS: Record<Kind, string> = {
+  subtitle: "Dải sub Trung",
+  logo: "Logo",
+  text: "Chữ trên màn hình",
+};
+const toBox = (r: RegionRect): Box => ({
+  x: r[0],
+  y: r[1],
+  width: r[2],
+  height: r[3],
+});
+const toRect = (b: Box): RegionRect => [
+  Math.round(b.x),
+  Math.round(b.y),
+  Math.max(1, Math.round(b.width)),
+  Math.max(1, Math.round(b.height)),
+];
+export const regionsValid = (r: AnalysisRegions | null | undefined) =>
+  !!r && (r.no_hard_subs || !!r.subtitle);
 
-interface Sel { kind: Kind; index: number }
+interface Sel {
+  kind: Kind;
+  index: number;
+}
+export interface RegionDraft {
+  regions: AnalysisRegions;
+  time: number;
+  tool: Kind;
+  selected: Sel | null;
+  subtitleDraft: RegionRect | null;
+}
 interface Drag {
   mode: "draw" | "move" | "resize";
   sel?: Sel;
@@ -29,28 +54,41 @@ export function RegionPicker({
   job,
   busy = false,
   onSave,
-  onClose,
+  draft,
+  onDraft,
+  pending = false,
 }: {
   job: Job;
   busy?: boolean;
   onSave: (regions: AnalysisRegions, analyze: boolean) => void | Promise<void>;
-  onClose?: () => void;
+  draft?: RegionDraft;
+  onDraft?: (draft: RegionDraft) => void;
+  pending?: boolean;
 }) {
-  const initial = job.analysis_regions;
+  const initial = draft?.regions ?? job.analysis_regions;
   const duration = job.duration ?? 0;
-  const [t, setT] = useState(() => Math.min(Math.max(duration, 0), 5));
+  const [t, setT] = useState(
+    () => draft?.time ?? Math.min(Math.max(duration, 0), 5),
+  );
   const [noHard, setNoHard] = useState(initial?.no_hard_subs ?? false);
-  const [subtitle, setSubtitle] = useState<Box | null>(initial?.subtitle ? toBox(initial.subtitle) : null);
+  const [subtitle, setSubtitle] = useState<Box | null>(() => {
+    const box = draft?.subtitleDraft ?? initial?.subtitle;
+    return box ? toBox(box) : null;
+  });
   const [logos, setLogos] = useState<Box[]>((initial?.logos ?? []).map(toBox));
-  const [texts, setTexts] = useState<Box[]>((initial?.screen_text ?? []).map(toBox));
-  const [tool, setTool] = useState<Kind>("subtitle");
-  const [selected, setSelected] = useState<Sel | null>(null);
+  const [texts, setTexts] = useState<Box[]>(
+    (initial?.screen_text ?? []).map(toBox),
+  );
+  const [tool, setTool] = useState<Kind>(draft?.tool ?? "subtitle");
+  const [selected, setSelected] = useState<Sel | null>(draft?.selected ?? null);
   const [error, setError] = useState("");
   const [nat, setNat] = useState({ w: 0, h: 0 });
   const [size, setSize] = useState({ w: 0, h: 0 });
   const stage = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
-  const [live, setLiveState] = useState<{ sel: Sel | null; box: Box } | null>(null);
+  const [live, setLiveState] = useState<{ sel: Sel | null; box: Box } | null>(
+    null,
+  );
   const liveRef = useRef<{ sel: Sel | null; box: Box } | null>(null);
   const setLive = (v: { sel: Sel | null; box: Box } | null) => {
     liveRef.current = v;
@@ -62,12 +100,18 @@ export function RegionPicker({
 
   const measure = () => {
     const b = stage.current?.getBoundingClientRect();
-    if (b) setSize((s) => (s.w === b.width && s.h === b.height ? s : { w: b.width, h: b.height }));
+    if (b)
+      setSize((s) =>
+        s.w === b.width && s.h === b.height ? s : { w: b.width, h: b.height },
+      );
   };
   useLayoutEffect(() => {
     measure();
     const el = stage.current;
-    const observer = typeof ResizeObserver !== "undefined" && el ? new ResizeObserver(measure) : null;
+    const observer =
+      typeof ResizeObserver !== "undefined" && el
+        ? new ResizeObserver(measure)
+        : null;
     if (observer && el) observer.observe(el);
     window.addEventListener("resize", measure);
     return () => {
@@ -78,8 +122,27 @@ export function RegionPicker({
   useEffect(() => {
     if (noHard && tool === "subtitle") setTool("logo");
   }, [noHard, tool]);
+  const draftListener = useRef(onDraft);
+  draftListener.current = onDraft;
+  useEffect(() => {
+    draftListener.current?.({
+      regions: {
+        no_hard_subs: noHard,
+        subtitle: noHard || !subtitle ? null : toRect(subtitle),
+        logos: logos.map(toRect),
+        screen_text: texts.map(toRect),
+      },
+      time: t,
+      tool,
+      selected,
+      subtitleDraft: subtitle ? toRect(subtitle) : null,
+    });
+  }, [noHard, subtitle, logos, texts, t, tool, selected]);
 
-  const get = (s: Sel): Box | undefined => (s.kind === "subtitle" ? subtitle ?? undefined : (s.kind === "logo" ? logos : texts)[s.index]);
+  const get = (s: Sel): Box | undefined =>
+    s.kind === "subtitle"
+      ? (subtitle ?? undefined)
+      : (s.kind === "logo" ? logos : texts)[s.index];
   const put = (s: Sel, box: Box) => {
     if (s.kind === "subtitle") setSubtitle(box);
     else {
@@ -89,19 +152,57 @@ export function RegionPicker({
   };
   const remove = (s: Sel) => {
     if (s.kind === "subtitle") setSubtitle(null);
-    else (s.kind === "logo" ? setLogos : setTexts)((rows) => rows.filter((_, i) => i !== s.index));
+    else
+      (s.kind === "logo" ? setLogos : setTexts)((rows) =>
+        rows.filter((_, i) => i !== s.index),
+      );
     setSelected(null);
   };
+  useEffect(() => {
+    const shortcut = (e: KeyboardEvent) => {
+      if (
+        busy ||
+        document.querySelector('[role="dialog"]') ||
+        (e.target instanceof HTMLElement &&
+          e.target.closest("input,textarea,select,[contenteditable]"))
+      )
+        return;
+      const kind = (
+        { "1": "subtitle", "2": "logo", "3": "text" } as Record<string, Kind>
+      )[e.key];
+      if (kind && !(kind === "subtitle" && noHard)) {
+        setTool(kind);
+        e.preventDefault();
+      }
+      if (e.key === "Delete" && selected) {
+        remove(selected);
+        e.preventDefault();
+      }
+    };
+    document.addEventListener("keydown", shortcut);
+    return () => document.removeEventListener("keydown", shortcut);
+  }, [busy, noHard, selected]);
   const point = (e: { clientX: number; clientY: number }) => {
     const b = stage.current?.getBoundingClientRect();
-    return toSource({ x: e.clientX - (b?.left ?? 0), y: e.clientY - (b?.top ?? 0) }, rect, vw, vh);
+    return toSource(
+      { x: e.clientX - (b?.left ?? 0), y: e.clientY - (b?.top ?? 0) },
+      rect,
+      vw,
+      vh,
+    );
   };
   const inside = (box: Box): Box => {
     const width = Math.min(box.width, vw);
     const height = Math.min(box.height, vh);
-    return { x: Math.min(Math.max(0, box.x), vw - width), y: Math.min(Math.max(0, box.y), vh - height), width, height };
+    return {
+      x: Math.min(Math.max(0, box.x), vw - width),
+      y: Math.min(Math.max(0, box.y), vh - height),
+      width,
+      height,
+    };
   };
-  const capture = (e: RPointerEvent<HTMLElement>) => stage.current?.setPointerCapture?.(e.pointerId);
+  const capture = (e: RPointerEvent<HTMLElement>) =>
+    stage.current?.setPointerCapture?.(e.pointerId);
 
   const stageDown = (e: RPointerEvent<HTMLDivElement>) => {
     if (!rect.width || !vw || busy) return;
@@ -109,7 +210,11 @@ export function RegionPicker({
     e.preventDefault();
     capture(e);
     const p = point(e);
-    drag.current = { mode: "draw", anchor: p, startClient: { x: e.clientX, y: e.clientY } };
+    drag.current = {
+      mode: "draw",
+      anchor: p,
+      startClient: { x: e.clientX, y: e.clientY },
+    };
     setSelected(null);
     setLive({ sel: null, box: normalizeBox(p, p) });
   };
@@ -120,17 +225,36 @@ export function RegionPicker({
     const origin = get(sel);
     if (!origin || busy) return;
     setSelected(sel);
-    drag.current = { mode: "move", sel, anchor: point(e), origin, startClient: { x: e.clientX, y: e.clientY } };
+    drag.current = {
+      mode: "move",
+      sel,
+      anchor: point(e),
+      origin,
+      startClient: { x: e.clientX, y: e.clientY },
+    };
     setLive({ sel, box: origin });
   };
-  const handleDown = (e: RPointerEvent<HTMLElement>, sel: Sel, corner: Corner) => {
+  const handleDown = (
+    e: RPointerEvent<HTMLElement>,
+    sel: Sel,
+    corner: Corner,
+  ) => {
     e.preventDefault();
     e.stopPropagation();
     capture(e);
     const o = get(sel);
     if (!o || busy) return;
-    const anchor = { x: corner.includes("w") ? o.x + o.width : o.x, y: corner.includes("n") ? o.y + o.height : o.y };
-    drag.current = { mode: "resize", sel, anchor, origin: o, startClient: { x: e.clientX, y: e.clientY } };
+    const anchor = {
+      x: corner.includes("w") ? o.x + o.width : o.x,
+      y: corner.includes("n") ? o.y + o.height : o.y,
+    };
+    drag.current = {
+      mode: "resize",
+      sel,
+      anchor,
+      origin: o,
+      startClient: { x: e.clientX, y: e.clientY },
+    };
     setLive({ sel, box: o });
   };
   const stageMove = (e: RPointerEvent<HTMLElement>) => {
@@ -138,7 +262,14 @@ export function RegionPicker({
     if (!d) return;
     const p = point(e);
     if (d.mode === "move" && d.origin) {
-      setLive({ sel: d.sel!, box: inside({ ...d.origin, x: d.origin.x + p.x - d.anchor.x, y: d.origin.y + p.y - d.anchor.y }) });
+      setLive({
+        sel: d.sel!,
+        box: inside({
+          ...d.origin,
+          x: d.origin.x + p.x - d.anchor.x,
+          y: d.origin.y + p.y - d.anchor.y,
+        }),
+      });
     } else {
       const raw = normalizeBox(d.anchor, p);
       setLive({ sel: d.sel ?? null, box: inside(raw) });
@@ -148,7 +279,10 @@ export function RegionPicker({
     const d = drag.current;
     drag.current = null;
     if (!d) return;
-    const moved = Math.hypot(e.clientX - d.startClient.x, e.clientY - d.startClient.y);
+    const moved = Math.hypot(
+      e.clientX - d.startClient.x,
+      e.clientY - d.startClient.y,
+    );
     const box = liveRef.current?.box;
     setLive(null);
     if (!box) return;
@@ -186,7 +320,10 @@ export function RegionPicker({
 
   const renderBox = (kind: Kind, index: number, stored: Box) => {
     const sel: Sel = { kind, index };
-    const box = live?.sel && live.sel.kind === kind && live.sel.index === index ? live.box : stored;
+    const box =
+      live?.sel && live.sel.kind === kind && live.sel.index === index
+        ? live.box
+        : stored;
     const d = toDisplay(box, rect, vw, vh);
     const isSel = selected?.kind === kind && selected.index === index;
     const near = d.top - rect.top < 16;
@@ -220,40 +357,67 @@ export function RegionPicker({
   const tools: Kind[] = ["subtitle", "logo", "text"];
   return (
     <section className="region-picker" aria-label="Chọn vùng phân tích">
-      <div className="region-picker-bar">
-        <strong>Vùng phân tích</strong>
-        <Button disabled={t <= 0} onClick={() => setT((v) => Math.max(0, v - 5))}>-5 giây</Button>
-        <input
-          type="range"
-          aria-label="Chọn khung hình"
-          min={0}
-          max={Math.max(duration, 1)}
-          step={1}
-          value={Math.min(t, Math.max(duration, 1))}
-          onChange={(e) => setT(Number(e.target.value))}
-        />
-        <Button disabled={duration > 0 && t >= duration} onClick={() => setT((v) => Math.min(duration || v + 5, v + 5))}>+5 giây</Button>
-        <span className="muted">{Math.round(t)}s</span>
-      </div>
-      <div className="region-picker-bar" role="group" aria-label="Công cụ vẽ vùng">
-        {tools.map((k) => (
-          <Button
-            key={k}
-            className="rp-tool"
-            aria-pressed={tool === k}
-            disabled={k === "subtitle" && noHard}
-            onClick={() => setTool(k)}
-          >
-            <span className="rp-swatch" style={{ background: k === "subtitle" ? "#e5484d" : k === "logo" ? "#2f80ed" : "#22a05a" }} />
-            {LABELS[k]}
-          </Button>
-        ))}
-        <label>
-          <input type="checkbox" checked={noHard} onChange={(e) => setNoHard(e.target.checked)} /> Video không có sub cứng
-        </label>
-        <Button className="icon-danger" disabled={!selected || busy} aria-label="Xoá vùng đã chọn" onClick={() => selected && remove(selected)}>
-          <Trash2 size={14} /> Xoá vùng
-        </Button>
+      <div className="region-picker-head">
+        <div className="region-picker-heading">
+          <strong>Vùng phân tích</strong>
+          <div className="region-actions">
+            <Button
+              className="icon-danger"
+              disabled={!selected || busy}
+              aria-label="Xoá vùng đã chọn"
+              title="Xoá vùng đang chọn (Delete)"
+              onClick={() => selected && remove(selected)}
+            >
+              <Trash2 size={14} /> Xoá vùng
+            </Button>
+            <Button
+              variant="save"
+              disabled={busy}
+              title="Áp dụng các vùng đã chọn và đưa video vào hàng đợi phân tích"
+              onClick={() => void submit(true)}
+            >
+              Lưu &amp; phân tích
+            </Button>
+          </div>
+        </div>
+        <div
+          className="region-picker-bar region-picker-tools"
+          role="group"
+          aria-label="Công cụ vẽ vùng"
+        >
+          {tools.map((k) => (
+            <Button
+              key={k}
+              className="rp-tool"
+              aria-pressed={tool === k}
+              disabled={busy || (k === "subtitle" && noHard)}
+              title={`${LABELS[k]} · Phím ${tools.indexOf(k) + 1}`}
+              onClick={() => setTool(k)}
+            >
+              <span
+                className="rp-swatch"
+                style={{
+                  background:
+                    k === "subtitle"
+                      ? "#e5484d"
+                      : k === "logo"
+                        ? "#2f80ed"
+                        : "#22a05a",
+                }}
+              />
+              {LABELS[k]}
+            </Button>
+          ))}
+          <label>
+            <input
+              type="checkbox"
+              checked={noHard}
+              disabled={busy}
+              onChange={(e) => setNoHard(e.target.checked)}
+            />{" "}
+            Video không có sub cứng
+          </label>
+        </div>
       </div>
       <div
         className="region-picker-stage"
@@ -272,7 +436,10 @@ export function RegionPicker({
           alt="Khung hình video"
           draggable={false}
           onLoad={(e) => {
-            setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+            setNat({
+              w: e.currentTarget.naturalWidth,
+              h: e.currentTarget.naturalHeight,
+            });
             measure();
           }}
         />
@@ -285,12 +452,43 @@ export function RegionPicker({
           </>
         )}
       </div>
-      {error && <p role="alert" className="error small">{error}</p>}
+      <div className="region-picker-bar region-picker-frame">
+        <Button
+          disabled={t <= 0}
+          title="Lùi khung hình 5 giây"
+          onClick={() => setT((v) => Math.max(0, v - 5))}
+        >
+          -5 giây
+        </Button>
+        <input
+          type="range"
+          aria-label="Chọn khung hình"
+          min={0}
+          max={Math.max(duration, 1)}
+          step={1}
+          value={Math.min(t, Math.max(duration, 1))}
+          onChange={(e) => setT(Number(e.target.value))}
+        />
+        <Button
+          disabled={duration > 0 && t >= duration}
+          title="Tiến khung hình 5 giây"
+          onClick={() => setT((v) => Math.min(duration || v + 5, v + 5))}
+        >
+          +5 giây
+        </Button>
+        <span className="muted">{Math.round(t)}s</span>
+      </div>
+      {error && (
+        <p role="alert" className="error small">
+          {error}
+        </p>
+      )}
       <div className="region-picker-foot">
-        <Button disabled={busy} onClick={() => void submit(false)}>Lưu vùng</Button>
-        <Button variant="primary" disabled={busy} onClick={() => void submit(true)}>Lưu &amp; phân tích</Button>
-        {onClose && <Button variant="ghost" disabled={busy} onClick={onClose}>Quay lại</Button>}
-        <span className="muted small">Kéo trên khung hình để vẽ; bấm vào vùng để di chuyển, kéo góc để đổi cỡ.</span>
+        <span className={`small ${pending ? "region-draft-note" : "muted"}`}>
+          {pending
+            ? "Vùng nháp được giữ trong phiên. Lưu & phân tích trước khi xuất."
+            : "Kéo để vẽ, kéo góc để đổi cỡ. Phím 1/2/3 chọn công cụ, Delete xoá vùng."}
+        </span>
       </div>
     </section>
   );

@@ -14,6 +14,7 @@ import type {
   Sample,
   Voice,
   VoiceScript,
+  ExportReason, ExportQuality, TranslationSnapshot,
 } from "./types";
 import { vietnameseMessage } from "./messages";
 export interface StopAllResult {
@@ -28,6 +29,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public reasons: ExportReason[] = [],
   ) {
     super(message);
   }
@@ -69,7 +71,7 @@ export async function request<T>(
                   `${e.loc?.slice(1).join(".") ?? ""}: ${e.msg}`,
               )
               .join("; ")
-          : body?.message;
+          : detail?.message ?? body?.message;
     throw new ApiError(
       response.status,
       response.status === 404
@@ -77,6 +79,7 @@ export async function request<T>(
         : response.status === 503
           ? "Tính năng hiện chưa sẵn sàng trên máy chủ."
           : message ? vietnameseMessage(message) : "Chưa thực hiện được thao tác. Hãy thử lại.",
+      Array.isArray(detail?.reasons) ? detail.reasons : [],
     );
   }
   if (response.status === 204) return undefined as T;
@@ -88,6 +91,10 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 const key = encodeURIComponent;
 export const api = {
+  quality: (id: string) => request<ExportQuality>(`/jobs/${key(id)}/quality`),
+  translationHistory: (id: string) => request<TranslationSnapshot[]>(`/jobs/${key(id)}/translation-history`),
+  translationSnapshot: (id: string, snapshot: string) => request<TranslationSnapshot>(`/jobs/${key(id)}/translation-history/${key(snapshot)}`),
+  restoreTranslation: (id: string, snapshot: string) => request<{matched_count:number;unmatched_count:number}>(`/jobs/${key(id)}/translation-history/${key(snapshot)}/restore`,json('POST')),
   health: () => request<Health>("/health"),
   samples: () => request<Sample[]>("/samples"),
   importSample: (id: string) =>

@@ -11,3 +11,4 @@ createRoot(document.getElementById("root")!).render(
 );
 
 import './approved.css';
+import './editor-dot7.css';

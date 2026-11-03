@@ -38,7 +38,7 @@ export function Button({
   className = "",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost";
+  variant?: "primary" | "secondary" | "ghost" | "save";
   asChild?: boolean;
 }) {
   const Component = asChild ? Slot : "button";

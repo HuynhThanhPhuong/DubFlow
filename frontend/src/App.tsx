@@ -9,9 +9,7 @@ import {
   RefreshCw,
   Save,
   Settings2,
-  Subtitles,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { api, ApiError, mediaUrl } from "./api";
 import type { AnalysisRegions, Cue, Health, Job, Mode, Voice } from "./types";
@@ -32,6 +30,9 @@ import type { StudioSettings, Collection } from "./workspaceApi";
 import { EditableTitle } from "./EditableTitle";
 import { Pagination, useCapacity } from "./Pagination";
 import { Modal } from "./ui";
+import { CueList } from "./CueList";
+import { TranslationHistory } from "./TranslationHistory";
+import { ExportDialog } from "./ExportDialog";
 import { JobDeleteDialog } from "./DeleteDialogs";
 import { TranslatePanel } from "./TranslatePanel";
 import { providerLabels } from "./TranslationSettings";
@@ -41,24 +42,30 @@ import { Player, Timeline } from "./Player";
 import { PipelineSteps } from "./PipelineSteps";
 import { JobActivity } from "./JobActivity";
 import { RegionPicker } from "./RegionPicker";
-import './editor-interactions.css';
-import {
-  ImportDialog,
-  SettingsDialog,
-  VoiceDialog,
-} from "./Dialogs";
-const REGIONS_STALE = "Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.";
-const subtitleBandChanged = (a: AnalysisRegions | null | undefined, b: AnalysisRegions) =>
-  !!a && (a.no_hard_subs !== b.no_hard_subs || JSON.stringify(a.subtitle ?? null) !== JSON.stringify(b.subtitle ?? null));
+import type { RegionDraft } from "./RegionPicker";
+import "./editor-interactions.css";
+import { ImportDialog, SettingsDialog, VoiceDialog } from "./Dialogs";
+const REGIONS_STALE =
+  "Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.";
+const subtitleBandChanged = (
+  a: AnalysisRegions | null | undefined,
+  b: AnalysisRegions,
+) =>
+  !!a &&
+  (a.no_hard_subs !== b.no_hard_subs ||
+    JSON.stringify(a.subtitle ?? null) !== JSON.stringify(b.subtitle ?? null));
 
 export default function App() {
-  const [studioSettings,setStudioSettings]=useState<StudioSettings|null>(null);
-  const [collections,setCollections]=useState<Collection[]>([]);
-  const [exportOpen,setExportOpen]=useState(false);
-  const [cuePage,setCuePage]=useState(0);
-  const [queuePage,setQueuePage]=useState(0);
-  const sentenceArea=useRef<HTMLDivElement>(null),queueArea=useRef<HTMLDivElement>(null);
-  const cueCapacity=useCapacity(sentenceArea,104,3),queueCapacity=useCapacity(queueArea,88,6);
+  const [studioSettings, setStudioSettings] = useState<StudioSettings | null>(
+    null,
+  );
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [queuePage, setQueuePage] = useState(0);
+  const queueArea = useRef<HTMLDivElement>(null);
+  const queueCapacity = useCapacity(queueArea, 88, 6);
   const [route, setRoute] = useState(() => parseRoute(location.hash));
   const [jobs, setJobs] = useState<Job[]>([]);
   const [job, setJob] = useState<Job | null>(null);
@@ -78,6 +85,9 @@ export default function App() {
     "import" | "regions" | "parts" | "voice" | null
   >(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [regionDrafts, setRegionDrafts] = useState<Record<string, RegionDraft>>(
+    {},
+  );
   const [pickerDismissed, setPickerDismissed] = useState<string | null>(null);
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [dropped, setDropped] = useState<File>();
@@ -90,14 +100,13 @@ export default function App() {
   selected.current = route.jobId;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
-  const subtitleInput = useRef<HTMLInputElement>(null);
-  const videoColumn = useRef<HTMLDivElement>(null);
-  const [columnHeight, setColumnHeight] = useState<number>();
   const jobRevision = useRef("");
   const showError = useCallback(
     (e: unknown) =>
       setError(
-        e instanceof Error ? vietnameseMessage(e.message) : "Đã xảy ra lỗi. Vui lòng thử lại.",
+        e instanceof Error
+          ? vietnameseMessage(e.message)
+          : "Đã xảy ra lỗi. Vui lòng thử lại.",
       ),
     [],
   );
@@ -181,7 +190,9 @@ export default function App() {
     setJob(null);
     setNow(0);
     setActive(null);
-    setCuePage(0);
+    setHistoryOpen(false);
+    setResetOpen(false);
+    setExportOpen(false);
     jobRevision.current = "";
     setCueError("");
     if (!route.jobId) {
@@ -207,13 +218,17 @@ export default function App() {
   useEffect(() => {
     if (!route.jobId || typeof EventSource === "undefined") return;
     const id = route.jobId;
-    const events = new EventSource(`/api/jobs/${encodeURIComponent(id)}/events`);
+    const events = new EventSource(
+      `/api/jobs/${encodeURIComponent(id)}/events`,
+    );
     events.onmessage = (event) => {
       try {
         const next = JSON.parse(event.data) as Job;
         if (next.id === selected.current) setJob(next);
-        setJobs((rows) => rows.map((row) => row.id === next.id ? next : row));
-      } catch { /* Polling remains available if a stream message is interrupted. */ }
+        setJobs((rows) => rows.map((row) => (row.id === next.id ? next : row)));
+      } catch {
+        /* Polling remains available if a stream message is interrupted. */
+      }
     };
     return () => events.close();
   }, [route.jobId]);
@@ -253,8 +268,12 @@ export default function App() {
   }, []);
   async function refresh() {
     try {
+      const id = selected.current;
       setJobs(await api.jobs());
-      if (route.jobId) setJob(await api.job(route.jobId));
+      if (id) {
+        const updated = await api.job(id);
+        if (selected.current === id) setJob(updated);
+      }
       setError("");
     } catch (e) {
       showError(e);
@@ -264,6 +283,15 @@ export default function App() {
     if (!job) return;
     if (dirty) {
       setError("Hãy lưu lời dịch trước khi xử lý video.");
+      return;
+    }
+    const draft = regionDrafts[job.id];
+    if (
+      name === "analyze" &&
+      draft &&
+      JSON.stringify(draft.regions) !== JSON.stringify(job.analysis_regions)
+    ) {
+      await saveRegions(draft.regions, true);
       return;
     }
     if (name === "analyze" && job.analysis_regions === null) {
@@ -290,7 +318,12 @@ export default function App() {
   }
   /** 409 "Hãy chọn vùng sub trước khi phân tích." -> open the region picker instead of a bare error. */
   function needRegions(e: unknown) {
-    if (!(e instanceof ApiError) || e.status !== 409 || !/vùng sub/i.test(e.message)) return false;
+    if (
+      !(e instanceof ApiError) ||
+      e.status !== 409 ||
+      !/vùng sub/i.test(e.message)
+    )
+      return false;
     setPickerDismissed(null);
     setPickerOpen(true);
     setNotice("Hãy chọn vùng sub trước khi phân tích.");
@@ -298,7 +331,10 @@ export default function App() {
   }
   async function saveRegions(regions: AnalysisRegions, analyze: boolean) {
     if (!job) return;
-    if (dirty && (analyze || subtitleBandChanged(job.analysis_regions, regions))) {
+    if (
+      dirty &&
+      (analyze || subtitleBandChanged(job.analysis_regions, regions))
+    ) {
       setError("Hãy lưu hoặc bỏ thay đổi lời dịch trước khi phân tích lại.");
       return;
     }
@@ -355,11 +391,17 @@ export default function App() {
       setNotice("Hãy chọn vùng sub trước khi phân tích.");
       return;
     }
-    if (!window.confirm("Lời gốc sẽ được dựng lại từ đầu. Bản dịch hiện tại được sao lưu nhưng sẽ không còn trong trình biên tập. Tiếp tục?")) return;
     setBusy(true);
     setError("");
     try {
+      const draft = regionDrafts[job.id];
+      if (
+        draft &&
+        JSON.stringify(draft.regions) !== JSON.stringify(job.analysis_regions)
+      )
+        await api.saveAnalysisRegions(job.id, draft.regions);
       setJob(await api.resetSource(job.id));
+      setResetOpen(false);
       setNotice("Đã gửi vào hàng đợi xử lý.");
       setPollKey((k) => k + 1);
     } catch (e) {
@@ -389,9 +431,17 @@ export default function App() {
     try{const updated=await api.updateJob(job.id,patch);setJob(updated);setJobs(rows=>rows.map(j=>j.id===updated.id?updated:j));setNotice("Đã lưu thông tin video.")}
     catch(e){showError(e)}finally{setBusy(false)}
   }
-  async function confirmExport(){
-    if(!job)return;setBusy(true);
-    try{setJob(await api.render(job.id,'auto'));setExportOpen(false);setPollKey(k=>k+1);setNotice('Đã xếp hàng xuất video.')}catch(e){showError(e)}finally{setBusy(false)}
+  async function confirmExport() {
+    if (!job) return;
+    setBusy(true);
+    try {
+      setJob(await api.render(job.id, "auto"));
+      setExportOpen(false);
+      setPollKey((k) => k + 1);
+      setNotice("Đã xếp hàng xuất video.");
+    } finally {
+      setBusy(false);
+    }
   }
   async function saveCues() {
     if (!job) return;
@@ -403,6 +453,7 @@ export default function App() {
     setBusy(true);
     try {
       const saved = await api.saveCues(job.id, cues);
+      if (selected.current !== job.id) return;
       setCues(saved);
       setDirty(false);
       setNotice("Đã lưu lời dịch.");
@@ -425,20 +476,22 @@ export default function App() {
     setModal(null);
     setJobs((rows) => [next, ...rows.filter((j) => j.id !== next.id)]);
     navigate("editor", next.id);
-    setNotice(next.status==="queued"?"Đã nhập video và đưa vào hàng đợi phân tích.":"Đã nhập video. Bấm Phân tích để bắt đầu.");
+    setNotice(
+      next.status === "queued"
+        ? "Đã nhập video và đưa vào hàng đợi phân tích."
+        : "Đã nhập video. Bấm Phân tích để bắt đầu.",
+    );
     setPollKey((k) => k + 1);
   };
   const currentJob = job?.id === route.jobId ? job : null;
-  useEffect(() => {
-    const column = videoColumn.current;
-    if (!column || typeof ResizeObserver === "undefined") return;
-    const sync = () => setColumnHeight(window.innerWidth > 900 ? Math.round(column.getBoundingClientRect().height) : undefined);
-    const observer = new ResizeObserver(sync);
-    observer.observe(column); sync();
-    window.addEventListener("resize",sync);
-    return () => { observer.disconnect(); window.removeEventListener("resize",sync); };
-  }, [currentJob?.id, route.page]);
-  const projectWarnings = Array.from(new Set([...(currentJob?.warnings || []), ...(health?.warnings || []), ...(currentJob?.error ? [currentJob.error] : []),...cues.flatMap(c=>c.auto_flags||[])]));
+  const projectWarnings = Array.from(
+    new Set([
+      ...(currentJob?.warnings || []),
+      ...(health?.warnings || []),
+      ...(currentJob?.error ? [currentJob.error] : []),
+      ...cues.flatMap((c) => c.auto_flags || []),
+    ]),
+  );
   useEffect(() => {
     if (job?.error) setError(vietnameseMessage(job.error));
   }, [job?.id, job?.error]);
@@ -449,14 +502,32 @@ export default function App() {
     ["queue", "Hàng đợi"],
     ["settings", "Cài đặt"],
   ] as const;
-  const safeCuePage=Math.min(cuePage,Math.max(0,Math.ceil(cues.length/cueCapacity)-1));
-  const queueJobs=jobs.filter(j=>isBusy(j)||["error","failed","awaiting_review","awaiting_regions"].includes(j.status));
-  const safeQueuePage=Math.min(queuePage,Math.max(0,Math.ceil(queueJobs.length/queueCapacity)-1));
-  const pickerVisible = !!currentJob && (pickerOpen || (currentJob.status === "awaiting_regions" && pickerDismissed !== currentJob.id));
-  const missing=cues.filter(c=>!c.text.trim()).length;
+  const queueJobs = jobs.filter(
+    (j) =>
+      isBusy(j) ||
+      ["error", "failed", "awaiting_review", "awaiting_regions"].includes(
+        j.status,
+      ),
+  );
+  const safeQueuePage = Math.min(
+    queuePage,
+    Math.max(0, Math.ceil(queueJobs.length / queueCapacity) - 1),
+  );
+  const pickerVisible =
+    !!currentJob &&
+    (pickerOpen ||
+      (currentJob.status === "awaiting_regions" &&
+        pickerDismissed !== currentJob.id));
+  const regionDraft = currentJob ? regionDrafts[currentJob.id] : undefined;
+  const regionsPending =
+    !!currentJob &&
+    !!regionDraft &&
+    JSON.stringify(regionDraft.regions) !==
+      JSON.stringify(currentJob.analysis_regions);
+  const missing = cues.filter((c) => !c.text.trim()).length;
   return (
     <div
-      className={`simple studio-app page-${route.page}`}
+      className={`simple studio-app page-${route.page}${route.page === "editor" && currentJob ? " editor-active" : ""}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}
@@ -499,7 +570,24 @@ export default function App() {
           ))}
         </nav>
       </header>
-      <div className="toast-stack">{error && <Toast kind="error" durationMs={studioSettings?.toast_error_ms} message={error} onClose={() => setError("")}/>} {notice && <Toast kind="success" durationMs={studioSettings?.toast_success_ms} message={notice} onClose={() => setNotice("")}/>}</div>
+      <div className="toast-stack">
+        {error && (
+          <Toast
+            kind="error"
+            durationMs={studioSettings?.toast_error_ms}
+            message={error}
+            onClose={() => setError("")}
+          />
+        )}{" "}
+        {notice && (
+          <Toast
+            kind="success"
+            durationMs={studioSettings?.toast_success_ms}
+            message={notice}
+            onClose={() => setNotice("")}
+          />
+        )}
+      </div>
       <main id="main" tabIndex={-1} className="simple-main">
         {pollStopped && (
           <div className="banner">
@@ -517,87 +605,182 @@ export default function App() {
           (currentJob ? (
             <>
               <div className="editor-head">
-              <div className="simple-title">
-                <div>
-                  <EditableTitle value={currentJob.title || currentJob.filename} disabled={busy||isBusy(currentJob)} onSave={title=>saveMetadata({title})}/>
-                  <p>
-                    Tiếng Trung → Tiếng Việt{" "}
-                    <span>
-                      · {statusLabels[currentJob.status] || currentJob.status}
-                    </span>
-                  </p>
-                </div>
-                <div className="title-actions" role="group" aria-label="Thao tác video">
-                <Button
-                  onClick={() => setModal("regions")}
-                  disabled={isBusy(currentJob)}
-                >
-                  <Settings2 size={16} />
-                  Tuỳ chỉnh
-                </Button>
-                <Button disabled={busy || isBusy(currentJob)} aria-pressed={pickerVisible} onClick={() => { setPickerDismissed(null); setPickerOpen((v) => !v); }}>Vùng phân tích</Button>
-                <Button variant="primary" disabled={busy || isBusy(currentJob) || dirty} onClick={() => void action("analyze")}><Layers size={16}/>Phân tích video</Button>
-                <Button disabled={busy || isBusy(currentJob) || dirty} onClick={() => void resetSource()}>Phân tích lại lời gốc</Button>
-                <Button variant="primary" disabled={busy||isBusy(currentJob)||dirty||!cues.length||!!currentJob.regions_stale||!!currentJob.deleting} title={currentJob.regions_stale?REGIONS_STALE:undefined} onClick={()=>setExportOpen(true)}>Xuất video</Button>
-                </div>
-              </div>
-              <div className="editor-membership"><a href="#collections">Bộ sưu tập</a><span>/</span><select aria-label="Bộ phim của video" value={currentJob.collection_id||""} disabled={busy||isBusy(currentJob)} onChange={e=>void saveMetadata({collection_id:e.target.value||null})}><option value="">Chưa phân bộ</option>{collections.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><label>Tập <input key={currentJob.id+currentJob.episode} aria-label="Số tập" defaultValue={currentJob.episode||""} disabled={busy||isBusy(currentJob)} onBlur={e=>{if(e.target.value!==(currentJob.episode||""))void saveMetadata({episode:e.target.value})}} placeholder="—"/></label><span className="spacer"/><Button className="icon-danger" title={isBusy(currentJob)?"Video đang xử lý, không thể xóa":"Xóa video vĩnh viễn"} disabled={isBusy(currentJob)} onClick={()=>setDeleteJobId(currentJob.id)}><Trash2 size={15}/>Xóa video</Button><small>{time(currentJob.duration)} · {currentJob.width} × {currentJob.height}</small></div>
-              <div className="mode-notes-row">
-              <div className="modebar">
-                <div
-                  className="mode-line"
-                  role="group"
-                  aria-label="Chế độ xử lý"
-                >
-                  {(["dub", "tm", "vietsub"] as Mode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      aria-pressed={currentJob.mode === mode}
+                <div className="editor-title-row">
+                  <div className="editor-title-copy">
+                    <EditableTitle
+                      value={currentJob.title || currentJob.filename}
                       disabled={busy || isBusy(currentJob)}
-                      onClick={() => void updateJob({ mode })}
-                    >
-                      {mode === "dub" ? (
-                        <AudioLines size={16} />
-                      ) : mode === "tm" ? (
-                        <Mic size={16} />
-                      ) : (
-                        <Subtitles size={16} />
-                      )}{" "}
-                      {modeLabels[mode]}
-                    </button>
-                  ))}
-                </div>
-                {currentJob.mode === "tm" ? (
-                  <label className="voice-select">
-                    <Mic size={15} />
-                    <span className="sr-only">Giọng thuyết minh</span>
+                      onSave={(title) => saveMetadata({ title })}
+                    />
+                    <p>
+                      Tiếng Trung → Tiếng Việt ·{" "}
+                      {statusLabels[currentJob.status] || currentJob.status}
+                    </p>
+                  </div>
+                  <div className="editor-membership">
+                    <a href="#collections">Bộ sưu tập</a>
+                    <span>/</span>
                     <select
-                      value={currentJob.voice_id || ""}
+                      aria-label="Bộ phim của video"
+                      value={currentJob.collection_id || ""}
                       disabled={busy || isBusy(currentJob)}
                       onChange={(e) =>
-                        void updateJob({ voice_id: e.target.value })
+                        void saveMetadata({
+                          collection_id: e.target.value || null,
+                        })
                       }
                     >
-                      <option value="" disabled>
-                        Chọn giọng thuyết minh
-                      </option>
-                      {voices.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name}
+                      <option value="">Chưa phân bộ</option>
+                      {collections.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
                         </option>
                       ))}
                     </select>
-                  </label>
-                ) : (
-                  <span className="muted small">
-                    {currentJob.mode === "dub"
-                      ? "Giữ chất giọng gốc"
-                      : "Giữ âm thanh gốc"}
-                  </span>
-                )}
-              </div>
-              </div>
-              <PipelineSteps job={currentJob} cueCount={cues.length} missing={missing}/>
+                    <label>
+                      Tập{" "}
+                      <input
+                        key={currentJob.id + currentJob.episode}
+                        aria-label="Số tập"
+                        defaultValue={currentJob.episode || ""}
+                        disabled={busy || isBusy(currentJob)}
+                        onBlur={(e) => {
+                          if (e.target.value !== (currentJob.episode || ""))
+                            void saveMetadata({ episode: e.target.value });
+                        }}
+                        placeholder="—"
+                      />
+                    </label>
+                    {currentJob.mode === "tm" && (
+                      <label className="voice-select">
+                        <Mic size={15} />
+                        <span>Giọng thuyết minh</span>
+                        <select
+                          aria-label="Giọng thuyết minh"
+                          value={currentJob.voice_id || ""}
+                          disabled={busy || isBusy(currentJob)}
+                          onChange={(e) =>
+                            void updateJob({ voice_id: e.target.value })
+                          }
+                        >
+                          <option value="" disabled>
+                            Chọn giọng
+                          </option>
+                          {voices.map((v) => (
+                            <option value={v.id} key={v.id}>
+                              {v.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                  <div className="mode-readonly">
+                    <div
+                      className="mode-line"
+                      role="group"
+                      aria-label="Chế độ xử lý (chỉ đọc)"
+                    >
+                      {(["dub", "tm", "vietsub"] as Mode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          disabled
+                          aria-pressed={currentJob.mode === mode}
+                          title="Chế độ đã chọn khi tạo video"
+                        >
+                          {modeLabels[mode]}
+                        </button>
+                      ))}
+                    </div>
+                    <small>Chỉ đọc</small>
+                  </div>
+                </div>
+                <div
+                  className="editor-actionbar"
+                  role="group"
+                  aria-label="Thao tác video"
+                >
+                  <div className="action-group">
+                    <Button
+                      disabled={busy || isBusy(currentJob)}
+                      aria-pressed={pickerVisible}
+                      title={
+                        pickerVisible
+                          ? "Quay về biên tập; vùng nháp được giữ trong phiên"
+                          : "Chọn dải sub, logo và chữ trên màn hình"
+                      }
+                      onClick={() => {
+                        setPickerDismissed(currentJob.id);
+                        setPickerOpen(!pickerVisible);
+                      }}
+                    >
+                      {pickerVisible ? "Biên tập video" : "Vùng phân tích"}
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={busy || isBusy(currentJob) || dirty}
+                      title="Xử lý lại video; giữ lời gốc và bản dịch nếu dải sub không đổi"
+                      onClick={() => void action("analyze")}
+                    >
+                      <Layers size={16} />
+                      Phân tích video
+                    </Button>
+                    <Button
+                      disabled={busy || isBusy(currentJob) || dirty}
+                      title="Lưu bản dịch vào lịch sử rồi dựng lại các câu lời gốc"
+                      onClick={() => setResetOpen(true)}
+                    >
+                      Phân tích lại lời gốc
+                    </Button>
+                  </div>
+                  <div className="action-group">
+                    <Button
+                      disabled={busy || isBusy(currentJob)}
+                      title="Tuỳ chỉnh vùng che và cấu hình video"
+                      onClick={() => setModal("regions")}
+                    >
+                      <Settings2 size={16} />
+                      Tuỳ chỉnh
+                    </Button>
+                  </div>
+                  <div className="action-group">
+                    <Button
+                      variant="primary"
+                      disabled={
+                        busy ||
+                        isBusy(currentJob) ||
+                        dirty ||
+                        !!currentJob.deleting
+                      }
+                      title="Kiểm tra điều kiện và xuất video"
+                      onClick={() => setExportOpen(true)}
+                    >
+                      Xuất video
+                    </Button>
+                  </div>
+                  <div className="action-group delete-group">
+                    <Button
+                      className="icon-danger"
+                      disabled={busy || isBusy(currentJob)}
+                      title="Xóa vĩnh viễn video và dữ liệu của dự án này"
+                      onClick={() => setDeleteJobId(currentJob.id)}
+                    >
+                      <Trash2 size={15} />
+                      Xóa video
+                    </Button>
+                  </div>
+                </div>
+                <div className="workflow-row">
+                  <PipelineSteps
+                    job={currentJob}
+                    cueCount={cues.length}
+                    missing={missing}
+                  />
+                  <JobActivity
+                    job={currentJob}
+                    notes={projectWarnings.map(vietnameseMessage)}
+                  />
+                </div>
               </div>
               {isBusy(currentJob) && (
                 <div className="job-progress">
@@ -607,223 +790,202 @@ export default function App() {
                   </span>
                   <progress max={100} value={currentJob.progress || 0} />
                   <span>{currentJob.progress || 0}%</span>
-                  <Button disabled={busy || currentJob.stopping || currentJob.deleting} onClick={() => void action("cancel")}>
+                  <Button
+                    disabled={
+                      busy || currentJob.stopping || currentJob.deleting
+                    }
+                    onClick={() => void action("cancel")}
+                  >
                     {currentJob.stopping ? "Đang dừng…" : "Huỷ"}
                   </Button>
                 </div>
               )}
-              {currentJob.regions_stale && <p role="alert" className="error regions-stale">{REGIONS_STALE}</p>}
-              <JobActivity job={currentJob} notes={projectWarnings.map(vietnameseMessage)} />
+              {currentJob.regions_stale && (
+                <p role="alert" className="error regions-stale">
+                  {REGIONS_STALE}
+                </p>
+              )}
               <div className="simple-work">
-                <div className="video-column" ref={videoColumn}>
-                {pickerVisible ? (
-                  <RegionPicker
-                    key={`${currentJob.id}:${currentJob.updated_at}`}
+                <div
+                  className={`video-column${pickerVisible ? " region-mode" : ""}`}
+                >
+                  {pickerVisible ? (
+                    <RegionPicker
+                      key={currentJob.id}
+                      job={currentJob}
+                      busy={busy}
+                      draft={regionDraft}
+                      pending={regionsPending}
+                      onDraft={(draft) =>
+                        setRegionDrafts((rows) =>
+                          JSON.stringify(rows[currentJob.id]) ===
+                          JSON.stringify(draft)
+                            ? rows
+                            : { ...rows, [currentJob.id]: draft },
+                        )
+                      }
+                      onSave={saveRegions}
+                    />
+                  ) : (
+                    <>
+                      <Player
+                        job={currentJob}
+                        cues={cues}
+                        onTime={setNow}
+                        seek={seek}
+                        draft={dirty}
+                        onOpenRegions={() => {
+                          setPickerDismissed(null);
+                          setPickerOpen(true);
+                        }}
+                        onAddCue={() => {
+                          if (
+                            busy ||
+                            isBusy(currentJob) ||
+                            !(currentJob.duration && currentJob.duration > 0)
+                          )
+                            return;
+                          const start = Math.max(
+                            0,
+                            Math.min(now, (currentJob.duration ?? 0) - 0.05),
+                          );
+                          const id = `manual-${crypto.randomUUID()}`;
+                          setCues((rows) =>
+                            [
+                              ...rows,
+                              {
+                                id,
+                                start,
+                                end: Math.min(
+                                  currentJob.duration ?? 0,
+                                  start + 2,
+                                ),
+                                original: "",
+                                text: "",
+                                speaker: "unconfirmed",
+                                source_ids: [],
+                              },
+                            ].sort((a, b) => a.start - b.start),
+                          );
+                          setActive(id);
+                          setDirty(true);
+                        }}
+                        editingDisabled={
+                          busy ||
+                          !(currentJob.duration && currentJob.duration > 0)
+                        }
+                        blurOriginal={studioSettings?.blur_original ?? true}
+                      />
+                    </>
+                  )}
+                  <Timeline
                     job={currentJob}
-                    busy={busy}
-                    onSave={saveRegions}
-                    onClose={currentJob.status === "awaiting_regions" ? undefined : () => setPickerOpen(false)}
+                    cues={cues}
+                    now={now}
+                    onSeek={seekTo}
+                    onSplit={() => setModal("parts")}
                   />
-                ) : (<>
-                <Player
-                  job={currentJob}
-                  cues={cues}
-                  onTime={setNow}
-                  seek={seek}
-                  draft={dirty}
-                  onOpenRegions={() => { setPickerDismissed(null); setPickerOpen(true); }}
-                  blurOriginal={studioSettings?.blur_original??true}
-                />
-              <Timeline
-                job={currentJob}
-                cues={cues}
-                now={now}
-                onSeek={seekTo}
-                onSplit={() => setModal("parts")}
-              />
-              </>)}
                 </div>
-                <section className="simple-script" style={columnHeight ? {height:columnHeight,maxHeight:"none"} : undefined}>
+                <section className="simple-script">
                   <div className="script-head">
                     <h2>Lời dịch</h2>
                     <span className="muted small">
                       {dirty ? "Chưa lưu" : `${cues.length} câu · Chọn để sửa`}
                     </span>
                   </div>
-                  {cueError && (
-                    <p role="alert" className="error padded">
-                      {cueError}
-                    </p>
-                  )}
-                  <div className="sentences" ref={sentenceArea}>
-                    {cueLoading && !cues.length ? (
-                      <Empty>Đang tải lời dịch…</Empty>
-                    ) : !cues.length ? (
-                      <Empty>
-                        Chưa có lời dịch. Phân tích video hoặc nhập file SRT
-                        tiếng Việt để bắt đầu.
-                      </Empty>
-                    ) : (
-                      cues.slice(safeCuePage*cueCapacity,(safeCuePage+1)*cueCapacity).map((cue, offset) => {const i=safeCuePage*cueCapacity+offset;return (
-                        <article
-                          className={`sentence ${active === cue.id ? "active" : ""}`}
-                          key={cue.id}
-                        >
-                          <button
-                            className="line-no"
-                            aria-label={`Chọn và tua câu ${i + 1}`}
-                            onClick={() => {
-                              setActive(cue.id);
-                              seekTo(cue.start);
-                            }}
-                          >
-                            {String(i + 1).padStart(2, "0")}
-                          </button>
-                          <div className="line-copy">
-                            <div className="line-meta">
-                              <span>
-                                {time(cue.start)} → {time(cue.end)}
-                              </span>
-                              <span>{cue.speaker==='unconfirmed'?'Chưa rõ giọng':cue.speaker.startsWith('SPK_')?`Giọng ${Number(cue.speaker.slice(4))+1}`:cue.speaker}</span>
-                            </div>
-                            {cue.original && <p className="cue-original" lang="zh">{cue.original}</p>}{cue.source && <small className="cue-source">{cue.source === "asr" ? "nghe" : cue.source === "ocr" ? "hình" : "hình + nghe"}</small>}{cue.source_mismatch && cue.asr_text && <p className="cue-asr-text" lang="zh">Nghe được: {cue.asr_text}</p>}
-                            {!!cue.auto_flags?.length&&<details className="cue-auto-note"><summary>{cue.auto_flags.length} điểm máy đánh dấu</summary>{cue.auto_flags.map((f,j)=><p key={j}>{f}</p>)}</details>}
-                            <textarea
-                              placeholder="Nhập lời Việt…"
-                              aria-label={`Lời Việt câu ${i + 1}`}
-                              value={cue.text}
-                              disabled={busy || isBusy(currentJob)}
-                              rows={2}
-                              onFocus={() => setActive(cue.id)}
-                              onChange={(e) =>
-                                modify(cue.id, { text: e.target.value })
-                              }
-                            />
-                            {active === cue.id && (
-                              <details className="cue-details">
-                                <summary>Thời gian & lời gốc</summary>
-                                <label>Lời Trung gốc<textarea aria-label={`Lời Trung câu ${i+1}`} lang="zh" value={cue.original} disabled={busy||isBusy(currentJob)} rows={2} onChange={e=>modify(cue.id,{original:e.target.value})}/></label>
-                                <div className="field-grid">
-                                  <label>
-                                    Bắt đầu (s)
-                                    <input
-                                      type="number"
-                                      step=".01"
-                                      disabled={busy || isBusy(currentJob)}
-                                      value={cue.start}
-                                      onChange={(e) =>
-                                        modify(cue.id, {
-                                          start: e.target.valueAsNumber,
-                                        })
-                                      }
-                                    />
-                                  </label>
-                                  <label>
-                                    Kết thúc (s)
-                                    <input
-                                      type="number"
-                                      step=".01"
-                                      disabled={busy || isBusy(currentJob)}
-                                      value={cue.end}
-                                      onChange={(e) =>
-                                        modify(cue.id, {
-                                          end: e.target.valueAsNumber,
-                                        })
-                                      }
-                                    />
-                                  </label>
-                                  <label>
-                                    Người nói
-                                    <input
-                                      value={cue.speaker}
-                                      disabled={busy || isBusy(currentJob)}
-                                      onChange={(e) =>
-                                        modify(cue.id, {
-                                          speaker: e.target.value,
-                                        })
-                                      }
-                                    />
-                                  </label>
-                                </div>
-                              </details>
-                            )}
-                            {cue.take_url && mediaUrl(cue.take_url) && (
-                              <audio
-                                controls
-                                preload="none"
-                                src={mediaUrl(cue.take_url)}
-                                aria-label={`Nghe giọng câu ${i + 1}`}
-                              />
-                            )}
-                            {!!cue.overrun && (
-                              <p className="warning small">
-                                Lời đọc vượt khe {cue.overrun.toFixed(2)}s. Hãy
-                                rút gọn câu.
-                              </p>
-                            )}
-                          </div>
-                        </article>
-                      )})
-                    )}
-                  </div>
-                  <Pagination total={cues.length} page={safeCuePage} size={cueCapacity} onChange={setCuePage}/>
-                  <div className="script-footer">
+                  <div className="script-tools">
                     <Button
+                      variant="save"
                       disabled={!dirty || busy || isBusy(currentJob)}
+                      title="Lưu lời dịch và tạo một bản trong lịch sử"
                       onClick={() => void saveCues()}
                     >
                       <Save size={15} />
                       {busy ? "Đang lưu…" : "Lưu lời dịch"}
                     </Button>
-                    <TranslatePanel
-                      importSlot={<div className="translate-import-existing">
                     <Button
-                      disabled={busy || isBusy(currentJob) || dirty}
-                      title="Ghép theo mốc thời gian — dùng cho file SRT tiếng Việt từ nguồn khác"
-                      onClick={() => subtitleInput.current?.click()}
+                      title="Xem, so sánh và khôi phục bản dịch của video này"
+                      onClick={() => setHistoryOpen(true)}
                     >
-                      <Upload size={15} />
-                      Nhập SRT có sẵn
+                      Lịch sử bản dịch
                     </Button>
-                    <span className="muted small import-hint">Ghép theo mốc thời gian, dùng cho SRT tiếng Việt từ nguồn khác.</span></div>}
+                    <TranslatePanel
+                      key={currentJob.id}
                       job={currentJob}
-                      providerLabel={providerLabels[studioSettings?.translation_provider ?? "gemini"]}
-                      ready={health?.capabilities?.automatic_translation === true}
+                      providerLabel={
+                        providerLabels[
+                          studioSettings?.translation_provider ?? "gemini"
+                        ]
+                      }
+                      ready={
+                        health?.capabilities?.automatic_translation === true
+                      }
                       disabled={busy || dirty}
-                      canExport={!dirty && !currentJob.regions_stale && cues.length > 0 && !cues.some((c) => !c.original.trim())}
-                      onJob={(j) => { setJob(j); setPollKey((k) => k + 1); }}
-                      onCues={(rows) => { setCues(rows); setDirty(false); void refresh(); }}
-                      onError={showError}
-                      onNotice={setNotice}
-                    />
-                    <input
-                      ref={subtitleInput}
-                      className="sr-only"
-                      type="file"
-                      accept=".srt"
-                      aria-label="Nhập phụ đề SRT"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (!file) return;
-                        setBusy(true);
-                        try {
-                          setCues(await api.subtitles(currentJob.id, file));
-                          setDirty(false);
-                          setNotice("Đã nhập phụ đề.");
-                          await refresh();
-                        } catch (err) {
-                          showError(err);
-                        } finally {
-                          setBusy(false);
+                      canExport={
+                        !dirty &&
+                        !currentJob.regions_stale &&
+                        cues.length > 0 &&
+                        !cues.some((c) => !c.original.trim())
+                      }
+                      onJob={(j) => {
+                        if (selected.current === currentJob.id) {
+                          setJob(j);
+                          setPollKey((k) => k + 1);
                         }
+                      }}
+                      onCues={(rows) => {
+                        if (selected.current === currentJob.id) {
+                          setCues(rows);
+                          setDirty(false);
+                          void refresh();
+                        }
+                      }}
+                      onError={(e) => {
+                        if (selected.current === currentJob.id) showError(e);
+                      }}
+                      onNotice={(message) => {
+                        if (selected.current === currentJob.id)
+                          setNotice(message);
                       }}
                     />
                   </div>
+                  <CueList
+                    key={currentJob.id}
+                    cues={cues}
+                    active={active}
+                    disabled={busy || isBusy(currentJob)}
+                    loading={cueLoading}
+                    error={cueError}
+                    onSelect={(id, seek) => {
+                      setActive((old) => (seek && old === id ? null : id));
+                      if (seek) {
+                        const cue = cues.find((c) => c.id === id);
+                        if (cue) seekTo(cue.start);
+                      }
+                    }}
+                    onEdit={modify}
+                  />
                 </section>
               </div>
 
-              {currentJob.exported_paths?.length ? <div className="editor-bottom"><div className="editor-actions"><small>Đã lưu {currentJob.exported_paths.length} file</small><Button onClick={()=>void workspaceApi.openFolder({job_id:currentJob.id}).catch(showError)}>Mở thư mục xuất</Button></div></div>:null}
+              {currentJob.exported_paths?.length ? (
+                <div className="editor-bottom">
+                  <div className="editor-actions">
+                    <small>
+                      Đã lưu {currentJob.exported_paths.length} file
+                    </small>
+                    <Button
+                      onClick={() =>
+                        void workspaceApi
+                          .openFolder({ job_id: currentJob.id })
+                          .catch(showError)
+                      }
+                    >
+                      Mở thư mục xuất
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </>
           ) : (
             <>
@@ -969,7 +1131,74 @@ export default function App() {
         {route.page==="settings"&&<SettingsPage onError={showError} onSaved={value=>{setStudioSettings(value);setNotice("Đã lưu cài đặt.");void api.health().then(setHealth)}}/>}
         {route.page==="voices"&&(voicesLoaded?<VoicesPage voices={voices} onAdd={()=>setModal("voice")} onError={showError} onChoose={currentJob&&!isBusy(currentJob)?async voice=>{await updateJob({mode:"tm",voice_id:voice.id});navigate("editor",currentJob.id)}:undefined} onCheck={async voice=>{const updated=await api.checkVoice(voice.id);setVoices(rows=>rows.map(v=>v.id===updated.id?updated:v));setNotice("Đã kiểm tra mẫu giọng.")}}/>:<Empty>Đang tải thư viện giọng…</Empty>)}
       </main>
-      {exportOpen&&currentJob&&<Modal title="Xuất video" description="Hệ thống tự kiểm tra dữ liệu và xuất vào thư mục đã cấu hình. Bạn sửa nội dung trực tiếp ở Lời dịch." onClose={()=>setExportOpen(false)}><label className="export-label">Tên file</label><div className="export-destination">{currentJob.export_filename || `${currentJob.title}.mp4`}</div><label className="export-label">Nơi xuất</label><div className="export-destination">{studioSettings?.output_dir||"Chưa tải được cài đặt"}</div><Button onClick={()=>{setExportOpen(false);navigate("settings",currentJob.id)}}>Đổi thư mục</Button>{missing>0&&<p className="warning">Còn {missing} câu thiếu lời Việt. Hãy dịch hoặc nhập SRT trước khi xuất.</p>}<div className="dialog-foot"><Button onClick={()=>setExportOpen(false)}>Để sau</Button><Button variant="primary" disabled={busy||missing>0||!cues.length||!studioSettings} onClick={()=>void confirmExport()}>Xuất video</Button></div></Modal>}
+      {exportOpen && currentJob && (
+        <ExportDialog
+          job={currentJob}
+          cues={cues}
+          outputDir={studioSettings?.output_dir}
+          draftRegions={regionsPending}
+          disabled={busy || isBusy(currentJob) || dirty}
+          onClose={() => setExportOpen(false)}
+          onConfirm={confirmExport}
+          onJump={(id) => {
+            setExportOpen(false);
+            setPickerOpen(false);
+            setPickerDismissed(currentJob.id);
+            setActive(id);
+            const cue = cues.find((c) => c.id === id);
+            if (cue) seekTo(cue.start);
+          }}
+          onSettings={() => {
+            setExportOpen(false);
+            navigate("settings", currentJob.id);
+          }}
+        />
+      )}
+      {historyOpen && currentJob && (
+        <TranslationHistory
+          job={currentJob}
+          cues={cues}
+          disabled={busy || dirty}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={async (matched, unmatched) => {
+            const id = currentJob.id;
+            const restored = await api.cues(id);
+            if (selected.current !== id) return;
+            setCues(restored);
+            setDirty(false);
+            await refresh();
+            if (selected.current === id)
+              setNotice(
+                `Đã khôi phục ${matched} câu; ${unmatched} câu không ghép được.`,
+              );
+          }}
+        />
+      )}
+      {resetOpen && currentJob && (
+        <Modal
+          title="Phân tích lại lời gốc?"
+          onClose={() => setResetOpen(false)}
+        >
+          <p className="warning">
+            Bản dịch hiện tại sẽ được lưu vào Lịch sử bản dịch và thay bằng câu
+            gốc mới.
+          </p>
+          <p className="small">
+            Nếu chỉ cần xử lý lại sub hoặc logo, hãy dùng Phân tích video; lời
+            gốc và bản dịch được giữ nguyên khi dải sub không đổi.
+          </p>
+          <div className="dialog-foot">
+            <Button onClick={() => setResetOpen(false)}>Huỷ</Button>
+            <Button
+              variant="primary"
+              disabled={busy || isBusy(currentJob) || dirty}
+              onClick={() => void resetSource()}
+            >
+              Phân tích lại
+            </Button>
+          </div>
+        </Modal>
+      )}
       {modal === "import" && (
         <ImportDialog
           initialFile={dropped}

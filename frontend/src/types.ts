@@ -229,3 +229,15 @@ export interface DefaultOverlay {
   fw: number;
   opacity: number;
 }
+
+export interface ExportReason { code: string; message: string; cue_count: number; cue_ids: string[] }
+export interface ExportQuality { draft_allowed: boolean; reasons: ExportReason[] }
+export interface TranslationSnapshot {
+  id: string; created_at: string; source: string; status: string; cue_count: number; total_count: number;
+  provider?: string; model?: string; requests?: number; input_tokens?: number; output_tokens?: number;
+  cost_usd?: number | null; error?: string | null;
+  cues?: Pick<Cue, 'start' | 'end' | 'original' | 'text'>[];
+  matches?: (string | null)[];
+  matched_count?: number;
+  unmatched_count?: number;
+}

@@ -30,6 +30,22 @@ const drag = (el: Element, from: [number, number], to: [number, number]) => {
 };
 
 describe("RegionPicker", () => {
+  it("keeps the draft frame/tool/boxes on remount and supports keyboard tools and Delete", () => {
+    const onDraft = vi.fn();
+    const first=render(<RegionPicker job={job} onSave={vi.fn()} onDraft={onDraft}/>);
+    fireEvent.keyDown(document,{key:'2'});
+    expect(screen.getByRole('button',{name:'Logo'}).getAttribute('aria-pressed')).toBe('true');
+    drag(screen.getByTestId('rp-stage'),[10,40],[60,90]);
+    fireEvent.click(screen.getByRole('button',{name:'+5 giây'}));
+    const draft=onDraft.mock.calls.at(-1)?.[0];
+    first.unmount();
+    render(<RegionPicker job={job} draft={draft} onSave={vi.fn()}/>);
+    expect(screen.getByAltText('Khung hình video').getAttribute('src')).toBe('/api/jobs/j1/frame?t=10');
+    expect(screen.getByTestId('rp-logo-0')).toBeTruthy();
+    fireEvent.keyDown(document,{key:'Delete'});
+    expect(screen.queryByTestId('rp-logo-0')).toBeNull();
+    expect(screen.queryByRole('button',{name:'Lưu vùng'})).toBeNull();
+  });
   it("draws boxes in source pixels under letterboxing and saves them", () => {
     const onSave = vi.fn();
     render(<RegionPicker job={job} onSave={onSave} />);
@@ -41,10 +57,10 @@ describe("RegionPicker", () => {
     drag(stage, [10, 40], [60, 90]); // -> (20,20,100,100)
     fireEvent.click(screen.getByRole("button", { name: "Chữ trên màn hình" }));
     drag(stage, [200, 100], [300, 150]); // -> (400,140,200,100)
-    fireEvent.click(screen.getByRole("button", { name: "Lưu vùng" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
     expect(onSave).toHaveBeenCalledWith(
       { no_hard_subs: false, subtitle: [200, 800, 800, 140], logos: [[20, 20, 100, 100]], screen_text: [[400, 140, 200, 100]] },
-      false,
+      true,
     );
   });
 
@@ -57,12 +73,12 @@ describe("RegionPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ subtitle: [240, 760, 800, 140] }), true);
     // resize: drag the se corner by (+20,+10) display = (+40,+20) source
-    fireEvent.click(screen.getByRole("button", { name: "Lưu vùng" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
     fireEvent.pointerDown(screen.getByTestId("rp-handle-se"), { clientX: 520, clientY: 480 });
     fireEvent.pointerMove(stage, { clientX: 540, clientY: 490 });
     fireEvent.pointerUp(stage, { clientX: 540, clientY: 490 });
-    fireEvent.click(screen.getByRole("button", { name: "Lưu vùng" }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ subtitle: [240, 760, 800 + 40, 140 + 20] }), false);
+    fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ subtitle: [240, 760, 800 + 40, 140 + 20] }), true);
     fireEvent.click(screen.getByRole("button", { name: "Xoá vùng đã chọn" }));
     expect(screen.queryByTestId("rp-subtitle-0")).toBeNull();
   });

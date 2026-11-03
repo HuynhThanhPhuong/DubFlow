@@ -26,6 +26,8 @@ export function Player({
   draft = false,
   blurOriginal = true,
   onOpenRegions,
+  onAddCue,
+  editingDisabled = false,
 }: {
   job: Job;
   cues: Cue[];
@@ -33,6 +35,8 @@ export function Player({
   seek: { time: number; token: number };
   /** opens the region picker; used instead of auto logo detection for jobs with chosen regions */
   onOpenRegions?: () => void;
+  onAddCue?: () => void;
+  editingDisabled?: boolean;
   draft?: boolean;
   blurOriginal?: boolean;
 }) {
@@ -307,21 +311,118 @@ export function Player({
   }, []);
   return (
     <section className="simple-player">
-      <div className="player-head">
-        <span>
-          {view === "source"
-            ? "Video gốc"
-            : view === "preview"
-              ? "Vietsub xem trước"
-              : "Bản Việt · kết quả thật"}
-        </span>
-        <Button
-          variant="ghost"
-          disabled={view === "source" && !job.output_url && !hasVietnamese}
-          onClick={() => setView(view === "source" ? preferred : "source")}
-        >
-          {view === "source" ? "Xem bản Việt" : "Xem bản gốc"}
-        </Button>
+      <div className="editor-media-head">
+        <div className="player-head">
+          <span>
+            {view === "source"
+              ? "Video gốc"
+              : view === "preview"
+                ? "Vietsub xem trước"
+                : "Bản Việt · kết quả thật"}
+          </span>
+          <Button
+            variant="ghost"
+            disabled={view === "source" && !job.output_url && !hasVietnamese}
+            onClick={() => setView(view === "source" ? preferred : "source")}
+          >
+            {view === "source" ? "Xem bản Việt" : "Xem bản gốc"}
+          </Button>
+        </div>
+        <div className="region-tools" aria-label="Che logo">
+          {onAddCue && (
+            <Button
+              variant="ghost"
+              disabled={busy || editingDisabled}
+              title="Tạo một câu phụ đề bắt đầu tại vị trí đang phát để nhập lời Việt"
+              onClick={onAddCue}
+            >
+              Thêm câu phụ đề tại vị trí đang phát
+            </Button>
+          )}
+          {job.analysis_regions ? (
+            onOpenRegions && (
+              <Button
+                variant="ghost"
+                disabled={isBusy(job)}
+                onClick={onOpenRegions}
+              >
+                Vùng phân tích
+              </Button>
+            )
+          ) : (
+            <Button
+              variant="ghost"
+              disabled={detecting || isBusy(job)}
+              onClick={() => void detectLogos()}
+            >
+              {detecting ? "Đang dò…" : "Dò logo"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            disabled={busy || (!drawing && !(regionDuration > 0))}
+            onClick={() => (drawing ? setDrawing(false) : startDrawing())}
+          >
+            {drawing ? "Xong vẽ" : "Vẽ vùng che"}
+          </Button>
+          <span className="logo-tools">
+            <Button
+              variant="ghost"
+              aria-expanded={pickerOpen}
+              disabled={busy || drawing || !(regionDuration > 0)}
+              onClick={() => setPickerOpen(!pickerOpen)}
+            >
+              Chèn logo
+            </Button>
+            {pickerOpen && (
+              <LogoPicker
+                disabled={busy}
+                onPick={addLogo}
+                onClose={() => setPickerOpen(false)}
+              />
+            )}
+          </span>
+          {!drawing && selectedLogo && (
+            <LogoEditor
+              overlay={selectedLogo}
+              duration={regionDuration}
+              disabled={busy}
+              isDefault={defaultLogo === selectedLogo.logo_id}
+              onChange={(change) =>
+                saveOverlays(
+                  overlays.map((o) =>
+                    o.id === selectedLogo.id ? { ...o, ...change } : o,
+                  ),
+                )
+              }
+              onDelete={() => {
+                saveOverlays(overlays.filter((o) => o.id !== selectedLogo.id));
+                setLogoId(null);
+              }}
+              onDefault={(on) => setAsDefault(selectedLogo, on)}
+            />
+          )}
+          {!drawing && selectedRegion && (
+            <RegionEditor
+              region={selectedRegion}
+              disabled={busy}
+              duration={regionDuration}
+              onChange={(change) =>
+                saveRegions(
+                  regions.map((r) =>
+                    r.id === selectedRegion.id
+                      ? { ...r, ...change, confirmed: true }
+                      : r,
+                  ),
+                )
+              }
+              onDelete={() => {
+                saveRegions(regions.filter((r) => r.id !== selectedRegion.id));
+                setSelectedId(null);
+              }}
+            />
+          )}
+        </div>
       </div>
       <div className="movie-frame" ref={frame}>
         {source ? (
@@ -433,87 +534,6 @@ export function Player({
           Đang xử lý — chưa sửa vùng che được.
         </p>
       )}
-      <div className="region-tools" aria-label="Che logo">
-        {job.analysis_regions ? (
-          onOpenRegions && (
-            <Button variant="ghost" disabled={isBusy(job)} onClick={onOpenRegions}>
-              Vùng phân tích
-            </Button>
-          )
-        ) : (
-          <Button
-            variant="ghost"
-            disabled={detecting || isBusy(job)}
-            onClick={() => void detectLogos()}
-          >
-            {detecting ? "Đang dò…" : "Dò logo"}
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          disabled={busy || (!drawing && !(regionDuration > 0))}
-          onClick={() => (drawing ? setDrawing(false) : startDrawing())}
-        >
-          {drawing ? "Xong vẽ" : "Vẽ vùng che"}
-        </Button>
-        <span className="logo-tools">
-          <Button
-            variant="ghost"
-            aria-expanded={pickerOpen}
-            disabled={busy || drawing || !(regionDuration > 0)}
-            onClick={() => setPickerOpen(!pickerOpen)}
-          >
-            Chèn logo
-          </Button>
-          {pickerOpen && (
-            <LogoPicker
-              disabled={busy}
-              onPick={addLogo}
-              onClose={() => setPickerOpen(false)}
-            />
-          )}
-        </span>
-        {!drawing && selectedLogo && (
-          <LogoEditor
-            overlay={selectedLogo}
-            duration={regionDuration}
-            disabled={busy}
-            isDefault={defaultLogo === selectedLogo.logo_id}
-            onChange={(change) =>
-              saveOverlays(
-                overlays.map((o) =>
-                  o.id === selectedLogo.id ? { ...o, ...change } : o,
-                ),
-              )
-            }
-            onDelete={() => {
-              saveOverlays(overlays.filter((o) => o.id !== selectedLogo.id));
-              setLogoId(null);
-            }}
-            onDefault={(on) => setAsDefault(selectedLogo, on)}
-          />
-        )}
-        {!drawing && selectedRegion && (
-          <RegionEditor
-            region={selectedRegion}
-            disabled={busy}
-            duration={regionDuration}
-            onChange={(change) =>
-              saveRegions(
-                regions.map((r) =>
-                  r.id === selectedRegion.id
-                    ? { ...r, ...change, confirmed: true }
-                    : r,
-                ),
-              )
-            }
-            onDelete={() => {
-              saveRegions(regions.filter((r) => r.id !== selectedRegion.id));
-              setSelectedId(null);
-            }}
-          />
-        )}
-      </div>
       <div className="play-controls system-controls">
         <Button
           className="media-button"

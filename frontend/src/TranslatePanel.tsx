@@ -1,10 +1,21 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "./api";
 import { isBusy } from "./helpers";
-import type { Cue, Job, Mode, TranslateEstimate, TranslateScope } from "./types";
+import type {
+  Cue,
+  Job,
+  Mode,
+  TranslateEstimate,
+  TranslateScope,
+} from "./types";
 import { Button, Modal } from "./ui";
 
-const modeLabels: Record<Mode, string> = { dub: "lồng tiếng", tm: "thuyết minh", vietsub: "Vietsub" };
+const modeLabels: Record<Mode, string> = {
+  dub: "lồng tiếng",
+  tm: "thuyết minh",
+  vietsub: "Vietsub",
+};
 const PAUSE_PREFIX = "Tạm dừng – ";
 const COST_CAP_MARK = "mức trần chi phí";
 
@@ -15,7 +26,8 @@ export function pauseKind(job: Job): "quota" | "cost_cap" | null {
   if (!warning) return null;
   return warning.includes(COST_CAP_MARK) ? "cost_cap" : "quota";
 }
-const usd = (value: number) => `${value < 0.01 ? value.toFixed(4) : value.toFixed(2)} USD`;
+const usd = (value: number) =>
+  `${value < 0.01 ? value.toFixed(4) : value.toFixed(2)} USD`;
 
 export function TranslatePanel({
   job,
@@ -27,9 +39,7 @@ export function TranslatePanel({
   onCues,
   onError,
   onNotice,
-  importSlot,
 }: {
-  importSlot?: ReactNode;
   job: Job;
   providerLabel: string;
   ready: boolean;
@@ -46,6 +56,61 @@ export function TranslatePanel({
     [working, setWorking] = useState(false),
     [prompt, setPrompt] = useState<string | null>(null),
     input = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLDivElement>(null),
+    popover = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ top: 0, left: 12 });
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const t = trigger.current?.getBoundingClientRect(),
+        p = popover.current?.getBoundingClientRect();
+      if (t && p)
+        setPosition({
+          left: Math.max(
+            12,
+            Math.min(t.right - p.width, window.innerWidth - p.width - 12),
+          ),
+          top: Math.max(
+            12,
+            Math.min(t.bottom + 8, window.innerHeight - p.height - 12),
+          ),
+        });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(place) : null;
+    if (popover.current) observer?.observe(popover.current);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, job.translation_usage, ready]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: PointerEvent) => {
+      if (
+        !trigger.current?.contains(e.target as Node) &&
+        !popover.current?.contains(e.target as Node)
+      )
+        setOpen(false);
+    };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        trigger.current?.querySelector("button")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
   const usage = job.translation_usage;
   const stale = !!usage && usage.mode !== job.mode;
   const pause = isBusy(job) ? null : pauseKind(job);
@@ -67,6 +132,7 @@ export function TranslatePanel({
     guard(async () => {
       setDialogError("");
       setEstimate(await api.translateEstimate(job.id, effectiveScope));
+      setOpen(false);
     });
   const confirm = async (allowOverCap: boolean) => {
     setWorking(true);
@@ -76,96 +142,159 @@ export function TranslatePanel({
       setEstimate(null);
       onNotice("Đã gửi vào hàng đợi xử lý.");
     } catch (e) {
-      setDialogError(e instanceof Error ? e.message : "Chưa thực hiện được thao tác. Hãy thử lại.");
+      setDialogError(
+        e instanceof Error
+          ? e.message
+          : "Chưa thực hiện được thao tác. Hãy thử lại.",
+      );
     } finally {
       setWorking(false);
     }
   };
-  const buttonLabel = pause === "cost_cap"
-    ? "Dịch tiếp, cho phép vượt trần"
-    : pause === "quota"
-      ? "Dịch tiếp"
-      : `Dịch bằng ${providerLabel}`;
+  const buttonLabel =
+    pause === "cost_cap"
+      ? "Dịch tiếp, cho phép vượt trần"
+      : pause === "quota"
+        ? "Dịch tiếp"
+        : `Dịch bằng ${providerLabel}`;
   return (
-    <div className="translate-panel">
-      {!ready && (
-        <p className="small">
-          Chưa cấu hình dịch API — vào Cài đặt → Dịch, hoặc dùng cách thủ công bên dưới.
-        </p>
-      )}
-      {ready && (
-        <>
-          {!pause && (
-            <fieldset className="translate-scope" disabled={off}>
-              <legend>Phạm vi dịch</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="translate-scope"
-                  checked={scope === "missing"}
-                  onChange={() => setScope("missing")}
-                />
-                Chỉ câu chưa có lời
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="translate-scope"
-                  checked={scope === "all"}
-                  onChange={() => setScope("all")}
-                />
-                Dịch lại tất cả
-              </label>
-              {scope === "all" && (
-                <p className="warning small">
-                  Dịch lại tất cả sẽ ghi đè cả những lời Việt bạn đã sửa.
-                </p>
-              )}
-              <div className="translate-scope-action">
-                <Button variant="primary" disabled={off} onClick={() => void askEstimate()}>
-                  {buttonLabel}
+    <>
+      <div className="translation-trigger" ref={trigger}>
+        <Button
+          aria-expanded={open}
+          aria-controls="translation-popover"
+          title="Chọn phạm vi dịch bằng Gemini hoặc nhập từ AI chat"
+          onClick={() => setOpen((v) => !v)}
+        >
+          Dịch ▾
+        </Button>
+      </div>
+      {open &&
+        createPortal(
+          <div
+            className="translation-popover translate-panel"
+            id="translation-popover"
+            role="region"
+            aria-label="Công cụ dịch"
+            ref={popover}
+            style={position}
+          >
+            {!ready && (
+              <p className="small">
+                Chưa cấu hình dịch API — vào Cài đặt → Dịch, hoặc dùng cách thủ
+                công bên dưới.
+              </p>
+            )}
+            {ready && (
+              <>
+                {!pause && (
+                  <fieldset className="translate-scope" disabled={off}>
+                    <legend>Phạm vi dịch</legend>
+                    <label>
+                      <input
+                        type="radio"
+                        name="translate-scope"
+                        checked={scope === "missing"}
+                        onChange={() => setScope("missing")}
+                      />
+                      Chỉ câu chưa có lời
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="translate-scope"
+                        checked={scope === "all"}
+                        onChange={() => setScope("all")}
+                      />
+                      Dịch lại tất cả
+                    </label>
+                    {scope === "all" && (
+                      <p className="warning small">
+                        Dịch lại tất cả sẽ ghi đè cả những lời Việt bạn đã sửa.
+                      </p>
+                    )}
+                    <div className="translate-scope-action">
+                      <Button
+                        variant="primary"
+                        disabled={off}
+                        onClick={() => void askEstimate()}
+                      >
+                        {buttonLabel}
+                      </Button>
+                    </div>
+                  </fieldset>
+                )}
+                {pause && (
+                  <Button
+                    variant="primary"
+                    disabled={off}
+                    onClick={() => void askEstimate()}
+                  >
+                    {buttonLabel}
+                  </Button>
+                )}
+              </>
+            )}
+            <fieldset className="translate-scope translate-import">
+              <legend>Dịch bằng AI chat / nhập file</legend>
+              <div className="translate-import-row">
+                <a
+                  className="button secondary"
+                  href={`/api/jobs/${encodeURIComponent(job.id)}/source-subtitles.srt`}
+                  download
+                  aria-disabled={!canExport}
+                  onClick={(e) => {
+                    if (!canExport) {
+                      e.preventDefault();
+                      onError(
+                        new Error(
+                          "Lưu lời gốc đầy đủ trước khi xuất tiếng Trung.",
+                        ),
+                      );
+                      return;
+                    }
+                    void guard(async () => {
+                      setPrompt(await api.translatePrompt(job.id));
+                      setOpen(false);
+                    });
+                  }}
+                >
+                  Xuất SRT Trung + lệnh mẫu
+                </a>
+                <Button
+                  disabled={off}
+                  title="Khớp theo số thứ tự của file SRT Trung đã xuất"
+                  aria-description="Khớp theo số thứ tự của file SRT Trung đã xuất"
+                  onClick={() => input.current?.click()}
+                >
+                  Nhập bản dịch từ AI chat
                 </Button>
               </div>
+              <p className="muted small translate-hint">
+                Bước 1: xuất SRT Trung kèm lệnh mẫu, gửi cho AI chat. Bước 2:
+                nhập lại bản dịch AI trả về.
+              </p>
             </fieldset>
-          )}
-          {pause && (
-            <Button variant="primary" disabled={off} onClick={() => void askEstimate()}>
-              {buttonLabel}
-            </Button>
-          )}
-        </>
-      )}
-      <fieldset className="translate-scope translate-import">
-      <legend>Dịch bằng AI chat / nhập file</legend>
-      <div className="translate-import-row">
-      <a
-        className="button secondary"
-        href={`/api/jobs/${encodeURIComponent(job.id)}/source-subtitles.srt`}
-        download
-        aria-disabled={!canExport}
-        onClick={(e) => {
-          if (!canExport) {
-            e.preventDefault();
-            onError(new Error("Lưu lời gốc đầy đủ trước khi xuất tiếng Trung."));
-            return;
-          }
-          void guard(async () => setPrompt(await api.translatePrompt(job.id)));
-        }}
-      >
-        Xuất SRT Trung + lệnh mẫu
-      </a>
-      <Button
-        disabled={off}
-        title="Khớp theo số thứ tự của file SRT Trung đã xuất"
-        aria-description="Khớp theo số thứ tự của file SRT Trung đã xuất"
-        onClick={() => input.current?.click()}
-      >
-        Nhập bản dịch từ AI chat
-      </Button>
-      </div>
-      <p className="muted small translate-hint">Bước 1: xuất SRT Trung kèm lệnh mẫu, gửi cho AI chat. Bước 2: nhập lại bản dịch AI trả về.</p>
-      {importSlot}
-      </fieldset>
+            {usage && (
+              <p className="small">
+                Đã dùng: {usage.requests} request ·{" "}
+                {(usage.input_tokens + usage.output_tokens).toLocaleString(
+                  "vi-VN",
+                )}{" "}
+                token
+                {usage.cost_usd != null && ` · ${usd(usage.cost_usd)}`}
+              </p>
+            )}
+            {stale && (
+              <p className="warning small">
+                Bản dịch hiện tại theo chế độ{" "}
+                {modeLabels[usage.mode] ?? usage.mode}; bấm Dịch lại tất cả nếu
+                muốn dịch theo chế độ mới.
+              </p>
+            )}
+          </div>,
+          document.body,
+        )}
       <input
         ref={input}
         className="sr-only"
@@ -182,17 +311,6 @@ export function TranslatePanel({
           });
         }}
       />
-      {usage && (
-        <p className="small">
-          Đã dùng: {usage.requests} request · {(usage.input_tokens + usage.output_tokens).toLocaleString("vi-VN")} token
-          {usage.cost_usd != null && ` · ${usd(usage.cost_usd)}`}
-        </p>
-      )}
-      {stale && (
-        <p className="warning small">
-          Bản dịch hiện tại theo chế độ {modeLabels[usage.mode] ?? usage.mode}; bấm Dịch lại tất cả nếu muốn dịch theo chế độ mới.
-        </p>
-      )}
       {estimate && (
         <Modal
           title={`Dịch bằng ${providerLabel}`}
@@ -204,11 +322,14 @@ export function TranslatePanel({
             <p>Đã tiêu cho video này: {usd(estimate.spent_usd)}</p>
           )}
           {effectiveScope === "all" && (
-            <p className="warning">Lời Việt đã sửa của các câu này sẽ bị ghi đè.</p>
+            <p className="warning">
+              Lời Việt đã sửa của các câu này sẽ bị ghi đè.
+            </p>
           )}
           {estimate.over_cap && (
             <p className="warning error" role="alert">
-              Chi phí dự kiến vượt mức trần {estimate.cap_usd} USD cho mỗi video.
+              Chi phí dự kiến vượt mức trần {estimate.cap_usd} USD cho mỗi
+              video.
             </p>
           )}
           {dialogError && (
@@ -235,18 +356,30 @@ export function TranslatePanel({
       {prompt !== null && (
         <Modal
           title="Lệnh mẫu cho AI"
-          className="dialog-wide"
+          className="dialog-wide prompt-dialog"
           description="SRT tiếng Trung đã được tải về. Gửi file đó cùng lệnh mẫu dưới đây cho AI chat, rồi dùng nút “Nhập bản dịch từ AI chat” để nhập kết quả."
           onClose={() => setPrompt(null)}
         >
-          <textarea className="prompt-text" readOnly rows={12} aria-label="Lệnh mẫu" value={prompt} />
+          <textarea
+            className="prompt-text"
+            readOnly
+            rows={12}
+            aria-label="Lệnh mẫu"
+            value={prompt}
+          />
           <div className="dialog-foot">
             <Button
               onClick={() => {
                 void navigator.clipboard
                   ?.writeText(prompt)
                   .then(() => onNotice("Đã sao chép lệnh mẫu."))
-                  .catch(() => onError(new Error("Không sao chép được. Hãy chọn và sao chép thủ công.")));
+                  .catch(() =>
+                    onError(
+                      new Error(
+                        "Không sao chép được. Hãy chọn và sao chép thủ công.",
+                      ),
+                    ),
+                  );
               }}
             >
               Sao chép
@@ -254,6 +387,6 @@ export function TranslatePanel({
           </div>
         </Modal>
       )}
-    </div>
+    </>
   );
 }

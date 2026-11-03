@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -79,7 +80,8 @@ it("edits Vietnamese and saves exact cue array to real API contract", async () =
   const input = await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.queryByRole('button',{name:'Kiểm tra & duyệt'})).toBeNull();
   expect(screen.queryByRole('button',{name:'Thêm video'})).toBeNull();
-  expect(screen.getByRole('group',{name:'Thao tác video'}).textContent).toBe('Tuỳ chỉnhVùng phân tíchPhân tích videoPhân tích lại lời gốcXuất video');
+  expect(screen.getByRole('group',{name:'Thao tác video'}).textContent).toBe('Vùng phân tíchPhân tích videoPhân tích lại lời gốcTuỳ chỉnhXuất videoXóa video');
+  fireEvent.click(screen.getByRole('button',{name:'Dịch ▾'}));
   expect(screen.getByRole('link',{name:'Xuất SRT Trung + lệnh mẫu'}).getAttribute('href')).toBe('/api/jobs/job1/source-subtitles.srt');
   fireEvent.change(input, { target: { value: "Chào bạn" } });
   expect(screen.getByText("Chưa lưu")).toBeTruthy();
@@ -120,16 +122,17 @@ it("asks before re-analysing the source text and does nothing on cancel", async 
   location.hash = "#editor?job=job1";
   const calls: string[] = [];
   stubReset(calls, { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr" });
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   render(<App />);
   await screen.findByLabelText("Lời Việt câu 1");
   fireEvent.click(screen.getByRole("button", { name: "Phân tích lại lời gốc" }));
-  expect(confirm).toHaveBeenCalledWith("Lời gốc sẽ được dựng lại từ đầu. Bản dịch hiện tại được sao lưu nhưng sẽ không còn trong trình biên tập. Tiếp tục?");
+  let dialog=await screen.findByRole('dialog');
+  expect(within(dialog).getByText(/Bản dịch hiện tại sẽ được lưu vào Lịch sử/)).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole('button',{name:'Huỷ'}));
   expect(calls.some((c) => c.includes("analyze"))).toBe(false);
-  confirm.mockReturnValue(true);
   fireEvent.click(screen.getByRole("button", { name: "Phân tích lại lời gốc" }));
+  dialog=await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button',{name:'Phân tích lại'}));
   await waitFor(() => expect(calls).toContain("POST /api/jobs/job1/analyze?reset_source=1"));
-  confirm.mockRestore();
 });
 it("labels the source of a cue and shows the heard text on mismatch", async () => {
   location.hash = "#editor?job=job1";
@@ -137,7 +140,8 @@ it("labels the source of a cue and shows the heard text on mismatch", async () =
   render(<App />);
   await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.getByText("hình")).toBeTruthy();
-  expect(screen.getByText(/Nghe được: 你们好/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Chọn và tua câu 1'}));
+  expect(screen.getByText('你们好').closest('p')?.textContent).toContain('Nghe được: 你们好');
 });
 
 it("clears the paused-updates banner once polling succeeds again", async () => {

@@ -61,12 +61,14 @@ it("shows the estimate, posts nothing on cancel, posts with over-cap consent", a
   const calls: Call[] = [];
   stub({}, calls);
   render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Dịch ▾'}));
   fireEvent.click(await screen.findByRole("button", { name: "Dịch bằng Gemini" }));
   await screen.findByText(/Dự kiến: 3 request, khoảng 1\.500 token, khoảng 0\.12 USD/);
   expect(screen.getByRole("alert").textContent).toContain("vượt mức trần");
   expect(screen.getByText(/Đã tiêu cho video này: 0\.04 USD/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Hủy" }));
   expect(calls.some((c) => c.path === "/api/jobs/job1/translate")).toBe(false);
+  fireEvent.click(screen.getByRole('button',{name:'Dịch ▾'}));
   fireEvent.click(screen.getByRole("button", { name: "Dịch bằng Gemini" }));
   fireEvent.click(await screen.findByRole("button", { name: "Vẫn dịch, cho phép vượt trần" }));
   await waitFor(() => expect(calls.some((c) => c.path === "/api/jobs/job1/translate")).toBe(true));
@@ -83,6 +85,7 @@ it("shows usage, the stale-mode note and a resume button for a cost-cap pause", 
     [],
   );
   render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Dịch ▾'}));
   await screen.findByRole("button", { name: "Dịch tiếp, cho phép vượt trần" });
   expect(screen.getByText(/Đã dùng: 4 request · 3\.000 token · 0\.25 USD/)).toBeTruthy();
   expect(screen.getByText(/Bản dịch hiện tại theo chế độ lồng tiếng/)).toBeTruthy();
@@ -97,12 +100,14 @@ it("prefers the structured pause flag over the warning text", async () => {
     [],
   );
   render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Dịch ▾'}));
   await screen.findByRole("button", { name: "Dịch tiếp, cho phép vượt trần" });
 });
 it("uses Dịch tiếp for a quota pause", async () => {
   location.hash = "#editor?job=job1";
   stub({ warnings: ['Tạm dừng – hết hạn mức ngày của Gemini. Đã dịch 3/9 câu; bấm "Dịch tiếp" khi hạn mức được làm mới.'] }, []);
   render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Dịch ▾'}));
   expect((await screen.findByRole("button", { name: "Dịch tiếp" })).textContent).toBe("Dịch tiếp");
 });
 it("shows the 422 message verbatim when importing a Vietnamese SRT fails", async () => {
@@ -113,6 +118,7 @@ it("shows the 422 message verbatim when importing a Vietnamese SRT fails", async
       : undefined,
   );
   render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Dịch ▾'}));
   await screen.findByRole("button", { name: "Nhập bản dịch từ AI chat" });
   const file = new File(["x"], "vi.srt", { type: "text/plain" });
   fireEvent.change(screen.getByLabelText("Chọn file SRT Việt"), { target: { files: [file] } });
