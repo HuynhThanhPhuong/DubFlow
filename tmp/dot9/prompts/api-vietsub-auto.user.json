@@ -1,0 +1,42 @@
+{
+  "terminology": "",
+  "context": {
+    "characters": [],
+    "address": [],
+    "glossary": []
+  },
+  "items": [
+    {
+      "id": "c1",
+      "zh": "师尊，大泽山到了。",
+      "dur": 4,
+      "speaker": "S1",
+      "kind": "cue",
+      "max_chars": 60
+    },
+    {
+      "id": "c2",
+      "zh": "诸位，请进。",
+      "dur": 4,
+      "speaker": "S2",
+      "kind": "cue",
+      "max_chars": 60
+    }
+  ],
+  "metadata": {
+    "video_title": "Đại Trạch Sơn",
+    "collection_name": "Chuyện tiên môn"
+  },
+  "source_dialogue": [
+    {
+      "id": "c1",
+      "zh": "师尊，大泽山到了。",
+      "speaker": "S1"
+    },
+    {
+      "id": "c2",
+      "zh": "诸位，请进。",
+      "speaker": "S2"
+    }
+  ]
+}

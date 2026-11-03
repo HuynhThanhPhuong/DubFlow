@@ -1,0 +1,87 @@
+{
+  "method": "Ước lượng offline theo hằng số hiện có: system 4 ký tự/token; JSON Hán/Việt 1.5 ký tự/token. Không phải Gemini tokenizer.",
+  "prompt_version": "p3-5-address",
+  "shared_rule_characters": 1757,
+  "modes": {
+    "vietsub": {
+      "auto": {
+        "baseline_chars": 1813,
+        "new_chars": 3905,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 135,
+        "added_manual_tokens_est_without_metadata": 428
+      },
+      "modern": {
+        "baseline_chars": 1813,
+        "new_chars": 3904,
+        "added_chars": 2091,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 427
+      },
+      "ancient": {
+        "baseline_chars": 1813,
+        "new_chars": 3905,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 428
+      }
+    },
+    "tm": {
+      "auto": {
+        "baseline_chars": 2013,
+        "new_chars": 4105,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 135,
+        "added_manual_tokens_est_without_metadata": 428
+      },
+      "modern": {
+        "baseline_chars": 2013,
+        "new_chars": 4104,
+        "added_chars": 2091,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 427
+      },
+      "ancient": {
+        "baseline_chars": 2013,
+        "new_chars": 4105,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 428
+      }
+    },
+    "dub": {
+      "auto": {
+        "baseline_chars": 1944,
+        "new_chars": 4036,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 135,
+        "added_manual_tokens_est_without_metadata": 428
+      },
+      "modern": {
+        "baseline_chars": 1944,
+        "new_chars": 4035,
+        "added_chars": 2091,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 427
+      },
+      "ancient": {
+        "baseline_chars": 1944,
+        "new_chars": 4036,
+        "added_chars": 2092,
+        "added_system_tokens_est": 523,
+        "added_user_tokens_est_for_sample_first_request": 186,
+        "added_manual_tokens_est_without_metadata": 428
+      }
+    }
+  },
+  "schema_added_chars": 187,
+  "schema_added_tokens_est_4chars": 47
+}
