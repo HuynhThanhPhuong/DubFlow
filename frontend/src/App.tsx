@@ -35,6 +35,7 @@ import { CueList } from "./CueList";
 import { TranslationHistory } from "./TranslationHistory";
 import { ExportDialog } from "./ExportDialog";
 import { JobDeleteDialog } from "./DeleteDialogs";
+import { FontPopover } from "./FontPopover";
 import { TranslatePanel } from "./TranslatePanel";
 import { providerLabels } from "./TranslationSettings";
 import { Button, Empty, Toast } from "./ui";
@@ -93,6 +94,7 @@ export default function App() {
   const [pickerDismissed, setPickerDismissed] = useState<string | null>(null);
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [dropped, setDropped] = useState<File>();
+  const [fontPreview, setFontPreview] = useState<{ jobId: string; id: string } | null>(null);
   const [now, setNow] = useState(0);
   const [seek, setSeek] = useState({ time: 0, token: 0 });
   const [active, setActive] = useState<string | null>(null);
@@ -832,6 +834,7 @@ export default function App() {
                     <>
                       <Player
                         job={currentJob}
+                        previewFont={fontPreview?.jobId === currentJob.id ? fontPreview.id : undefined}
                         cues={cues}
                         onTime={setNow}
                         seek={{ ...seek, time: now }}
@@ -911,6 +914,24 @@ export default function App() {
                     >
                       Lịch sử bản dịch
                     </Button>
+                    <FontPopover
+                      key={`font-${currentJob.id}`}
+                      job={currentJob}
+                      defaultFont={studioSettings?.default_subtitle_font ?? "public-sans"}
+                      disabled={busy || isBusy(currentJob)}
+                      onPreview={(id) => setFontPreview(id ? { jobId: currentJob.id, id } : null)}
+                      onJob={(j) => {
+                        if (selected.current !== currentJob.id) return;
+                        setJob(j);
+                        setJobs((rows) => rows.map((row) => row.id === j.id ? j : row));
+                        setPollKey((k) => k + 1);
+                      }}
+                      onDefault={(id) => {
+                        setStudioSettings((s) => s ? { ...s, default_subtitle_font: id } : s);
+                        setNotice("Đã đặt phông mặc định cho video mới.");
+                      }}
+                      onError={showError}
+                    />
                     <TranslatePanel
                       key={currentJob.id}
                       job={currentJob}

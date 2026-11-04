@@ -1,3 +1,4 @@
+import { useSubtitleFont, fontFamily } from "./fonts";
 import type { CSSProperties } from "react";
 import type { Cue, Region, SubtitleStyle } from "./types";
 import "./subtitle-preview.css";
@@ -31,11 +32,12 @@ const units = (s: string) =>
     if (!/[\p{L}\p{N}]/u.test(c)) return n + 0.33;
     return n + (c !== c.toLowerCase() ? 0.68 : 0.54);
   }, 0);
-const regionUnits = (text: string) =>
+const regionUnits = (
+  text: string,
+  metrics: Record<string, number> = advances,
+) =>
   [...text.normalize("NFC")].reduce(
-    (n, c) =>
-      n +
-      ((advances as Record<string, number>)[c] ?? (/\p{M}/u.test(c) ? 0 : 1)),
+    (n, c) => n + (metrics[c] ?? (/\p{M}/u.test(c) ? 0 : 1)),
     0,
   );
 function wrapText(
@@ -65,15 +67,19 @@ export function fitLines(
   size: number,
   maxWidth: number,
   maxLines = 2,
+  measure = units,
 ) {
-  const first = wrapText(text, size, maxWidth);
+  const first = wrapText(text, size, maxWidth, measure);
   if (first.length <= maxLines) return { lines: first, size };
   for (let step = 1; step < 15; step++) {
     const trial = size * (1 - step / 100);
-    const lines = wrapText(text, trial, maxWidth);
+    const lines = wrapText(text, trial, maxWidth, measure);
     if (lines.length <= maxLines) return { lines, size: trial };
   }
-  return { lines: wrapText(text, size * 0.85, maxWidth), size: size * 0.85 };
+  return {
+    lines: wrapText(text, size * 0.85, maxWidth, measure),
+    size: size * 0.85,
+  };
 }
 
 // Exact mirror of backend subtitle_style.assign_lanes / lane_y (first free lane in start order).
@@ -99,10 +105,21 @@ export function assignLanes(
     const slots = groups.get(group) ?? [];
     groups.set(group, slots);
     const independent = (other: (typeof cues)[number]) => {
-      const a = c.box, b = other.box;
-      return Boolean(a && b && (c.region !== other.region || a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]));
+      const a = c.box,
+        b = other.box;
+      return Boolean(
+        a &&
+        b &&
+        (c.region !== other.region ||
+          a[2] <= b[0] ||
+          b[2] <= a[0] ||
+          a[3] <= b[1] ||
+          b[3] <= a[1]),
+      );
     };
-    let lane = slots.findIndex((rows) => rows.every((other) => other.end <= c.start || independent(other)));
+    let lane = slots.findIndex((rows) =>
+      rows.every((other) => other.end <= c.start || independent(other)),
+    );
     if (lane < 0) {
       lane = slots.length;
       slots.push([]);
@@ -115,7 +132,8 @@ export function assignLanes(
 export const laneY = (y: number, lane: number, fs: number) =>
   Math.max(fs * 1.5, y - lane * fs * 3);
 
-const assSize = (size: number) => Math.max(8, Math.round(size * LIBASS_CELL));
+const assSize = (size: number, cell = LIBASS_CELL) =>
+  Math.max(8, Math.round(size * cell));
 export const isSupplementary = (cue: Pick<Cue, "kind" | "orientation">) =>
   cue.kind === "supplementary" || cue.orientation === "v";
 const defaultStyle = (width: number, height: number): SubtitleStyle => ({
@@ -137,6 +155,9 @@ export function regionLayout(
   custom?: SubtitleStyle | null,
 ) {
   const st = custom ?? defaultStyle(width, height);
+  const cell = st.cell ?? LIBASS_CELL;
+  const measure = (text: string) => regionUnits(text, st.advances);
+  const fs = (size: number) => assSize(size, cell);
   if (isSupplementary(cue)) {
     const text =
       "[" +
@@ -147,20 +168,10 @@ export function regionLayout(
       "]";
     let size = st.size * 0.9;
     const available = Math.max(20, width - 20);
-    let lines = wrapText(
-      text,
-      assSize(size) / LIBASS_CELL,
-      available,
-      regionUnits,
-    );
+    let lines = wrapText(text, fs(size) / cell, available, measure);
     while (lines.length > 2 && size > st.size * 0.54 + 0.01) {
       size = Math.max(st.size * 0.54, size - st.size * 0.009);
-      lines = wrapText(
-        text,
-        assSize(size) / LIBASS_CELL,
-        available,
-        regionUnits,
-      );
+      lines = wrapText(text, fs(size) / cell, available, measure);
     }
     if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
     return {
@@ -176,7 +187,7 @@ export function regionLayout(
   const box = cue.box;
   if (!box || box.length !== 4) {
     const available = Math.max(20, width - 20);
-    const fit = fitLines(cue.text, st.size, available, st.max_lines);
+    const fit = fitLines(cue.text, st.size, available, st.max_lines, measure);
     return {
       ...fit,
       x: width / 2,
@@ -209,7 +220,7 @@ export function regionLayout(
     bh = Math.max(1, y1 - y0),
     normalMinimum = st.size * 0.6;
   const minimum = cue._layout_height
-    ? Math.min(normalMinimum, Math.max(1, bh / 2 / LIBASS_CELL - 0.5))
+    ? Math.min(normalMinimum, Math.max(1, bh / 2 / cell - 0.5))
     : normalMinimum;
   const stroke = 2 * st.outline;
   let maximum = st.size,
@@ -224,31 +235,20 @@ export function regionLayout(
     );
     const room = Math.max(1, bw - stroke);
     size = maximum;
-    lines = wrapText(cue.text, assSize(size) / LIBASS_CELL, room, regionUnits);
+    lines = wrapText(cue.text, fs(size) / cell, room, measure);
     while (
       (lines.length > 2 ||
-        lines.some(
-          (line) =>
-            (regionUnits(line) * assSize(size)) / LIBASS_CELL > room + 0.01,
-        ) ||
-        assSize(size) * lines.length > bh + 0.01) &&
+        lines.some((line) => (measure(line) * fs(size)) / cell > room + 0.01) ||
+        fs(size) * lines.length > bh + 0.01) &&
       size > minimum + 0.01
     ) {
       size = Math.max(minimum, size - maximum * 0.01);
-      lines = wrapText(
-        cue.text,
-        assSize(size) / LIBASS_CELL,
-        room,
-        regionUnits,
-      );
+      lines = wrapText(cue.text, fs(size) / cell, room, measure);
     }
     overflow =
       lines.length > 2 ||
-      lines.some(
-        (line) =>
-          (regionUnits(line) * assSize(size)) / LIBASS_CELL > room + 0.01,
-      ) ||
-      assSize(size) * lines.length > bh + 0.01 ||
+      lines.some((line) => (measure(line) * fs(size)) / cell > room + 0.01) ||
+      fs(size) * lines.length > bh + 0.01 ||
       size < normalMinimum - 0.01;
     if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
     available = bw;
@@ -274,6 +274,8 @@ export function cueLayout(
   custom?: SubtitleStyle | null,
 ) {
   const st = custom ?? defaultStyle(width, height);
+  const cell = st.cell ?? LIBASS_CELL;
+  const fs = (size: number) => assSize(size, cell);
   const cue = cues[index];
   const active = cues
     .map((_, i) => i)
@@ -290,8 +292,7 @@ export function cueLayout(
       dialogue.push(other);
       const top =
         other.y -
-        (assSize(other.size) * other.lines.length) /
-          (other.align === 2 ? 1 : 2);
+        (fs(other.size) * other.lines.length) / (other.align === 2 ? 1 : 2);
       fit.y = Math.min(fit.y, top - gap);
     }
     if (dialogue.length) {
@@ -305,7 +306,7 @@ export function cueLayout(
     for (const i of active) {
       if (i >= index || !isSupplementary(cues[i])) continue;
       const other = regionLayout(cues[i], width, height, st);
-      fit.y -= assSize(other.size) * other.lines.length + gap;
+      fit.y -= fs(other.size) * other.lines.length + gap;
     }
     return fit;
   }
@@ -336,7 +337,7 @@ export function cueLayout(
         else top = Math.max(top, (centerY + otherY) / 2);
         continue;
       }
-      if (Math.abs((box[1] + box[3] - b[1] - b[3]) / 2) >= 2 * assSize(st.size))
+      if (Math.abs((box[1] + box[3] - b[1] - b[3]) / 2) >= 2 * fs(st.size))
         continue;
       const otherCenter = (b[0] + b[2]) / 2;
       if (otherCenter > center)
@@ -354,11 +355,11 @@ export function cueLayout(
       height,
       st,
     );
-    const half = (assSize(fit.size) * fit.lines.length) / 2;
+    const half = (fs(fit.size) * fit.lines.length) / 2;
     fit.y = Math.max(top + half, Math.min(fit.y, bottom - half));
   }
   const lane = assignLanes(cues)[index];
-  if (lane) fit.y = laneY(fit.y, lane, assSize(fit.size));
+  if (lane) fit.y = laneY(fit.y, lane, fs(fit.size));
   return fit;
 }
 
@@ -386,6 +387,8 @@ export function SubtitlePreview({
   blurOriginal,
   subtitleStyle,
   cleanVideo = false,
+  fontId,
+  sample = false,
 }: {
   cues: Cue[];
   now: number;
@@ -396,7 +399,28 @@ export function SubtitlePreview({
   blurOriginal: boolean;
   subtitleStyle?: SubtitleStyle | null;
   cleanVideo?: boolean;
+  fontId?: string;
+  sample?: boolean;
 }) {
+  const selectedId = fontId ?? subtitleStyle?.font_id;
+  const loaded = useSubtitleFont(selectedId);
+  const fontReady = !selectedId || !!loaded?.font;
+  if (
+    sample &&
+    !cues.some((c) => c.text.trim() && c.start <= now && now < c.end)
+  ) {
+    cues = [
+      ...cues,
+      {
+        id: "font-sample",
+        text: "Tiếng Việt đầy đủ dấu — những ngày bình yên",
+        original: "",
+        speaker: "",
+        start: now,
+        end: now + 1,
+      },
+    ];
+  }
   const active = cues
     .map((c, index) => ({ c, index }))
     .filter(({ c }) => c.text.trim() && c.start <= now && now < c.end);
@@ -423,7 +447,7 @@ export function SubtitlePreview({
   const style: CSSProperties = rect.width
     ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
     : { inset: 0 };
-  const st = subtitleStyle ?? {
+  const base = subtitleStyle ?? {
     font: "Roboto",
     bold: true,
     size: Math.round(height * (height > width ? 0.045 : 0.055)),
@@ -431,6 +455,16 @@ export function SubtitlePreview({
     max_lines: 2,
     margin_v: Math.round(height * 0.04),
   };
+  const st: SubtitleStyle = loaded?.font
+    ? {
+        ...base,
+        font: loaded.font.family,
+        font_id: loaded.font.id,
+        cell: loaded.font.cell,
+        advances: loaded.font.advances,
+      }
+    : base;
+  const cell = st.cell ?? LIBASS_CELL;
   const ratio = rect.height && height ? rect.height / height : 0;
   // Same typography as the exported ASS: size and outline scale with displayed/video height.
   const outline = ratio ? st.outline * ratio : 0;
@@ -463,73 +497,81 @@ export function SubtitlePreview({
             }}
           />
         ))}
-      {active.map(({ c, index }) => {
-        const fit = cueLayout(cues, index, width, height, now, st);
-        const fs = assSize(fit.size);
-        const x = Math.round(fit.x),
-          y = Math.round(fit.y);
-        let remaining = revealWords(c, now);
-        return (
-          <div
-            key={c.id}
-            className={`vietnamese-preview${fit.align === 2 ? " at-bottom" : ""}`}
-            aria-label="Phụ đề Việt xem trước"
-            style={{
-              left: `${(x / width) * 100}%`,
-              top: `${(y / height) * 100}%`,
-              maxWidth: `${(fit.available / width) * 100}%`,
-              fontSize: ratio ? (fs / LIBASS_CELL) * ratio : 16,
-              lineHeight: LIBASS_CELL,
-              WebkitTextStrokeWidth: outline * 2,
-            }}
-          >
-            <span>
-              {remaining === null
-                ? fit.lines.join("\n")
-                : fit.lines.map((line, i) => {
-                    const words = line.split(/\s+/).filter(Boolean);
-                    const shown = Math.max(
-                      0,
-                      Math.min(remaining!, words.length),
-                    );
-                    remaining! -= shown;
-                    const visible = words.slice(0, shown).join(" ");
-                    const hidden = words.slice(shown).join(" ");
-                    return (
-                      <span key={i}>
-                        {i > 0 ? "\n" : ""}
-                        {visible}
-                        {hidden && (
-                          <span
-                            aria-hidden="true"
-                            style={{ visibility: "hidden" }}
-                          >
-                            {(visible ? " " : "") + hidden}
-                          </span>
-                        )}
-                      </span>
-                    );
-                  })}
-            </span>
-          </div>
-        );
-      })}
-      {visible
-        .filter((r) => r.kind === "transient" && r.translation?.trim())
-        .map((r, i) => (
-          <div
-            key={r.id + "-" + i}
-            className="preview-translated-note"
-            style={{
-              left: `${((r.x + r.width / 2) / width) * 100}%`,
-              top: `${((r.y + r.height / 2) / height) * 100}%`,
-              fontSize: ratio ? r.height * 0.78 * ratio : 16,
-              WebkitTextStrokeWidth: outline * 2,
-            }}
-          >
-            {r.translation}
-          </div>
-        ))}
+      {loaded?.error && <span role="alert">{loaded.error}</span>}
+      {fontReady &&
+        active.map(({ c, index }) => {
+          const fit = cueLayout(cues, index, width, height, now, st);
+          const fs = assSize(fit.size, cell);
+          const x = Math.round(fit.x),
+            y = Math.round(fit.y);
+          let remaining = revealWords(c, now);
+          return (
+            <div
+              key={c.id}
+              className={`vietnamese-preview${fit.align === 2 ? " at-bottom" : ""}`}
+              aria-label="Phụ đề Việt xem trước"
+              style={{
+                left: `${(x / width) * 100}%`,
+                top: `${(y / height) * 100}%`,
+                maxWidth: `${(fit.available / width) * 100}%`,
+                fontSize: ratio ? (fs / cell) * ratio : 16,
+                lineHeight: cell,
+                fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
+                WebkitTextStrokeWidth: outline * 2,
+              }}
+            >
+              <span>
+                {remaining === null
+                  ? fit.lines.join("\n")
+                  : fit.lines.map((line, i) => {
+                      const words = line.split(/\s+/).filter(Boolean);
+                      const shown = Math.max(
+                        0,
+                        Math.min(remaining!, words.length),
+                      );
+                      remaining! -= shown;
+                      const visible = words.slice(0, shown).join(" ");
+                      const hidden = words.slice(shown).join(" ");
+                      return (
+                        <span key={i}>
+                          {i > 0 ? "\n" : ""}
+                          {visible}
+                          {hidden && (
+                            <span
+                              aria-hidden="true"
+                              style={{ visibility: "hidden" }}
+                            >
+                              {(visible ? " " : "") + hidden}
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })}
+              </span>
+            </div>
+          );
+        })}
+      {fontReady &&
+        visible
+          .filter((r) => r.kind === "transient" && r.translation?.trim())
+          .map((r, i) => (
+            <div
+              key={r.id + "-" + i}
+              className="preview-translated-note"
+              style={{
+                left: `${((r.x + r.width / 2) / width) * 100}%`,
+                top: `${((r.y + r.height / 2) / height) * 100}%`,
+                fontSize: ratio
+                  ? (assSize(r.height * 0.78, cell) / cell) * ratio
+                  : 16,
+                lineHeight: cell,
+                fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
+                WebkitTextStrokeWidth: outline * 2,
+              }}
+            >
+              {r.translation}
+            </div>
+          ))}
     </div>
   );
 }

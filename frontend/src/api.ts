@@ -6,6 +6,7 @@ import type {
   TranslateScope,
   Health,
   Job,
+  FontCatalog,
   Logo,
   Mode,
   Overlay,
@@ -92,6 +93,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 const key = encodeURIComponent;
 export const api = {
+  fonts: () => request<FontCatalog>("/fonts"),
   quality: (id: string) => request<ExportQuality>(`/jobs/${key(id)}/quality`),
   translationHistory: (id: string) => request<TranslationSnapshot[]>(`/jobs/${key(id)}/translation-history`),
   translationSnapshot: (id: string, snapshot: string) => request<TranslationSnapshot>(`/jobs/${key(id)}/translation-history/${key(snapshot)}`),
@@ -107,7 +109,7 @@ export const api = {
     request<Job>("/jobs", { method: "POST", body: data }),
   updateJob: (
     id: string,
-    data: { mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string; setting?: AddressSetting },
+    data: { subtitle_font?: string; mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string; setting?: AddressSetting },
   ) => request<Job>(`/jobs/${key(id)}`, json("PUT", data)),
   action: (id: string, action: "analyze" | "translate" | "render" | "cancel") =>
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),

@@ -2,6 +2,7 @@ import { request } from "./api";
 import type { DefaultOverlay, Job, Mode } from "./types";
 export type Provider = "gemini" | "openai" | "anthropic";
 export interface StudioSettings {
+  default_subtitle_font?: string;
   output_dir: string;
   organize_by_collection: boolean;
   collision: "number" | "ask";

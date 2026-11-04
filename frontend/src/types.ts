@@ -82,6 +82,7 @@ export interface Job {
   ready_count: number;
   dry_url?: string | null;
   zip_url?: string | null;
+  subtitle_font?: string;
   subtitle_style?: SubtitleStyle;
   translation_usage?: TranslationUsage | null;
   setting?: AddressSetting;
@@ -113,12 +114,29 @@ export interface TranslateEstimate {
 }
 export type TranslateScope = "missing" | "all";
 export interface SubtitleStyle {
+  font_id?: string;
+  cell?: number;
+  advances?: Record<string, number>;
   font: string;
   bold: boolean;
   size: number;
   outline: number;
   max_lines: number;
   margin_v: number;
+}
+export interface SubtitleFont {
+  id: string;
+  name: string;
+  file: string;
+  family: string;
+  group: string;
+  cell: number;
+  url: string;
+  advances: Record<string, number>;
+}
+export interface FontCatalog {
+  default: string;
+  fonts: SubtitleFont[];
 }
 export interface Cue {
   id: string;

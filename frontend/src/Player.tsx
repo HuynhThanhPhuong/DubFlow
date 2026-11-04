@@ -28,8 +28,10 @@ export function Player({
   onOpenRegions,
   onAddCue,
   editingDisabled = false,
+  previewFont,
 }: {
   job: Job;
+  previewFont?: string;
   cues: Cue[];
   onTime: (t: number) => void;
   seek: { time: number; token: number };
@@ -43,7 +45,8 @@ export function Player({
   const hasVietnamese = cues.some((c) => c.text.trim());
   const preferred =
     job.output_url && !draft ? "output" : hasVietnamese ? "preview" : "source";
-  const [view, setView] = useState<"source" | "preview" | "output">(preferred);
+  const [chosenView, setView] = useState<"source" | "preview" | "output">(preferred);
+  const view = previewFont ? "preview" : chosenView;
   const [error, setError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const pendingSeek = useRef<number | null>(null);
@@ -493,6 +496,8 @@ export function Player({
             rect={rect}
             blurOriginal={blurOriginal}
             subtitleStyle={job.subtitle_style}
+            fontId={previewFont}
+            sample={!!previewFont}
             cleanVideo={!!cleanSource}
           />
         )}
@@ -670,6 +675,7 @@ export function Timeline({
   onSplit,
 }: {
   job: Job;
+  previewFont?: string;
   cues: Cue[];
   now: number;
   onSeek: (time: number) => void;

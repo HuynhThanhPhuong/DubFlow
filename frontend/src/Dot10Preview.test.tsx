@@ -75,7 +75,7 @@ it("keeps full ASS wrapping and invisible word tails through absolute reveal bou
   expect(nodes()[0].querySelector('[aria-hidden="true"]')?.textContent).toBe(
     "trở về nhà an toàn nhé",
   );
-  expect(parseFloat(nodes()[0].style.fontSize)).toBeCloseTo(46 / (2701 / 2048));
+  expect(parseFloat(nodes()[0].style.fontSize)).toBeCloseTo(47 / (2701 / 2048));
   rerender(<SubtitlePreview {...props} cues={[cue, right]} now={3} />);
   expect(nodes()[0].querySelector('[aria-hidden="true"]')).toBeNull();
   expect(nodes()[0].textContent).toBe(
@@ -127,7 +127,7 @@ it.each([{ orientation: "v" as const }, { kind: "supplementary" as const }])(
       47 / (2701 / 2048),
     );
     rerender(<SubtitlePreview {...props} cues={[left, right, aux]} now={2} />);
-    expect(parseFloat(nodes()[2].style.top)).toBeCloseTo((590 / 720) * 100);
+    expect(parseFloat(nodes()[2].style.top)).toBeCloseTo((589 / 720) * 100);
     rerender(<SubtitlePreview {...props} cues={[left, right, aux]} now={4} />);
     expect(parseFloat(nodes()[1].style.top)).toBeCloseTo((610 / 720) * 100);
     rerender(
