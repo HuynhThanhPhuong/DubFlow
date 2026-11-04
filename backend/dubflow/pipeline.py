@@ -19,11 +19,13 @@ import shutil
 if __package__:
     from .messages import translate_message
     from .textcheck import needs_translation, screen_text_noise
+    from .font_catalog import FONTS, FONTS_DIR, legacy_font
     from .subtitle_style import is_supplementary
     from . import analysis_regions, procjob
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
     from textcheck import needs_translation, screen_text_noise
+    from font_catalog import FONTS, FONTS_DIR, legacy_font
     from subtitle_style import is_supplementary
     import analysis_regions
     import procjob
@@ -1215,13 +1217,14 @@ def ass_time(value):
     c = round(max(0,value)*100)
     return f'{c//360000}:{c//6000%60:02}:{c//100%60:02}.{c%100:02}'
 
-def make_ass(cues, regions, width, height):
+def make_ass(cues, regions, width, height, font_id=None):
     if __package__:
         from .subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
     else:
         from subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
-    st = style_for(width, height)
-    font_size = ass_size(st['size'])  # libass cell height of the visible size
+    st = style_for(width, height, font_id) if font_id else style_for(width, height)
+    font_id = st['font_id']
+    font_size = ass_size(st['size'], font_id)  # libass cell height of the visible size
     out = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -1269,7 +1272,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 text = r'\N'.join(parts)
                 if count >= len(cue.get('text','').split()):
                     text = ass_escape('\n'.join(fit['lines']))
-            signature = (text, pixel_round(fit['x']), pixel_round(fit['y']), ass_size(fit['size']), fit['align'])
+            signature = (text, pixel_round(fit['x']), pixel_round(fit['y']), ass_size(fit['size'], font_id), fit['align'])
             if pending and pending[2] == signature:
                 pending = (pending[0], end, signature)
             else:
@@ -1303,7 +1306,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             else:
                 spans.append([r['start'],r['end']])
         for start,end in spans:
-            out += event(start,end,group[0]['translation'],x,y,size,4)
+            out += event(start,end,group[0]['translation'],x,y,ass_size(size, font_id),4)
     return out
 
 def render_key(directory, command, graph_text, meta, mask_files=()):
@@ -1321,7 +1324,7 @@ def render_key(directory, command, graph_text, meta, mask_files=()):
         else:
             stamps[name] = file_hash(path)
     size = dict(width=meta.get('width'), height=meta.get('height'), fps=meta.get('fps'), duration=meta.get('duration'))
-    key = dict(version=1, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size)
+    key = dict(version=2, fonts={f['id']: file_hash(FONTS_DIR/f['file']) for f in FONTS}, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size)
     applied = (read(directory/REGIONS_APPLIED, None) or {}).get('key')
     if applied:  # the analysis regions the masks / clean.mp4 were built from (absent for jobs without drawn regions)
         key['regions'] = applied
@@ -1329,6 +1332,9 @@ def render_key(directory, command, graph_text, meta, mask_files=()):
 
 def render(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
+    if not job.get('subtitle_font'):
+        job['subtitle_font'] = legacy_font(job, directory)
+        write(directory/'job.json', job)
     cues = read(directory/'cues.json', [])
     if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
@@ -1384,7 +1390,7 @@ def render(job_dir, settings, emit):
             failed.unlink(missing_ok=True)
         else:
             render_warnings.append('Không xóa được sub gốc và logo bằng bộ xóa; video xuất dùng làm mờ thường ở các vùng đó.')
-    (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height']),encoding='utf-8-sig')
+    (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height'],legacy_font(job, directory)),encoding='utf-8-sig')
     ff = getattr(settings,'ffmpeg','ffmpeg')
     cmd = [ff,'-v','error','-y','-filter_complex_threads','2','-i',str(source)]
     if __package__:

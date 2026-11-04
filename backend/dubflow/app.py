@@ -33,7 +33,8 @@ from . import review
 from . import analysis_regions, lifecycle, translation_history
 from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale, without_supplementary_masks
 from .store import Store, push_activity
-from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
+from .subtitle_style import FONTS_DIR, style_for
+from .font_catalog import FONTS, public_catalog, legacy_font
 from .messages import translate_message
 from .voices import all_voices, check_audio, get_voice, public_voice, voice_ref
 
@@ -153,7 +154,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 # the heartbeat is only refreshed between tasks, so a running task also proves the worker is alive
                 info['worker_alive'] = info['running_ahead'] or (isinstance(beat.get('time'), (int, float)) and time.time() - beat['time'] < 15)
                 value['queue'] = info
-        value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080))
+        value['subtitle_font'] = legacy_font(job, folder)
+        value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080), value['subtitle_font'])
         value['analysis_regions'] = job.get('analysis_regions')
         return value
 
@@ -241,11 +243,15 @@ def create_app(settings: Settings | None = None, start_worker=True):
         return dict(status='ok', queue_backend=settings.queue_backend, capabilities=capabilities, warnings=warnings,
                     worker=read_json(lock, {}), disk_free_bytes=shutil.disk_usage(settings.data_dir).free)
 
+    @app.get('/api/fonts')
+    def fonts():
+        return public_catalog()
+
     @app.get('/api/fonts/{name}')
     def font_file(name: str):
-        if name != FONT_FILE:
+        if name not in {f['file'] for f in FONTS}:
             raise HTTPException(404, 'Không tìm thấy font.')
-        return FileResponse(FONTS_DIR / FONT_FILE, media_type='font/ttf', headers={'Cache-Control': 'public, max-age=86400'})
+        return FileResponse(FONTS_DIR / name, media_type='font/ttf', headers={'Cache-Control': 'public, max-age=86400'})
 
     @app.get('/api/jobs')
     def jobs():
@@ -330,7 +336,13 @@ def create_app(settings: Settings | None = None, start_worker=True):
             fields['voice_ref'] = voice_ref(v) if v else None
         if fields.get('mode') is None:
             fields.pop('mode', None)
-        job = store.update_job(job_id, **fields)
+        try:
+            with store.edit_idle_job(job_id) as current:
+                if 'subtitle_font' in fields and fields['subtitle_font'] != current.get('subtitle_font') and current['status'] != 'awaiting_regions':
+                    current.update(status='awaiting_review', stage='awaiting_review', error=None)
+                current.update(fields)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
         if any(key in fields and fields[key] != previous.get(key) for key in ('mode','voice_id','voice_ref')):
             invalidate(job_id)
         save_job_file(store.get_job(job_id))

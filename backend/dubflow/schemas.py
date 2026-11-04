@@ -1,5 +1,6 @@
 from typing import Annotated, Literal
-from pydantic import BaseModel, Field, FiniteFloat, ConfigDict, model_validator
+from pydantic import BaseModel, Field, FiniteFloat, ConfigDict, model_validator, field_validator
+from .font_catalog import DEFAULT_FONT, get_font
 
 
 class RevealPoint(BaseModel):
@@ -178,6 +179,14 @@ class Part(BaseModel):
 
 
 class JobUpdate(BaseModel):
+    subtitle_font: str = DEFAULT_FONT
+
+    @field_validator('subtitle_font')
+    @classmethod
+    def subtitle_font_valid(cls, value):
+        get_font(value)
+        return value
+
     setting: Literal['auto', 'modern', 'ancient'] = 'auto'
     collection_id: str | None = Field(default=None, max_length=100)
     episode: str = Field(default="", max_length=100)

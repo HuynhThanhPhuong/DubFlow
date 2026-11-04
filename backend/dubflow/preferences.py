@@ -2,6 +2,7 @@
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 from typing import Literal
+from .font_catalog import DEFAULT_FONT, get_font
 
 class DefaultOverlay(BaseModel):
     """Logo placed on every new job; fractions of the frame (top-left corner, width), height from the logo's aspect."""
@@ -38,6 +39,7 @@ class Preferences(BaseModel):
     max_input_tokens: int = Field(default=200000, ge=1000, le=10000000)
     thinking: Literal['default', 'low', 'high'] = 'default'
     default_mode: Literal['dub','tm','vietsub'] = 'dub'
+    default_subtitle_font: str = DEFAULT_FONT
     default_voice_id: str | None = Field(default=None, max_length=100)
     blur_original: bool = True
     original_gain: FiniteFloat = Field(default=.32, ge=0, le=1)  # TM: original audio under the voice
@@ -47,6 +49,12 @@ class Preferences(BaseModel):
     default_overlay: DefaultOverlay | None = None
     toast_success_ms: int = Field(default=3000, ge=500, le=60000)
     toast_error_ms: int = Field(default=5000, ge=500, le=60000)
+
+    @field_validator('default_subtitle_font')
+    @classmethod
+    def subtitle_font_valid(cls, value):
+        get_font(value)
+        return value
 
     @field_validator('output_dir')
     @classmethod

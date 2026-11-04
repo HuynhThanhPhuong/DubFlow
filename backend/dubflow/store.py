@@ -5,6 +5,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from .font_catalog import DEFAULT_FONT, get_font, legacy_font
 
 
 def now():
@@ -39,6 +40,12 @@ class Store:
                 CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, action TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT, updated_at TEXT);
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_job ON tasks(job_id) WHERE state IN ('pending','running');
             ''')
+            db.execute('BEGIN IMMEDIATE')
+            for row in db.execute('SELECT id,body FROM jobs').fetchall():
+                job = json.loads(row['body'])
+                if not job.get('subtitle_font'):
+                    job['subtitle_font'] = legacy_font(job, self.path.parent/'jobs'/row['id'])
+                    db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), row['id']))
 
     @contextmanager
     def connect(self):
@@ -59,6 +66,10 @@ class Store:
                    cue_count=0, ready_count=0, collection_id=None, episode='', exported_paths=[], export_dir=None, created_at=now(), updated_at=now())
         job.update(values)
         with self.connect() as db:
+            record = db.execute("SELECT body FROM studio_records WHERE kind='settings' AND id='main'").fetchone()
+            prefs = json.loads(record['body']) if record else {}
+            job.setdefault('subtitle_font', prefs.get('default_subtitle_font', DEFAULT_FONT))
+            get_font(job['subtitle_font'])
             db.execute('INSERT INTO jobs VALUES (?,?)', (job['id'], json.dumps(job, ensure_ascii=False)))
         return job
 

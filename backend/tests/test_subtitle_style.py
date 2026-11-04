@@ -14,7 +14,7 @@ from dubflow.subtitle_style import FONTS_DIR, ffmpeg_filter_path, style_for, wra
 class SubtitleStyleTests(unittest.TestCase):
     def test_style_values(self):
         a = style_for(1920, 1080)
-        self.assertEqual((a['size'], a['outline'], a['font'], a['bold'], a['max_lines']), (59, 3.0, 'Roboto', True, 2))
+        self.assertEqual((a['size'], a['outline'], a['font'], a['bold'], a['max_lines']), (59, 3.0, 'Public Sans', True, 2))
         self.assertEqual(a['margin_v'], 43)
         b = style_for(1080, 1920)
         self.assertEqual((b['size'], b['outline']), (86, 5.3))
@@ -42,11 +42,11 @@ class SubtitleStyleTests(unittest.TestCase):
     def test_ass_style_and_events(self):
         ass = p.make_ass([dict(start=0, end=1, text='Xin chào', box=[100, 900, 500, 1000]), dict(start=2, end=3, text='Chào')], [], 1920, 1080)
         style = next(l for l in ass.splitlines() if l.startswith('Style:')).split(',')
-        self.assertEqual(style[1], 'Roboto')
+        self.assertEqual(style[1], 'Public Sans')
         self.assertEqual(style[7], '-1')
         self.assertEqual(style[15], '1')
         self.assertEqual(float(style[16]), style_for(1920, 1080)['outline'])
-        self.assertEqual(re.findall(r'\\fs(\d+)', ass), ['78', '78'])  # round(59 * 2701/2048)
+        self.assertEqual(re.findall(r'\\fs(\d+)', ass), ['83', '83'])  # round(59 * Public Sans cell)
         self.assertIn(r'\an5\pos(300,950)', ass)
         self.assertIn(r'\an2\pos(960,1037)', ass)
 
@@ -67,8 +67,8 @@ class SubtitleStyleTests(unittest.TestCase):
         self.assertEqual(assign_lanes(cues), [0, 1, 0])
         ass = p.make_ass(cues, [], 1920, 1080)
         ys = [int(y) for y in re.findall(r'\\pos\(960,(\d+)\)', ass)]
-        # The short source box reaches the 60% minimum, ASS cell size 47.
-        self.assertEqual(ys, [1000, 1000 - 3 * 47, 1000])
+        # The short source box reaches the 60% minimum, Public Sans cell size 50.
+        self.assertEqual(ys, [1000, 1000 - 3 * 50, 1000])
 
     def test_filter_path_apostrophe(self):
         self.assertEqual(ffmpeg_filter_path(Path('C:/it\'s/f')).split('/')[1], "it'\\''s")
