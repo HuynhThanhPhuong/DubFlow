@@ -98,14 +98,14 @@ def _key(value):
 
 def source_key(cfg):
     """What decides the source cues: whether there are hard subs and where the band is (logos and screen text do not)."""
-    return _key(dict(v=3, no_hard_subs=cfg['no_hard_subs'], subtitles=subtitle_regions(cfg)))
+    return _key(dict(v=4, no_hard_subs=cfg['no_hard_subs'], subtitles=subtitle_regions(cfg)))
 
 
 def source_matches(cfg, key):
     """Recognize pre-dot8 stamps without rebuilding paid translations on upgrade."""
     subs = subtitle_regions(cfg)
     legacy_ok = not subs or (len(subs) == 1 and subs[0]['orientation'] == 'h')
-    return key == source_key(cfg) or (legacy_ok and key == _key(dict(v=2, no_hard_subs=cfg['no_hard_subs'], subtitle=cfg.get('subtitle'))))
+    return key in (source_key(cfg), _key(dict(v=3, no_hard_subs=cfg['no_hard_subs'], subtitles=subs))) or (legacy_ok and key == _key(dict(v=2, no_hard_subs=cfg['no_hard_subs'], subtitle=cfg.get('subtitle'))))
 
 
 def screen_key(cfg):

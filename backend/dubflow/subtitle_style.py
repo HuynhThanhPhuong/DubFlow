@@ -107,6 +107,8 @@ def assign_lanes(cues) -> list[int]:
     lanes = [0] * len(cues)
     for i in order:
         c = cues[i]
+        if is_supplementary(c) or (c.get('region') is not None and c.get('box')):
+            continue  # OCR clusters have physical positions; auxiliary captions stack separately.
         group = ('region', c['region']) if c.get('region') is not None and c.get('box') else ('legacy',)
         ends = groups.setdefault(group, [])
         lane = next((k for k, end in enumerate(ends) if end <= c['start']), len(ends))
@@ -130,38 +132,154 @@ def available_width(box, width: int) -> float:
 def region_layout(cue, width: int, height: int, st=None):
     """Pixel layout shared with the browser. Cue boxes use xyxy, regions use xywh."""
     st = st or style_for(width, height)
+    if is_supplementary(cue):
+        text = '[' + str(cue.get('text', '')).strip().strip('[]').strip() + ']'
+        size = st['size'] * .9
+        available = max(20, width-20)
+        lines = _wrap(text, ass_size(size)/ASS_CELL, available, region_units)
+        while len(lines) > 2 and size > st['size']*.54+.01:
+            size = max(st['size']*.54, size-st['size']*.009)
+            lines = _wrap(text, ass_size(size)/ASS_CELL, available, region_units)
+        if len(lines) > 2:
+            lines = [lines[0], ' '.join(lines[1:])]
+        return dict(x=width/2, y=height-st['margin_v'], align=2, size=size,
+                    lines=lines, available=available, overflow=False)
     text, box = cue.get('text', ''), cue.get('box')
     if not box or len(box) != 4:
         lines, size = fit_lines(text, st['size'], available_width(None, width), st['max_lines'])
         return dict(x=width/2, y=height-st['margin_v'], align=2, size=size, lines=lines,
                     available=available_width(None, width), overflow=len(lines) > st['max_lines'])
     x0, y0, x1, y1 = box
+    # A measured cluster may use the surrounding band for translated text.
+    # cue_layout adds the constraints from other captions active at this time.
+    if cue.get('band'):
+        band = cue['band']
+        center = (x0+x1)/2
+        available = max(1, 2*min(center-max(0,band[0]), min(width,band[2])-center))
+        x0, x1 = center-available/2, center+available/2
+        room_h = cue.get('_layout_height') or max(1,band[3]-band[1])
+        y0, y1 = (y0+y1)/2-room_h/2, (y0+y1)/2+room_h/2
     bw, bh = max(1, x1-x0), max(1, y1-y0)
     stroke = 2*st.get('outline', 0)
     minimum, maximum = st['size']*.6, st['size']
-    vertical = cue.get('orientation') == 'v'
-    if vertical:
-        lines = str(text).split()
-        longest = max((region_units(word) for word in lines), default=1)
-        limit = min(maximum, max(1,bw*1.2-stroke)/max(longest, .01), bh/max(1, len(lines))/ASS_CELL)
-        size = max(minimum, limit)
-        # Fit the size libass actually renders after integer font-cell rounding.
-        while (longest*ass_size(size)/ASS_CELL+stroke > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01) and size > minimum+.01:
-            size = max(minimum, size-maximum*.01)
-        overflow = longest*ass_size(size)/ASS_CELL+stroke > bw*1.2+.01 or ass_size(size)*len(lines) > bh+.01
-        available = bw*1.2
-    else:
-        maximum = max(minimum, min(maximum, cue.get('text_height') or maximum))
-        available = max(1,bw-stroke)
-        size, lines = maximum, _wrap(text, ass_size(maximum)/ASS_CELL, available, region_units)
-        while (len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01) and size > minimum+.01:
-            size = max(minimum, size-maximum*.01)
-            lines = _wrap(text, ass_size(size)/ASS_CELL, available, region_units)
-        overflow = len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01
-        if len(lines) > 2:
-            lines = [lines[0], ' '.join(lines[1:])]
-        available = bw
+    normal_minimum = minimum
+    if cue.get('_layout_height'):
+        # A densely stacked strip may require a smaller font to avoid covering
+        # the neighbouring sentence. Keep the readability warning in that case.
+        minimum = min(minimum, max(1, bh/2/ASS_CELL-.5))
+    maximum = max(normal_minimum, min(maximum, cue.get('text_height') or maximum))
+    available = max(1,bw-stroke)
+    size, lines = maximum, _wrap(text, ass_size(maximum)/ASS_CELL, available, region_units)
+    while (len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01) and size > minimum+.01:
+        size = max(minimum, size-maximum*.01)
+        lines = _wrap(text, ass_size(size)/ASS_CELL, available, region_units)
+    overflow = len(lines) > 2 or any(region_units(line)*ass_size(size)/ASS_CELL > available+.01 for line in lines) or ass_size(size)*len(lines) > bh+.01 or size < normal_minimum-.01
+    if len(lines) > 2:
+        lines = [lines[0], ' '.join(lines[1:])]
+    available = bw
     return dict(x=(x0+x1)/2, y=(y0+y1)/2, align=5, size=size, lines=lines, available=available, overflow=overflow)
+
+
+def is_supplementary(cue):
+    """Vertical captions from existing jobs acquire round-10 semantics too."""
+    return cue.get('kind') == 'supplementary' or cue.get('orientation') == 'v'
+
+
+def independent_positions(a, b):
+    """Distinct measured captions can overlap in time without sharing a lane."""
+    if is_supplementary(a) or is_supplementary(b):
+        return True
+    ba, bb = a.get('box'), b.get('box')
+    return bool(ba and bb and (a.get('region') != b.get('region') or
+                ba[2] <= bb[0] or bb[2] <= ba[0] or ba[3] <= bb[1] or bb[3] <= ba[1]))
+
+
+def cue_layout(cues, index, width, height, now, st=None):
+    """Layout at one instant; ASS and preview split on the same active boundaries."""
+    st = st or style_for(width, height)
+    cue = cues[index]
+    active = [i for i, c in enumerate(cues) if c.get('text', '').strip() and c['start'] <= now < c['end']]
+    fit = region_layout(cue, width, height, st)
+    if is_supplementary(cue):
+        dialogue = []
+        for i in active:
+            if not is_supplementary(cues[i]):
+                other = cue_layout(cues, i, width, height, now, st)
+                dialogue.append(other)
+                top = other['y'] - ass_size(other['size'])*len(other['lines'])/(1 if other['align']==2 else 2)
+                fit['y'] = min(fit['y'], top-max(4, st['outline']*2))
+        if dialogue:
+            sized = region_layout(cue, width, height, dict(st,size=max(d['size'] for d in dialogue)))
+            fit.update(size=sized['size'],lines=sized['lines'])
+        for i in active:
+            if i >= index or not is_supplementary(cues[i]):
+                continue
+            other = region_layout(cues[i], width, height, st)
+            fit['y'] -= ass_size(other['size'])*len(other['lines'])+max(4,st['outline']*2)
+        return fit
+    if cue.get('band') and cue.get('box'):
+        box, band = cue['box'], list(cue['band'])
+        center = (box[0]+box[2])/2
+        center_y = (box[1]+box[3])/2
+        top, bottom = band[1], band[3]
+        stacked = False
+        for i in active:
+            other = cues[i]
+            b = other.get('box')
+            if i == index or is_supplementary(other) or not b:
+                continue
+            other_y = (b[1]+b[3])/2
+            overlap = max(0,min(box[2],b[2])-max(box[0],b[0]))
+            if overlap > .25*min(box[2]-box[0],b[2]-b[0]) and abs(center_y-other_y) > .6*min(box[3]-box[1],b[3]-b[1]):
+                stacked = True
+                if other_y > center_y:
+                    bottom = min(bottom,(center_y+other_y)/2)
+                else:
+                    top = max(top,(center_y+other_y)/2)
+                continue
+            # Two translated lines may extend beyond the original glyph height.
+            if abs((box[1]+box[3]-b[1]-b[3])/2) >= 2*ass_size(st['size']):
+                continue
+            other_center = (b[0]+b[2])/2
+            if other_center > center:
+                band[2] = min(band[2], (box[2]+b[0])/2)
+            elif other_center < center:
+                band[0] = max(band[0], (b[2]+box[0])/2)
+        fit = region_layout(dict(cue, band=band, **({'_layout_height':max(1,bottom-top)} if stacked else {})), width, height, st)
+        # Keep both lines inside the drawn strip, including its bottom edge.
+        half = ass_size(fit['size'])*len(fit['lines'])/2
+        fit['y'] = max(top+half, min(fit['y'], bottom-half))
+    lanes = assign_lanes(cues)
+    if lanes[index]:
+        fit['y'] = lane_y(fit['y'], lanes[index], ass_size(fit['size']))
+    return fit
+
+
+def reveal_words(cue, now):
+    """None means the full sentence; animated cues reveal a word prefix."""
+    if is_supplementary(cue) or not cue.get('reveal'):
+        return None
+    points = sorted(cue['reveal'], key=lambda p: p['t'])
+    fraction = 0.0
+    for point in points:
+        if point['t'] > now + 1e-9:
+            break
+        fraction = max(fraction, min(1, max(0,point['fraction'])))
+    return math.ceil(fraction*len(cue.get('text','').split())-1e-9)
+
+
+def cue_intervals(cues, index):
+    """Neighbour appearance affects layout; reveal affects visibility, never wrapping."""
+    cue = cues[index]
+    boundaries = {cue['start'], cue['end']}
+    for c in cues:
+        for t in (c['start'], c['end']):
+            if cue['start'] < t < cue['end']:
+                boundaries.add(t)
+    if not is_supplementary(cue):
+        boundaries.update(p['t'] for p in cue.get('reveal') or [] if cue['start'] < p['t'] < cue['end'])
+    times = sorted(boundaries)
+    return list(zip(times, times[1:]))
 
 
 def overflows(text: str, box, width: int, height: int, orientation=None, text_height=None) -> bool:

@@ -144,7 +144,8 @@ class RegionPrepareTests(unittest.TestCase):
                          [('ocr+asr', '你好吗朋友'), ('ocr', '再见了朋友们'), ('ocr', '最后一句话了')])
         asr = [c for c in cues if c['source'] == 'asr']
         self.assertEqual([c['id'] for c in asr], ['a2'])
-        self.assertEqual(cues[0]['box'], [60, 160, 260, 210])  # selected region, xyxy
+        self.assertEqual(cues[0]['box'], [100, 170, 220, 200])  # measured cluster, xyxy
+        self.assertEqual(cues[0]['band'], [60, 160, 260, 210])
         build = p.read(self.d / 'source-build.json')
         self.assertEqual((build['mode'], build['ocr_cues'], build['asr_cues'], build['asr_dropped']), ('regions', 3, 1, 1))
 
@@ -153,7 +154,7 @@ class RegionPrepareTests(unittest.TestCase):
         rows = p.read(self.d / 'regions.json')
         sub = [r for r in rows if r['kind'] == 'subtitle']
         self.assertEqual([r['text'] for r in sub], ['你好吗朋友', '再见了朋友们', '最后一句话了'])
-        self.assertTrue(all((r['x'], r['y'], r['width'], r['height']) == tuple(BOX) for r in sub))
+        self.assertEqual([(r['x'], r['y'], r['width'], r['height']) for r in sub], [(100,170,120,30),(100,170,100,30),(100,170,100,30)])
         self.assertAlmostEqual(sub[0]['end'], sub[1]['start'], places=3)  # 2.5 s and 3.0 s: bridged, the sub never shows through
         logos = [r for r in rows if r['kind'] == 'static']
         self.assertEqual([(r['x'], r['y'], r['width'], r['height'], r['start'], r['end']) for r in logos], [(5, 5, 40, 20, 0.0, 12.0)])

@@ -1,6 +1,7 @@
 """Dialogue-only source export; explicit annotations are not spoken lines."""
 import re
 import unicodedata
+from .subtitle_style import is_supplementary
 
 BRACKET = re.compile(r'\[[^\]]*\]|【[^】]*】|\([^)]*\)|（[^）]*）')
 LABELS = {'lời bài hát', 'nhạc nền', 'âm nhạc', 'tiếng nhạc', 'lyrics', 'music',
@@ -14,6 +15,10 @@ def normalized(value):
 def dialogue_source_cues(cues):
     out = []
     for cue in cues:
+        if is_supplementary(cue):
+            if cue.get('original', '').strip():
+                out.append(dict(cue, text=cue['original'].strip()))
+            continue
         if cue.get('kind') in ('lyrics', 'music', 'note', 'sfx'):
             continue
         original = cue.get('original', '').strip()

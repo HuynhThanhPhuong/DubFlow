@@ -15,6 +15,7 @@ from .translate_api import LABELS, ProviderError, make_provider
 from .textcheck import needs_translation
 from .translate_job import CONTEXT_FILE, PROMPT_VERSION, Item, RateLimiter, plan_translation, run_translation
 from .address_rules import normalize_setting
+from .subtitle_style import is_supplementary
 from .translation_history import save_snapshot
 
 REQUEST_FILE = 'translate-request.json'
@@ -68,7 +69,7 @@ def collect_items(folder: Path, scope: str) -> list[Item]:
     for c in _read(folder / 'cues.json', []):
         zh = str(c.get('original') or '').strip()
         if zh and (scope == 'all' or not str(c.get('text') or '').strip()):
-            items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), str(c.get('speaker') or ''), 'cue'))
+            items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), '' if is_supplementary(c) else str(c.get('speaker') or ''), 'supplementary' if is_supplementary(c) else 'cue'))
     for r in _read(folder / 'regions.json', []):
         if not (r.get('enabled') and r.get('kind') == 'transient' and str(r.get('text') or '').strip() and needs_translation(r.get('text'))):
             continue

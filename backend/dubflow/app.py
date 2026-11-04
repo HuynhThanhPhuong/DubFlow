@@ -31,7 +31,7 @@ from . import logos as logo_lib
 from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
 from . import review
 from . import analysis_regions, lifecycle, translation_history
-from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale
+from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale, without_supplementary_masks
 from .store import Store, push_activity
 from .subtitle_style import FONT_FILE, FONTS_DIR, style_for
 from .messages import translate_message
@@ -382,9 +382,11 @@ def create_app(settings: Settings | None = None, start_worker=True):
         job = job_or_404(job_id)
         chosen = mode or (job.get('mode') if job.get('mode') in ('vietsub', 'tm', 'dub') else 'vietsub')
         collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
+        from .dialogue_export import dialogue_source_cues
+        prompt_cues = dialogue_source_cues(sorted(read_json(job_dir(job_id)/'cues.json', []), key=lambda c:(c['start'],c['end'])))
         text = prompt_text(chosen, preferences(store, settings)['vietsub_cps'], terminology_for(job),
                            setting=setting or job.get('setting', 'auto'), video_title=job.get('title', ''),
-                           collection_name=(collection or {}).get('name', ''))
+                           collection_name=(collection or {}).get('name', ''), cues=prompt_cues)
         return Response(text.encode('utf-8'), media_type='text/plain; charset=utf-8')
 
     @app.post('/api/jobs/{job_id}/translation-srt')
@@ -432,8 +434,12 @@ def create_app(settings: Settings | None = None, start_worker=True):
         review.load_state(job_dir(job_id))
         values = validate_cues(cs, job)
         old={c['id']:c for c in read_json(job_dir(job_id)/'cues.json',[])}
+        supplied = {c.id: c.model_fields_set for c in cs}
         # Discard client-reported ASR success; synthesis cache is rechecked by the worker.
         for c in values:
+            for key in ('box','band','region','orientation','text_height','cluster','kind','reveal'):
+                if key not in supplied.get(c['id'], set()) and key in old.get(c['id'], {}):
+                    c[key] = old[c['id']][key]
             if old.get(c['id'],{}).get('translation_dependency'):
                 c['translation_dependency']=old[c['id']]['translation_dependency']
             c.update(status='pending', asr_edits=None, take_url=None, delay=None, overrun=None)
@@ -479,6 +485,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
     def decorate_regions(job_id, j, rows):
         """Response-only fields (never stored): erased flag of static regions and preview mask urls."""
         folder=job_dir(job_id)
+        rows = without_supplementary_masks(rows, read_json(folder/'cues.json', []), analysis_regions.usable(j.get('analysis_regions')))
         if j.get('source_path') and (folder / 'clean.mp4').is_file() and erase_current(folder, j['source_path'], full=False):
             erased=set(read_json(folder / 'erase.json',{}).get('static_ids') or [])
             for row in rows:

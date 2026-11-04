@@ -11,7 +11,7 @@ from .pipeline import read, write
 _LOCK = threading.RLock()
 _ID = re.compile(r'^[a-f0-9]{32}$')
 FIELDS = ('start', 'end', 'original', 'text')
-REGION_FIELDS = ('region', 'box', 'orientation', 'text_height')
+REGION_FIELDS = ('region', 'box', 'orientation', 'text_height', 'band', 'cluster', 'kind', 'reveal')
 META = ('provider', 'model', 'requests', 'input_tokens', 'output_tokens', 'cost_usd', 'error')
 
 

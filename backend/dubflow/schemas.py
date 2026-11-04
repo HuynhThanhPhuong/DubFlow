@@ -2,6 +2,11 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, FiniteFloat, ConfigDict, model_validator
 
 
+class RevealPoint(BaseModel):
+    t: FiniteFloat = Field(ge=0)
+    fraction: FiniteFloat = Field(ge=0, le=1)
+
+
 class Cue(BaseModel):
     id: str = Field(max_length=100)
     start: FiniteFloat = Field(ge=0)
@@ -27,6 +32,10 @@ class Cue(BaseModel):
     region: int | None = Field(default=None, ge=0, le=5)
     orientation: Literal['h', 'v'] | None = None
     text_height: FiniteFloat | None = Field(default=None, gt=0)
+    band: list[FiniteFloat] | None = Field(default=None, min_length=4, max_length=4)
+    kind: str | None = Field(default=None, max_length=100)
+    cluster: int | str | None = None
+    reveal: list[RevealPoint] | None = Field(default=None, max_length=20000)
 
 
 class Character(BaseModel):

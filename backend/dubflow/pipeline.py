@@ -19,10 +19,12 @@ import shutil
 if __package__:
     from .messages import translate_message
     from .textcheck import needs_translation, screen_text_noise
+    from .subtitle_style import is_supplementary
     from . import analysis_regions, procjob
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
     from textcheck import needs_translation, screen_text_noise
+    from subtitle_style import is_supplementary
     import analysis_regions
     import procjob
 
@@ -446,6 +448,29 @@ def refine_text_regions(directory, source, meta, settings, emit):
     return merged
 
 
+def without_supplementary_masks(regions, cues, cfg=None):
+    """Ignore persisted round-8 vertical erasure rows when opening an old job."""
+    auxiliary = [c for c in cues if is_supplementary(c)]
+    indexes = {c['region'] for c in auxiliary if c.get('region') is not None}
+    if cfg:
+        indexes.update(i for i,r in enumerate(analysis_regions.subtitle_regions(cfg)) if r['orientation']=='v')
+    result = []
+    for row in regions:
+        if row.get('kind') == 'subtitle':
+            index = row.get('region')
+            match = re.match(r'^subline-(\d+)-', str(row.get('id','')))
+            if index is None and match:
+                index = int(match[1])
+            if is_supplementary(row) or index in indexes:
+                continue
+            if index is None and any(c.get('box') and row.get('x') == c['box'][0] and row.get('y') == c['box'][1]
+                                      and row.get('width') == c['box'][2]-c['box'][0]
+                                      and row.get('height') == c['box'][3]-c['box'][1] for c in auxiliary):
+                continue
+        result.append(row)
+    return result
+
+
 def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
     """RMS per 20 ms frame of the mono 16 kHz decode of `path`; returns (rms, hop_seconds)."""
     import numpy as np
@@ -504,7 +529,10 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
             region = segment.setdefault('region', 0)
             spec = analysis_regions.subtitle_regions(cfg)[region]
             x, y, w, h = spec['box']
-            segment.update(box=[x, y, x+w, y+h], orientation=spec['orientation'])
+            segment.setdefault('box', [segment.get('x0', x), segment.get('y0', y), segment.get('x1', x+w), segment.get('y1', y+h)])
+            segment.update(band=[x, y, x+w, y+h], orientation=spec['orientation'])
+            if spec['orientation'] == 'v':
+                segment['kind'] = 'supplementary'
             segment.setdefault('text_height', max(1, segment.get('y1', y+h) - segment.get('y0', y)))
         emit('subband', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
         cues = build_source_cues_primary(segments, asr_cues, meta['duration'], stats=stats)
@@ -578,7 +606,7 @@ def ensure_logo_candidates(directory, source, meta, settings, emit, warnings):
     detect_logos(directory, source, meta, settings, emit, warnings)
     return True
 
-ERASE_VERSION = 10
+ERASE_VERSION = 11
 ERASE_KNOBS = dict(erase_static_tol=6.0, lama_reuse_tol=2.5)  # keep equal to STATIC_TOL / LAMA_REUSE_TOL in subtitle_erase.py
 
 def erases_static(r):
@@ -613,7 +641,8 @@ def subtrack_hash(directory):
 
 def erase_wanted(directory):
     """True when clean.mp4 has something to remove: subtitle segments or enabled static regions."""
-    return bool((read(Path(directory)/'subtrack.json', {}) or {}).get('segments')) or bool(erase_static_regions(directory))
+    track = read(Path(directory)/'subtrack.json', {}) or {}
+    return (not is_supplementary(track) and any(not is_supplementary(s) for s in track.get('segments', []))) or bool(erase_static_regions(directory))
 
 def erase_knobs(meta):
     """The static/reuse tolerances a run would use (meta overrides, normally unset)."""
@@ -769,12 +798,17 @@ def region_rows(directory, source, meta, settings, emit, warnings, cfg):
         else:
             from subtitle_lines import erase_windows
         for index, item in enumerate(tracks):
+            specs = analysis_regions.subtitle_regions(cfg)
+            if is_supplementary(item) or (index < len(specs) and specs[index]['orientation'] == 'v'):
+                continue
             box = item.get('box') if item.get('version') == 2 else None
             if not box:
                 continue
-            own = item.get('segments', [])
+            own = [s for s in item.get('segments', []) if not is_supplementary(s)]
             for n, w in enumerate(erase_windows(own, duration), 1):
-                rows.append(dict(id=f'subline-{index}-{n}', region=index, kind='subtitle', x=box[0], y=box[1], width=box[2], height=box[3], start=w['s'], end=w['e'],
+                sg = own[w['line']]
+                bounds = sg.get('box') or [sg.get('x0',box[0]),sg.get('y0',box[1]),sg.get('x1',box[0]+box[2]),sg.get('y1',box[1]+box[3])]
+                rows.append(dict(id=f'subline-{index}-{n}', region=index, kind='subtitle', x=bounds[0], y=bounds[1], width=bounds[2]-bounds[0], height=bounds[3]-bounds[1], start=w['s'], end=w['e'],
                                  text=own[w['line']].get('text', ''), translation='', enabled=True, auto=False, confirmed=True, label=''))
     old_logos = {r['id']: r for r in existing if str(r.get('id', '')).startswith('userlogo-')}
     for n, b in enumerate(cfg['logos'], 1):
@@ -907,7 +941,7 @@ def model_identity(model, cache):
     return 'missing-local-revision'
 
 def cue_inputs(cues):
-    return [{k:c.get(k) for k in ('id','start','end','speaker','original','text')} for c in cues]
+    return [{k:c.get(k) for k in ('id','start','end','speaker','original','text')} for c in cues if not is_supplementary(c)]
 
 OMNI_MODEL = 'k2-fsa/OmniVoice'
 VI_PROMPT = ROOT/'bench/runs/20261027/refs-origreview/vi-prompt.json'
@@ -996,8 +1030,16 @@ def synthesize(job_dir, settings, emit):
         return dict(ready_count=0)
     cues = read(directory/'cues.json', [])
     original_cues=cues
-    if not cues or any(not c.get('text','').strip() for c in cues):
+    if not original_cues or any(not c.get('text','').strip() for c in original_cues):
         raise NeedsReview('Vietnamese cue text must be reviewed before synthesis')
+    cues = [c for c in original_cues if not is_supplementary(c)]
+    if not cues:
+        write(directory/'manifest.json', dict(speed_change=False, lines=[], warnings=[], input_cues=[],
+              mode=job.get('mode'), references=[], parameters=[], voice_ref=job.get('voice_ref')))
+        ff = getattr(settings, 'ffmpeg', 'ffmpeg')
+        run([ff, '-v', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+             '-t', str(meta['duration']), '-c:a', 'pcm_f32le', str(directory/'dry.wav')], cwd=directory)
+        return dict(ready_count=0, lines=[])
     if job.get('mode') == 'dub':
         if __package__:
             from .review import load_state, synthesis_cues
@@ -1153,7 +1195,7 @@ def synthesize(job_dir, settings, emit):
             warnings.append(warning)
             emit('placing', warning, 80)
     write(directory/'manifest.json', dict(speed_change=False, lines=rows, warnings=sim_warnings+warnings, input_cues=cue_inputs(original_cues), mode=job.get('mode'), references=[t['ref'] for t in tasks], parameters=[t['params'] for t in tasks], voice_ref=job.get('voice_ref')))
-    for cue,row in zip(original_cues,rows):
+    for cue,row in zip([c for c in original_cues if not is_supplementary(c)],rows):
         cue.update(status='ready',asr_edits=0,take_path=str(directory/row['path']),delay=row['delay'],overrun=row['overrun'])
     write(directory/'cues.json',original_cues)
     if warnings:
@@ -1175,9 +1217,9 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height):
     if __package__:
-        from .subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout, pixel_round
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
     else:
-        from subtitle_style import style_for, fit_lines, ass_size, available_width, assign_lanes, lane_y, region_layout, pixel_round
+        from subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
     st = style_for(width, height)
     font_size = ass_size(st['size'])  # libass cell height of the visible size
     out = f'''[Script Info]
@@ -1193,8 +1235,8 @@ Style: Default,{st['font']},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
-    def event(start,end,text,x,y,size,align=5):
-        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({pixel_round(x)},{pixel_round(y)})\\fs{max(8,pixel_round(size))}\\q2}}{ass_escape(text)}\n'
+    def event(start,end,text,x,y,size,align=5,styled=False):
+        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({pixel_round(x)},{pixel_round(y)})\\fs{max(8,pixel_round(size))}\\q2}}{text if styled else ass_escape(text)}\n'
     if __package__:
         from .subtitle_mask import refined_regions
     else:
@@ -1208,12 +1250,36 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         right=max(r['x']+r['width'] for r in matches)
         bottom=max(r['y']+r['height'] for r in matches)
         return (left+right)/2,(top+bottom)/2
-    lane_of=assign_lanes(cues)
     for index in sorted(range(len(cues)),key=lambda i:cues[i]['start']):
         cue=cues[index]
-        fit = region_layout(cue, width, height, st)
-        y = fit['y'] if lane_of[index] == 0 else lane_y(fit['y'], lane_of[index], ass_size(fit['size']))
-        out += event(cue['start'],cue['end'],'\n'.join(fit['lines']),fit['x'],y,ass_size(fit['size']),fit['align'])
+        pending = None
+        for start, end in cue_intervals(cues, index):
+            fit = cue_layout(cues, index, width, height, (start+end)/2, st)
+            count = reveal_words(cue, start)
+            if count is None:
+                text = ass_escape('\n'.join(fit['lines']))
+            else:
+                parts, remaining = [], count
+                for line in fit['lines']:
+                    words = line.split()
+                    shown = max(0, min(remaining, len(words)))
+                    visible, hidden = ' '.join(words[:shown]), ' '.join(words[shown:])
+                    parts.append(ass_escape(visible) + ((' ' if visible else '') + r'{\alpha&HFF&}' + ass_escape(hidden) if hidden else '') + r'{\alpha&H00&}')
+                    remaining -= shown
+                text = r'\N'.join(parts)
+                if count >= len(cue.get('text','').split()):
+                    text = ass_escape('\n'.join(fit['lines']))
+            signature = (text, pixel_round(fit['x']), pixel_round(fit['y']), ass_size(fit['size']), fit['align'])
+            if pending and pending[2] == signature:
+                pending = (pending[0], end, signature)
+            else:
+                if pending:
+                    a,b,args = pending
+                    out += event(a,b,*args,styled=True)
+                pending = (start, end, signature)
+        if pending:
+            a,b,args = pending
+            out += event(a,b,*args,styled=True)
     # Timed OCR boxes for the same on-screen note also share one typography.
     note_groups=[]
     for r in regions:
@@ -1286,16 +1352,18 @@ def render(job_dir, settings, emit):
             raise NeedsReview('Cue or voice settings changed; synthesize again')
         if any(file_hash(ref['path']) != ref['hash'] for ref in manifest.get('references',[])):
             raise NeedsReview('Reference audio changed; synthesize again')
-        if not rows or len(rows) != len(cues) or any(r['text'] != c['text'] or r['end'] > meta['duration'] for r,c in zip(rows,cues)):
+        spoken = [c for c in cues if not is_supplementary(c)]
+        if len(rows) != len(spoken) or any(r['text'] != c['text'] or r['end'] > meta['duration'] for r,c in zip(rows,spoken)):
             raise NeedsReview('Synthesis is missing, changed or exceeds source duration')
         # Re-check timing edits too; stale placements must never be reused.
-        placed = place(cues, [r['end']-r['start'] for r in rows], meta['duration'])
+        placed = place(spoken, [r['end']-r['start'] for r in rows], meta['duration']) if spoken else []
         if any(abs(a['start']-b['start']) > .001 for a,b in zip(placed,rows)):
             raise NeedsReview('Cue timing changed; synthesize placements again')
         # Captions follow source cue intervals; delayed speech placements must
         # not shift the replacement away from the original on-screen text.
     regions = (refine_text_regions(directory,source,meta,settings,emit)
                if getattr(settings,'blur_original',True) else read(directory/'regions.json', []))
+    regions = without_supplementary_masks(regions, cues, analysis_regions.usable(job.get('analysis_regions')))
     if any(r.get('enabled') and r.get('kind') == 'transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip()
            and not screen_text_noise(r, regions) for r in regions):
         raise NeedsReview('Có chữ xuất hiện thoáng qua chưa được dịch. Mở Tuỳ chỉnh vùng chữ để nhập lời Việt trước khi xuất.')
@@ -1324,6 +1392,7 @@ def render(job_dir, settings, emit):
     else:
         from subtitle_mask import refined_regions, windowed_filters
     graph, last = [], '0:v'
+    regions = without_supplementary_masks(regions, cues, analysis_regions.usable(job.get('analysis_regions')))
     mask_regions = refined_regions([r for r in regions if r.get('kind') != 'static' or erases_static(r)],meta['width'],meta['height'],meta['duration'])
     use_clean = (getattr(settings,'blur_original',True) and (directory/'clean.mp4').is_file()
                  and erase_wanted(directory) and erase_current(directory, source, None, full=False))

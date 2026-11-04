@@ -10,11 +10,11 @@ _SAVE_LOCK=threading.RLock()
 
 if __package__:
     from .pipeline import read, write, cache_key, file_hash
-    from .subtitle_style import overflows
+    from .subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals
     from .textcheck import needs_translation, screen_text_noise
 else:
     from pipeline import read, write, cache_key, file_hash
-    from subtitle_style import overflows
+    from subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals
     from textcheck import needs_translation, screen_text_noise
 
 STATE_FIELDS = ('characters', 'assignments', 'address_rules', 'scene_context', 'omissions')
@@ -108,6 +108,8 @@ def _replace_source(folder,cues,previous,reason):
 def synthesis_cues(cues, state, automatic=False):
     result=[]
     for cue in cues:
+        if is_supplementary(cue):
+            continue
         assignment=state.get('assignments',{}).get(cue['id'],{})
         speaker=assignment.get('speaker_confirmed')
         if automatic and (not speaker or state.get('assignment_basis',{}).get(cue['id'])!=role_basis(cue)):
@@ -137,7 +139,10 @@ def current_assignment(cue,state):
 
 
 def translation_dependency(cue, state, cues=None, terminology=''):
-    return cache_key(dict(source={k:cue.get(k) for k in ('id','original','start','end','speaker')},
+    source = {k:cue.get(k) for k in ('id','original','start','end','speaker')}
+    if is_supplementary(cue):
+        source['kind'] = 'supplementary'
+    return cache_key(dict(source=source,
         review={k:state.get(k) for k in STATE_FIELDS},
         speaker_basis=state.get('assignment_basis',{}),listener_basis=state.get('listener_basis',{}),
         nearby_source=[{k:c.get(k) for k in ('id','original','start','end','speaker')} for c in (cues or [])],terminology=terminology or ''))
@@ -199,7 +204,7 @@ def quality_report(folder, job, state=None):
         flag('NO_CUES',[], 'Chưa có nội dung để xuất.', 'error')
     covered=set()
     known={c['id'] for c in state['source_cues']}
-    for c in cues:
+    for cue_index,c in enumerate(cues):
         linked=c.get('source_ids') or ([c['id']] if c['id'] in known else [])
         covered.update(linked)
         if set(linked)-known:
@@ -234,14 +239,16 @@ def quality_report(folder, job, state=None):
             flag('READABILITY',[c['id']], 'Câu ngắn hoặc khó đọc trong thời lượng hiện tại; ngưỡng chỉ để sàng lọc.')
         if text and job.get('mode')=='vietsub' and job.get('vietsub_cps') and len(text)/(e-s)>float(job['vietsub_cps'])*1.15:
             flag('READ_TOO_FAST',[c['id']], 'Câu Việt dài, khó đọc kịp; nên rút gọn.')
-        if text and job.get('mode') in ('tm','dub') and len(text.split())>max(1,math.floor((e-s)*4.5)):
+        if text and not is_supplementary(c) and job.get('mode') in ('tm','dub') and len(text.split())>max(1,math.floor((e-s)*4.5)):
             flag('SPEECH_TOO_LONG',[c['id']], 'Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.')
         if not text and c['id'] in failed_ids:
             flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
-        if text and job.get('width') and job.get('height') and overflows(text,c.get('box'),int(job['width']),int(job['height']),c.get('orientation'),c.get('text_height')):
-            flag('LINES_OVERFLOW',[c['id']], 'Chữ tràn vùng; nên rút gọn lời Việt.')
+        if text and not is_supplementary(c) and job.get('width') and job.get('height'):
+            times = [(a+b)/2 for a,b in cue_intervals(cues,cue_index)] if c.get('band') else [c['start']]
+            if any(cue_layout(cues,cue_index,int(job['width']),int(job['height']),t)['overflow'] for t in times):
+                flag('LINES_OVERFLOW',[c['id']], 'Chữ tràn vùng hoặc phải thu nhỏ; nên rút gọn lời Việt.')
         assignment=current_assignment(c,state)
-        if job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):
+        if not is_supplementary(c) and job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):
             flag('SPEAKER_UNCONFIRMED',[c['id']], 'Nhân vật nói chưa chắc chắn; hệ thống cần phân nhóm giọng hoặc sửa nhãn ngay ở Lời dịch.')
         for rule in state.get('address_rules',[]):
             if rule.get('status')!='confirmed' or rule['speaker_id']!=assignment.get('speaker_confirmed') or rule['listener_id']!=assignment.get('listener_confirmed'):
@@ -251,7 +258,7 @@ def quality_report(folder, job, state=None):
             # Surface checks are suspicions only: mentions and quotations need review.
             if re.search(r'\b(bạn|cậu|mày|tao)\b',text,re.I) and not any(v in text.lower() for v in (rule['self_form'].lower(),rule['addressee_form'].lower())):
                 flag('ADDRESS_SUSPECT',[c['id']], 'Có từ xưng hô khác quy tắc cặp; kiểm tra ngữ cảnh, không tự thay.')
-        if re.search(r'[我你您]|\b(tôi|em|anh|chị|thầy|cô|bạn|cậu)\b',c.get('original','')+' '+text,re.I) and not assignment.get('listener_confirmed'):
+        if not is_supplementary(c) and re.search(r'[我你您]|\b(tôi|em|anh|chị|thầy|cô|bạn|cậu)\b',c.get('original','')+' '+text,re.I) and not assignment.get('listener_confirmed'):
             flag('ADDRESS_UNCONFIRMED',[c['id']], 'Máy chưa xác định chắc người nghe/xưng hô; xem lời Việt theo cảnh.')
     for source_id in sorted(known-covered):
         omission=state.get('omissions',{}).get(source_id,'')
@@ -266,6 +273,7 @@ def quality_report(folder, job, state=None):
         active=[o for o in active if o['end']>c['start']]
         for other in active:
             if other['end']>c['start']:
+                if independent_positions(c, other):continue
                 if c.get('region') is not None and other.get('region') is not None and c['region'] != other['region'] and c.get('box') and other.get('box'):continue
                 if c.get('overlap_group') and c.get('overlap_group')==other.get('overlap_group'):continue
                 flag('CUE_OVERLAP',[other['id'],c['id']], 'Hai cue chồng thời gian; xác nhận chồng thoại thật và vị trí hiển thị.')

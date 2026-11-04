@@ -20,7 +20,7 @@ from .textcheck import needs_translation
 from .address_rules import ADDRESS_RULES, locked_setting, normalize_setting, setting_instruction, valid_setting
 from .translate_api import LABELS, ProviderError, QuotaExhausted, RateLimited, ServerBusy, Usage
 
-PROMPT_VERSION = 'p3-6-context-scan'
+PROMPT_VERSION = 'p3-7-supplementary'
 CACHE_FILE = 'translation-cache-v2.json'
 CONTEXT_FILE = 'translation-context.json'
 RUNS_DIR = 'translation-runs'
@@ -49,6 +49,9 @@ SYSTEM_COMMON = (
     '- "items": danh sách câu cần dịch. Mỗi câu có "id", "zh" (nguyên văn tiếng Trung), "dur" (độ dài câu, giây), '
     '"speaker" (nhãn người nói; cùng nhãn là cùng một người), "kind" và giới hạn độ dài theo chế độ. '
     '"kind" là "cue" (lời thoại/lời nói) hoặc "onscreen" (chữ hiện trên hình như biển hiệu, tiêu đề: dịch thật ngắn).\n'
+    '"supplementary" là Sub phụ: lời bài hát hoặc câu thơ trang trí, chỉ hiện chữ, không đọc thành giọng. '
+    'Dịch gọn, giàu hình ảnh, không thêm chủ ngữ hay xưng hô nếu gốc không có. Không thêm ngoặc vuông; hệ thống tự đặt ngoặc khi hiển thị. '
+    'Sub phụ luôn dùng max_chars, kể cả chế độ lồng tiếng/thuyết minh.\n'
     '- "terminology": bảng thuật ngữ cố định của người dùng; BẮT BUỘC tuân theo.\n'
     '- "context": bảng nhân vật, cách xưng hô và thuật ngữ đã tích lũy từ các phần trước; giữ nhất quán với bảng này.\n'
     'ĐẦU RA là JSON đúng schema: mỗi "id" đầu vào có đúng một "vi", chép id nguyên văn. Không gộp hay tách câu, '
@@ -115,7 +118,7 @@ class Item:
     start: float
     end: float
     speaker: str
-    kind: str  # 'cue' | 'onscreen'
+    kind: str  # 'cue' | 'onscreen' | 'supplementary'
 
 
 @dataclass
@@ -142,7 +145,7 @@ class Outcome:
 def _payload_item(it: Item, mode: str, prefs) -> dict:
     dur = round(max(0.0, it.end - it.start), 2)
     d = {'id': it.id, 'zh': it.zh, 'dur': dur, 'speaker': it.speaker, 'kind': it.kind}
-    if mode == 'vietsub':
+    if mode == 'vietsub' or it.kind == 'supplementary':
         d['max_chars'] = max(1, round(dur * prefs.vietsub_cps))
     else:
         d['max_syllables'] = max(1, math.floor(dur * SYLLABLES_PER_SEC))
@@ -355,7 +358,7 @@ def _too_long(it: Item, vi: str, mode: str, prefs) -> bool:
     if needs_translation(vi) or (needs_translation(it.zh) and vi == it.zh.strip()):
         return True
     p = _payload_item(it, mode, prefs)
-    if mode == 'vietsub':
+    if mode == 'vietsub' or it.kind == 'supplementary':
         return len(vi) > p['max_chars'] * OVERRUN_REJECT
     return len(vi.split()) > p['max_syllables'] * OVERRUN_REJECT
 
