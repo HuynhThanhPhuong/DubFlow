@@ -98,10 +98,19 @@ def _repair_deleted_sources(folder,cues,state):
         snap=read(path,{})
         if isinstance(snap,dict) and isinstance(snap.get('cues'),list):
             snapshots.append(snap)
-    snapshots.sort(key=lambda s:(s.get('created_at',''),s.get('id','')))
+    clock_counts=Counter(s.get('created_at','') for s in snapshots)
+    snapshots.sort(key=lambda s:(s.get('created_at',''),s.get('source')!='before-delete',s.get('id','')))
     deleted=set()
     for before,after in zip(snapshots,snapshots[1:]):
         if before.get('source')!='before-delete' or after.get('source')!='manual':
+            continue
+        first_time,second_time=before.get('created_at',''),after.get('created_at','')
+        # Windows can timestamp both writes on the same clock tick. Only a
+        # unique before/manual pair has an unambiguous logical order then.
+        if first_time==second_time:
+            if clock_counts[first_time]!=2:
+                continue
+        elif clock_counts[first_time]!=1 or clock_counts[second_time]!=1:
             continue
         old=Counter(cache_key(c) for c in before['cues'])
         new=Counter(cache_key(c) for c in after['cues'])

@@ -94,3 +94,28 @@ class DeletedSourceTests(unittest.TestCase):
         write(self.folder/'cues.json',[])
         report=review.quality_report(self.folder,dict(duration=10,mode='vietsub'))
         self.assertEqual([f['cue_ids'] for f in report['flags'] if f['code']=='SOURCE_MISSING'],[['a']])
+
+    def test_same_clock_tick_deletion_pair_uses_logical_order_not_random_ids(self):
+        from unittest.mock import patch
+        from datetime import datetime,timezone
+        fixed=datetime(2026,11,4,tzinfo=timezone.utc)
+        with patch('dubflow.translation_history.datetime') as clock:
+            clock.now.return_value=fixed
+            translation_history.save_snapshot(self.folder,self.cues,source='before-delete',snapshot_id='f'*32)
+            translation_history.save_snapshot(self.folder,self.cues[:1],source='manual',snapshot_id='0'*32)
+        write(self.folder/'cues.json',self.cues[:1])
+        report=review.quality_report(self.folder,dict(duration=10,mode='vietsub'))
+        self.assertNotIn('SOURCE_MISSING',[f['code'] for f in report['flags']])
+
+    def test_three_snapshots_on_one_tick_are_ambiguous_and_keep_blocker(self):
+        from unittest.mock import patch
+        from datetime import datetime,timezone
+        fixed=datetime(2026,11,4,tzinfo=timezone.utc)
+        with patch('dubflow.translation_history.datetime') as clock:
+            clock.now.return_value=fixed
+            translation_history.save_snapshot(self.folder,self.cues,source='before-delete')
+            translation_history.save_snapshot(self.folder,self.cues[:1],source='manual')
+            translation_history.save_snapshot(self.folder,self.cues,source='manual')
+        write(self.folder/'cues.json',self.cues[:1])
+        report=review.quality_report(self.folder,dict(duration=10,mode='vietsub'))
+        self.assertIn('SOURCE_MISSING',[f['code'] for f in report['flags']])
