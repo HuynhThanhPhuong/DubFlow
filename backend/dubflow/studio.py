@@ -11,7 +11,8 @@ from pydantic import ValidationError
 from .preferences import Preferences, CollectionInput, PROVIDERS, preferences, public_preferences
 from .translate_api import LABELS, ProviderError, make_provider
 from .native import pick_folder, open_folder
-from .publisher import publish, PublishConflict
+from .media import contained
+from .publisher import publish, PublishConflict, SIDECAR_FOLDER
 from .voices import get_voice
 
 
@@ -338,7 +339,10 @@ def install_routes(app,settings,store,public_job,writable,save_upload):
             if not job.get('export_dir') or not job.get('exported_paths'): raise HTTPException(409,'Dự án chưa được xuất ra thư mục.')
             dest=Path(job['export_dir']).resolve()
             # Exact recorded folder only; arbitrary client paths are never accepted.
-            if any(Path(p).resolve().parent!=dest for p in job['exported_paths']):
+            sidecars=contained(dest,SIDECAR_FOLDER)
+            if any(Path(p).resolve().parent != dest and
+                   (not str(p).endswith(('.srt','.review.json')) or Path(p).resolve().parent != sidecars)
+                   for p in job['exported_paths']):
                 raise HTTPException(422,'Thư mục xuất không hợp lệ.')
         else:
             dest=root
