@@ -25,7 +25,7 @@ def _runs(values, gap=0):
     return out
 
 
-def unfold_vertical(image, return_boxes=False):
+def unfold_vertical(image, return_boxes=False, _ink=None):
     """Return a horizontal glyph strip and measured glyph height, right column first.
 
     Projection separates columns and character rows. Both white outlined captions
@@ -37,7 +37,28 @@ def unfold_vertical(image, return_boxes=False):
     bright = ((hsv[:, :, 2] > 175) & ((hsv[:, :, 1] < 95) | ((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 42))))
     # Require local contrast to avoid turning flat highlights into characters.
     low = cv2.erode(gray, np.ones((7, 7), np.uint8))
-    mask = bright & (gray.astype(np.int16)-low.astype(np.int16) > 20)
+    contrast = gray.astype(np.int16)-low.astype(np.int16)
+    gold = ((hsv[:,:,0]>=5) & (hsv[:,:,0]<=45) & (hsv[:,:,1]>55) & (hsv[:,:,2]>140) & (contrast>10))
+    # Compare separated colour candidates. A small golden prop must not hide a
+    # white caption; conversely, white scenery must not drown a golden title.
+    # The same geometric segmentation scores both candidates, before OCR runs.
+    if _ink is None and int(gold.sum()) >= max(20, h*w*.002):
+        golden = unfold_vertical(image, True, _ink='gold')
+        white = unfold_vertical(image, True, _ink='white')
+        def support(boxes):
+            if not boxes:
+                return 0
+            typical = float(np.median([b[3]-b[1] for b in boxes]))
+            return sum(.5*typical <= b[3]-b[1] <= 1.7*typical
+                       and .3*typical <= b[2]-b[0] <= 2*typical for b in boxes)
+        selected = golden if support(golden[2]) >= support(white[2]) else white
+        return selected if return_boxes else selected[:2]
+    if _ink == 'gold':
+        mask = gold
+    elif _ink == 'white':
+        mask = (hsv[:,:,2]>175) & (hsv[:,:,1]<95) & (contrast>20)
+    else:
+        mask = bright & (contrast>20)
     # Estimate a character cell from horizontal bands before finding columns.
     # Disconnected radicals (e.g. 川) are narrower than a whole character; treating
     # each x projection as a column would also slice every tall stroke into rows.

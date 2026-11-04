@@ -1,5 +1,38 @@
 import unittest
 
+
+class DimGoldVerticalTests(unittest.TestCase):
+    def test_a_small_gold_background_patch_does_not_hide_white_vertical_text(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest('OCR environment required')
+        from dubflow.vertical_ocr import unfold_vertical
+        image=np.full((180,60,3),50,np.uint8)
+        for y in (40,90,140):
+            cv2.putText(image,'E',(25,y),cv2.FONT_HERSHEY_SIMPLEX,.8,(240,240,240),2,cv2.LINE_AA)
+        cv2.rectangle(image,(3,5),(10,12),(20,120,160),-1)
+        strip,height,boxes=unfold_vertical(image,return_boxes=True)
+        self.assertEqual(len(boxes),3)
+        self.assertTrue(all(box[0]>=25 for box in boxes))
+        self.assertEqual(strip.shape,(56,168,3))
+
+    def test_dim_gold_glyphs_are_unfolded_without_waiting_for_full_brightness(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest('OCR environment required')
+        from dubflow.vertical_ocr import unfold_vertical
+        image=np.full((180,60,3),50,np.uint8)
+        for y in (40,90,140):
+            cv2.putText(image,'E',(20,y),cv2.FONT_HERSHEY_SIMPLEX,.8,(20,120,160),2,cv2.LINE_AA)
+        strip,height,boxes=unfold_vertical(image,return_boxes=True)
+        self.assertEqual(len(boxes),3)
+        self.assertEqual(strip.shape,(56,168,3))
+        self.assertGreater(height,10)
+
 class VerticalOCRTests(unittest.TestCase):
     def test_staggered_columns_do_not_merge_when_their_row_projections_touch(self):
         try:

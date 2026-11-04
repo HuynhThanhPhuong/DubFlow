@@ -33,6 +33,14 @@ const props = {
 };
 const nodes = () => screen.getAllByLabelText("Phụ đề Việt xem trước");
 
+it("keeps legacy lanes for concurrent cues occupying the same region box", () => {
+  const a = { ...left, text: "Xin chào", band: undefined };
+  const b = { ...a, id: "same-box" };
+  render(<SubtitlePreview {...props} cues={[a, b]} />);
+  expect(parseFloat(nodes()[0].style.top)).toBeCloseTo((640 / 720) * 100);
+  expect(parseFloat(nodes()[1].style.top)).toBeCloseTo((520 / 720) * 100);
+});
+
 // Literal positions, wrapping and quantized sizes checked against make_ass / cue_layout.
 it("keeps full ASS wrapping and invisible word tails through absolute reveal boundaries", () => {
   const cue = {

@@ -20,6 +20,13 @@ def cue(cid='a', **values):
 
 
 class Dot10LayoutTests(unittest.TestCase):
+    def test_legacy_overlapping_cues_in_the_same_box_still_get_separate_lanes(self):
+        left=cue(box=[340,620,560,660],region=0)
+        same=dict(cue('b'),box=left['box'],region=0)
+        self.assertEqual(style.assign_lanes([left,same]),[0,1])
+        separate=dict(same,box=[700,620,920,660])
+        self.assertEqual(style.assign_lanes([left,separate]),[0,0])
+
     def test_cluster_can_expand_within_band_without_crossing_neighbour(self):
         left = cue(box=[50, 640, 180, 670], band=[0, 600, 1280, 720], region=0)
         right = dict(cue('b'), box=[600, 640, 800, 670], band=left['band'], region=0)

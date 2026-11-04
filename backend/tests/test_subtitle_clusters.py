@@ -253,4 +253,3 @@ class EngineClusterTests(unittest.TestCase):
         self.assertFalse(out[0][:, 30:].any())
         self.assertTrue(out[1][:, 70:].all())
         self.assertFalse(out[1][:, :70].any())
-

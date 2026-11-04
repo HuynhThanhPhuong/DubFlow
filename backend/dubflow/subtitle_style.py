@@ -107,15 +107,15 @@ def assign_lanes(cues) -> list[int]:
     lanes = [0] * len(cues)
     for i in order:
         c = cues[i]
-        if is_supplementary(c) or (c.get('region') is not None and c.get('box')):
-            continue  # OCR clusters have physical positions; auxiliary captions stack separately.
+        if is_supplementary(c):
+            continue  # Auxiliary captions stack separately above dialogue.
         group = ('region', c['region']) if c.get('region') is not None and c.get('box') else ('legacy',)
-        ends = groups.setdefault(group, [])
-        lane = next((k for k, end in enumerate(ends) if end <= c['start']), len(ends))
-        if lane == len(ends):
-            ends.append(c['end'])
-        else:
-            ends[lane] = c['end']
+        slots = groups.setdefault(group, [])
+        lane = next((k for k, rows in enumerate(slots)
+                     if all(o['end'] <= c['start'] or independent_positions(c,o) for o in rows)), len(slots))
+        if lane == len(slots):
+            slots.append([])
+        slots[lane] = [o for o in slots[lane] if o['end'] > c['start']] + [c]
         lanes[i] = lane
     return lanes
 

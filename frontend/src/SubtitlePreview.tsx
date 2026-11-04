@@ -90,19 +90,24 @@ export function assignLanes(
   const order = cues
     .map((_, i) => i)
     .sort((a, b) => cues[a].start - cues[b].start || a - b);
-  const groups = new Map<string, number[]>();
+  const groups = new Map<string, (typeof cues)[]>();
   const lanes: number[] = new Array(cues.length).fill(0);
   for (const i of order) {
     const c = cues[i];
-    if (isSupplementary(c) || (c.region != null && c.box)) continue;
+    if (isSupplementary(c)) continue;
     const group = c.region != null && c.box ? `region-${c.region}` : "legacy";
-    const ends = groups.get(group) ?? [];
-    groups.set(group, ends);
-    let lane = ends.findIndex((end) => end <= cues[i].start);
+    const slots = groups.get(group) ?? [];
+    groups.set(group, slots);
+    const independent = (other: (typeof cues)[number]) => {
+      const a = c.box, b = other.box;
+      return Boolean(a && b && (c.region !== other.region || a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]));
+    };
+    let lane = slots.findIndex((rows) => rows.every((other) => other.end <= c.start || independent(other)));
     if (lane < 0) {
-      lane = ends.length;
-      ends.push(cues[i].end);
-    } else ends[lane] = cues[i].end;
+      lane = slots.length;
+      slots.push([]);
+    }
+    slots[lane] = [...slots[lane].filter((other) => other.end > c.start), c];
     lanes[i] = lane;
   }
   return lanes;
