@@ -143,7 +143,7 @@ def region_layout(cue, width: int, height: int, st=None):
     fs = lambda size: ass_size(size, font_id)
     if is_supplementary(cue):
         text = '[' + str(cue.get('text', '')).strip().strip('[]').strip() + ']'
-        size = st['size'] * .9
+        size = st['size'] * .9  # one size for every auxiliary caption (dot13); only a caption too long for 2 lines shrinks
         available = max(20, width-20)
         lines = _wrap(text, fs(size)/cell, available, measure)
         while len(lines) > 2 and size > st['size']*.54+.01:
@@ -176,17 +176,62 @@ def region_layout(cue, width: int, height: int, st=None):
         # A densely stacked strip may require a smaller font to avoid covering
         # the neighbouring sentence. Keep the readability warning in that case.
         minimum = min(minimum, max(1, bh/2/cell-.5))
-    maximum = max(normal_minimum, min(maximum, cue.get('text_height') or maximum))
+    # dot13: every caption of a region shares one size (cue_layout passes the region's median Chinese glyph height)
+    maximum = max(normal_minimum, min(maximum, cue.get('_region_size') or cue.get('text_height') or maximum))
     available = max(1,bw-stroke)
+    # dot13: inside a drawn strip the block grows upward from the bottom (cue_layout), so the strip height does not limit the size;
+    # it does when the cue shares the strip with a stacked neighbour or has no strip (legacy box)
+    bound = bool(cue.get('_layout_height')) or not cue.get('band')
     size, lines = maximum, _wrap(text, fs(maximum)/cell, available, measure)
-    while (len(lines) > 2 or any(measure(line)*fs(size)/cell > available+.01 for line in lines) or fs(size)*len(lines) > bh+.01) and size > minimum+.01:
+    while (len(lines) > 2 or any(measure(line)*fs(size)/cell > available+.01 for line in lines) or (bound and fs(size)*len(lines) > bh+.01)) and size > minimum+.01:
         size = max(minimum, size-maximum*.01)
         lines = _wrap(text, fs(size)/cell, available, measure)
-    overflow = len(lines) > 2 or any(measure(line)*fs(size)/cell > available+.01 for line in lines) or fs(size)*len(lines) > bh+.01 or size < normal_minimum-.01
+    overflow = (len(lines) > 2 or any(measure(line)*fs(size)/cell > available+.01 for line in lines) or (bound and fs(size)*len(lines) > bh+.01)
+                or size < normal_minimum-.01 or (not bound and size < maximum*SHRINK_LIMIT-.01))
     if len(lines) > 2:
         lines = [lines[0], ' '.join(lines[1:])]
     available = bw
     return dict(x=(x0+x1)/2, y=(y0+y1)/2, align=5, size=size, lines=lines, available=available, overflow=overflow)
+
+
+SHRINK_LIMIT = .85   # dot13: a caption that does not fit in 2 lines shrinks by 15% at most before it is flagged as overflowing
+SAFE_BOTTOM = .02    # dot13: the text block ends at least this share of the video height above the bottom edge
+
+
+def region_sizes(cues, st):
+    """Dot13: one caption size per region = the median Chinese glyph height of the region's dialogue cues, kept between 60% and
+    100% of the style size -> {region: size}. Auxiliary captions have their own size (st['size'] * .9, see region_layout)."""
+    heights = {}
+    for c in cues:
+        h = c.get('text_height')
+        if is_supplementary(c) or c.get('region') is None or not c.get('box') or not _number(h) or h <= 0:
+            continue
+        heights.setdefault(c['region'], []).append(float(h))
+    low, high = st['size'] * .6, st['size']
+    return {r: max(low, min(high, sorted(v)[len(v)//2] if len(v) % 2 else (sorted(v)[len(v)//2-1] + sorted(v)[len(v)//2]) / 2))
+            for r, v in heights.items()}
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value and abs(value) != float('inf')
+
+
+def anchor_block(y, lines, fs, top, bottom, height, grow_up=True):
+    """Dot13: vertical centre of a text block of `lines` lines (line height fs) whose last line sits where a single line
+    would be centred on y: the extra lines grow upward (grow_up; a block that shares its strip with a stacked neighbour is
+    already sized to fit it and is not moved). The block then ends at least SAFE_BOTTOM of the video height above the bottom
+    edge and above `bottom`; it keeps below `top` only when it fits there (a tall block overlaps upward rather than leaving
+    the frame at the bottom)."""
+    half = fs*lines/2
+    limit = min(bottom, height*(1-SAFE_BOTTOM)) - half
+    if grow_up:
+        y = y - (lines-1)*fs/2
+    if y > limit:
+        y = math.floor(limit)
+    low = max(top, 0) + half
+    if low <= limit:
+        y = max(y, low)
+    return max(y, half)
 
 
 def is_supplementary(cue):
@@ -213,6 +258,9 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
     font_id = st.get('font_id', DEFAULT_FONT)
     fs = lambda size: ass_size(size, font_id)
     cue = cues[index]
+    sizes = region_sizes(cues, st)
+    if not is_supplementary(cue) and cue.get('region') in sizes and cue.get('box'):
+        cue = dict(cue, _region_size=sizes[cue['region']])
     active = [i for i, c in enumerate(cues) if c.get('text', '').strip() and c['start'] <= now < c['end']]
     fit = region_layout(cue, width, height, st)
     if is_supplementary(cue):
@@ -223,8 +271,10 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
                 dialogue.append(other)
                 top = other['y'] - fs(other['size'])*len(other['lines'])/(1 if other['align']==2 else 2)
                 fit['y'] = min(fit['y'], top-max(4, st['outline']*2))
-        if dialogue:
-            sized = region_layout(cue, width, height, dict(st,size=max(d['size'] for d in dialogue)))
+        base = max(sizes.values()) if sizes else max((d['size'] for d in dialogue), default=None)
+        if base:
+            # one auxiliary size for the whole video, tied to the dialogue size (a region's, not the caption on screen)
+            sized = region_layout(cue, width, height, dict(st,size=base))
             fit.update(size=sized['size'],lines=sized['lines'])
         for i in active:
             if i >= index or not is_supplementary(cues[i]):
@@ -236,7 +286,7 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
         box, band = cue['box'], list(cue['band'])
         center = (box[0]+box[2])/2
         center_y = (box[1]+box[3])/2
-        top, bottom = band[1], band[3]
+        top, bottom = band[1], min(band[3], height*(1-SAFE_BOTTOM))
         stacked = False
         for i in active:
             other = cues[i]
@@ -261,9 +311,10 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
             elif other_center < center:
                 band[0] = max(band[0], (b[2]+box[0])/2)
         fit = region_layout(dict(cue, band=band, **({'_layout_height':max(1,bottom-top)} if stacked else {})), width, height, st)
-        # Keep both lines inside the drawn strip, including its bottom edge.
-        half = fs(fit['size'])*len(fit['lines'])/2
-        fit['y'] = max(top+half, min(fit['y'], bottom-half))
+        # Bottom-anchored block (extra lines grow upward), inside the safe area at the bottom of the video.
+        fit['y'] = anchor_block(fit['y'], len(fit['lines']), fs(fit['size']), top, bottom, height, grow_up=not stacked)
+    elif fit['align'] == 5:
+        fit['y'] = anchor_block(fit['y'], len(fit['lines']), fs(fit['size']), 0, height, height)
     if lanes[index]:
         fit['y'] = lane_y(fit['y'], lanes[index], fs(fit['size']))
     return fit

@@ -144,12 +144,64 @@ const defaultStyle = (width: number, height: number): SubtitleStyle => ({
   max_lines: 2,
   outline: Math.round(((3 * height) / 1080) * 10) / 10,
 });
+// dot13 mirrors of backend subtitle_style: a caption that does not fit in 2 lines shrinks by 15% at most before it is flagged;
+// the text block ends at least SAFE_BOTTOM of the video height above the bottom edge.
+export const SHRINK_LIMIT = 0.85;
+export const SAFE_BOTTOM = 0.02;
+/** One caption size per region = median Chinese glyph height of the region's dialogue cues, kept in [60%, 100%] of the style size. */
+export function regionSizes(
+  cues: Pick<Cue, "region" | "box" | "text_height" | "kind" | "orientation">[],
+  st: SubtitleStyle,
+) {
+  const heights = new Map<number, number[]>();
+  for (const c of cues) {
+    const h = c.text_height;
+    if (
+      isSupplementary(c) ||
+      c.region == null ||
+      !c.box ||
+      typeof h !== "number" ||
+      !Number.isFinite(h) ||
+      h <= 0
+    )
+      continue;
+    heights.set(c.region, [...(heights.get(c.region) ?? []), h]);
+  }
+  const sizes = new Map<number, number>();
+  for (const [region, values] of heights) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median =
+      sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    sizes.set(region, Math.max(st.size * 0.6, Math.min(st.size, median)));
+  }
+  return sizes;
+}
+/** Mirror of backend anchor_block: vertical centre of a text block whose last line sits where one line would be, extra lines growing upward, ending inside the safe area. */
+export function anchorBlock(
+  y: number,
+  lines: number,
+  fs: number,
+  top: number,
+  bottom: number,
+  height: number,
+  growUp = true,
+) {
+  const half = (fs * lines) / 2;
+  const limit = Math.min(bottom, height * (1 - SAFE_BOTTOM)) - half;
+  if (growUp) y -= ((lines - 1) * fs) / 2;
+  if (y > limit) y = Math.floor(limit);
+  const low = Math.max(top, 0) + half;
+  if (low <= limit) y = Math.max(y, low);
+  return Math.max(y, half);
+}
+
 /** Mirror of backend subtitle_style.region_layout. Cue box is xyxy. */
 export function regionLayout(
   cue: Pick<
     Cue,
     "text" | "box" | "band" | "kind" | "orientation" | "text_height"
-  > & { _layout_height?: number },
+  > & { _layout_height?: number; _region_size?: number },
   width: number,
   height: number,
   custom?: SubtitleStyle | null,
@@ -229,17 +281,21 @@ export function regionLayout(
     overflow: boolean,
     available: number;
   {
+    // dot13: every caption of a region shares one size (cueLayout passes the region's median Chinese glyph height)
     maximum = Math.max(
       normalMinimum,
-      Math.min(maximum, cue.text_height || maximum),
+      Math.min(maximum, cue._region_size || cue.text_height || maximum),
     );
     const room = Math.max(1, bw - stroke);
+    // Inside a drawn strip the block grows upward from the bottom (cueLayout), so the strip height does not limit the size;
+    // it does when the cue shares the strip with a stacked neighbour or has no strip (legacy box).
+    const bound = Boolean(cue._layout_height) || !cue.band;
     size = maximum;
     lines = wrapText(cue.text, fs(size) / cell, room, measure);
     while (
       (lines.length > 2 ||
         lines.some((line) => (measure(line) * fs(size)) / cell > room + 0.01) ||
-        fs(size) * lines.length > bh + 0.01) &&
+        (bound && fs(size) * lines.length > bh + 0.01)) &&
       size > minimum + 0.01
     ) {
       size = Math.max(minimum, size - maximum * 0.01);
@@ -248,8 +304,9 @@ export function regionLayout(
     overflow =
       lines.length > 2 ||
       lines.some((line) => (measure(line) * fs(size)) / cell > room + 0.01) ||
-      fs(size) * lines.length > bh + 0.01 ||
-      size < normalMinimum - 0.01;
+      (bound && fs(size) * lines.length > bh + 0.01) ||
+      size < normalMinimum - 0.01 ||
+      (!bound && size < maximum * SHRINK_LIMIT - 0.01);
     if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
     available = bw;
   }
@@ -276,7 +333,15 @@ export function cueLayout(
   const st = custom ?? defaultStyle(width, height);
   const cell = st.cell ?? LIBASS_CELL;
   const fs = (size: number) => assSize(size, cell);
-  const cue = cues[index];
+  let cue: Cue & { _region_size?: number } = cues[index];
+  const sizes = regionSizes(cues, st);
+  if (
+    !isSupplementary(cue) &&
+    cue.region != null &&
+    cue.box &&
+    sizes.has(cue.region)
+  )
+    cue = { ...cue, _region_size: sizes.get(cue.region) };
   const active = cues
     .map((_, i) => i)
     .filter(
@@ -295,11 +360,14 @@ export function cueLayout(
         (fs(other.size) * other.lines.length) / (other.align === 2 ? 1 : 2);
       fit.y = Math.min(fit.y, top - gap);
     }
-    if (dialogue.length) {
-      const sized = regionLayout(cue, width, height, {
-        ...st,
-        size: Math.max(...dialogue.map((d) => d.size)),
-      });
+    const base = sizes.size
+      ? Math.max(...sizes.values())
+      : dialogue.length
+        ? Math.max(...dialogue.map((d) => d.size))
+        : 0;
+    if (base) {
+      // one auxiliary size for the whole video, tied to the dialogue size (a region's, not the caption on screen)
+      const sized = regionLayout(cue, width, height, { ...st, size: base });
       fit.size = sized.size;
       fit.lines = sized.lines;
     }
@@ -316,7 +384,7 @@ export function cueLayout(
       center = (box[0] + box[2]) / 2;
     const centerY = (box[1] + box[3]) / 2;
     let top = band[1],
-      bottom = band[3],
+      bottom = Math.min(band[3], height * (1 - SAFE_BOTTOM)),
       stacked = false;
     for (const i of active) {
       const other = cues[i],
@@ -355,8 +423,25 @@ export function cueLayout(
       height,
       st,
     );
-    const half = (fs(fit.size) * fit.lines.length) / 2;
-    fit.y = Math.max(top + half, Math.min(fit.y, bottom - half));
+    // Bottom-anchored block (extra lines grow upward), inside the safe area at the bottom of the video.
+    fit.y = anchorBlock(
+      fit.y,
+      fit.lines.length,
+      fs(fit.size),
+      top,
+      bottom,
+      height,
+      !stacked,
+    );
+  } else if (fit.align === 5) {
+    fit.y = anchorBlock(
+      fit.y,
+      fit.lines.length,
+      fs(fit.size),
+      0,
+      height,
+      height,
+    );
   }
   const lane = assignLanes(cues)[index];
   if (lane) fit.y = laneY(fit.y, lane, fs(fit.size));

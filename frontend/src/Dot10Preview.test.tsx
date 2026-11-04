@@ -127,7 +127,8 @@ it.each([{ orientation: "v" as const }, { kind: "supplementary" as const }])(
       47 / (2701 / 2048),
     );
     rerender(<SubtitlePreview {...props} cues={[left, right, aux]} now={2} />);
-    expect(parseFloat(nodes()[2].style.top)).toBeCloseTo((589 / 720) * 100);
+    // dot13: the dialogue block is bottom-anchored inside the safe area, so the brackets above it moved up 3 px
+    expect(parseFloat(nodes()[2].style.top)).toBeCloseTo((586 / 720) * 100);
     rerender(<SubtitlePreview {...props} cues={[left, right, aux]} now={4} />);
     expect(parseFloat(nodes()[1].style.top)).toBeCloseTo((610 / 720) * 100);
     rerender(
@@ -166,7 +167,7 @@ it("preserves the vertical source with no preview erasure mask, including timed 
   expect(container.querySelectorAll(".preview-source-mask")).toHaveLength(0);
 });
 
-it("sizes auxiliary text at ninety percent of the active dialogue's fitted size", () => {
+it("sizes auxiliary text at ninety percent of the region's uniform dialogue size", () => {
   const spoken = {
     ...left,
     text: "Xin chào",
@@ -185,7 +186,8 @@ it("sizes auxiliary text at ninety percent of the active dialogue's fitted size"
   );
   expect(parseFloat(nodes()[1].style.fontSize)).toBeCloseTo(33 / (2701 / 2048));
   rerender(<SubtitlePreview {...props} cues={[{ ...spoken, end: 1 }, aux]} />);
-  expect(parseFloat(nodes()[0].style.fontSize)).toBeCloseTo(47 / (2701 / 2048));
+  // dot13: one auxiliary size for the whole video (90% of the region's size), also while no dialogue is on screen
+  expect(parseFloat(nodes()[0].style.fontSize)).toBeCloseTo(33 / (2701 / 2048));
 });
 
 it("allocates vertical slots to same-column neighbours exactly when they start and end", () => {

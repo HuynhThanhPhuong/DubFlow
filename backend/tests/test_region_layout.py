@@ -23,7 +23,7 @@ class RegionLayoutTests(unittest.TestCase):
         cue=dict(start=0,end=2,text='wwwwww',box=[100,500,200,600],orientation='h',region=0)
         self.assertTrue(style.region_layout(cue,1280,720)['overflow'])
         cue.update(text='Xin chào',box=[45,657,360,709])
-        self.assertIn(r'\pos(203,683)',p.make_ass([cue],[],1280,720))
+        self.assertIn(r'\pos(203,679)',p.make_ass([cue],[],1280,720))  # dot13: block moved up to stay 2% above the bottom edge
         self.assertIn(r'\q2',p.make_ass([cue],[],1280,720))
 
     def test_horizontal_uses_region_center_width_and_measured_text_height(self):
