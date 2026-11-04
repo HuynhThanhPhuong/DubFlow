@@ -60,14 +60,15 @@ def _source_identity(cue):
     return cache_key({k:cue[k] for k in ('start','end','original','region','box','orientation','cluster') if k in cue})
 
 
-def _save_omissions(folder,state,source_ids):
+def _save_omissions(folder,state,source_ids,*,persist=True):
     omissions=dict(state.get('omissions',{}))
     additions={sid:'Đã được người dùng xoá khỏi danh sách Lời dịch.' for sid in source_ids if not omissions.get(sid,'').strip()}
     if not additions:
         return state
     omissions.update(additions)
     state=dict(state,omissions=omissions,approval=None,revision=state.get('revision',0)+1)
-    write(Path(folder)/'review-state.json',state)
+    if persist:
+        write(Path(folder)/'review-state.json',state)
     return state
 
 
@@ -123,7 +124,9 @@ def _repair_deleted_sources(folder,cues,state):
             # History predates stable IDs. Refuse ambiguous source rows.
             if identity in identities and sum(_source_identity(s)==identity for s in state['source_cues'])==1:
                 deleted.add(sid)
-    return _save_omissions(folder,state,deleted)
+    # Reading reports may infer proven omissions, but only an explicit edit may
+    # persist them. In particular GET must not revoke stored approval/revision.
+    return _save_omissions(folder,state,deleted,persist=False)
 
 
 def _legacy_region_links(folder,cues,state,known):

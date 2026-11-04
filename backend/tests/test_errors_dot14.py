@@ -63,7 +63,8 @@ class DeletedSourceTests(unittest.TestCase):
         write(self.folder/'cues.json', self.cues[:1])
         report = review.quality_report(self.folder, dict(duration=10, mode='vietsub'))
         self.assertNotIn('SOURCE_MISSING', [f['code'] for f in report['flags']])
-        self.assertIn('b', read(self.folder/'review-state.json')['omissions'])
+        self.assertNotIn('b', read(self.folder/'review-state.json')['omissions'])
+        self.assertIn('b', review.load_state(self.folder)['omissions'])
 
     def test_missing_source_without_deletion_evidence_still_blocks(self):
         write(self.folder/'cues.json', self.cues[:1])
@@ -119,3 +120,14 @@ class DeletedSourceTests(unittest.TestCase):
         write(self.folder/'cues.json',self.cues[:1])
         report=review.quality_report(self.folder,dict(duration=10,mode='vietsub'))
         self.assertIn('SOURCE_MISSING',[f['code'] for f in report['flags']])
+
+
+    def test_reading_proven_deletion_does_not_write_review_state(self):
+        translation_history.save_snapshot(self.folder,self.cues,source='before-delete')
+        translation_history.save_snapshot(self.folder,self.cues[:1],source='manual')
+        write(self.folder/'cues.json',self.cues[:1])
+        before=(self.folder/'review-state.json').read_bytes()
+        review.public_state(self.folder,dict(mode='vietsub',duration=10))
+        review.quality_report(self.folder,dict(mode='vietsub',duration=10))
+        self.assertEqual((self.folder/'review-state.json').read_bytes(),before)
+        self.assertFalse((self.folder/'review-history').exists())
