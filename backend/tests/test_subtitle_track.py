@@ -272,6 +272,18 @@ class SnapTests(unittest.TestCase):
         out=snap_to_speech([dict(start=3.5,end=4.0)],self.rms(),.01)
         self.assertEqual((out[0]['start'],out[0]['end']),(3.5,4.0))
 
+    def test_blip_over_music_does_not_shrink_cue(self):
+        rms=np.zeros(12000)+.001; rms[10090:10110]=.3   # a 0.2 s blip inside the 98.5-103.0 cue
+        out=snap_to_speech([dict(start=98.5,end=103.0,original='我爱你我你',source='asr')],rms,.01)
+        self.assertEqual((out[0]['start'],out[0]['end']),(98.5,103.0))
+    def test_cue_shorter_than_its_text_needs_keeps_original(self):
+        rms=np.zeros(500)+.001; rms[150:165]=.3   # 0.15 s of speech in a 1.2 s, 8 char cue
+        out=snap_to_speech([dict(start=1.0,end=2.2,original='小白眼中的世界',source='asr')],rms,.01)
+        self.assertEqual((out[0]['start'],out[0]['end']),(1.0,2.2))
+    def test_short_original_may_still_snap_when_long_enough(self):
+        out=snap_to_speech([dict(start=1.0,end=3.0,original='你好你好你好')],self.rms(),.01)
+        self.assertAlmostEqual(out[0]['start'],1.15,places=2)
+
 
 if __name__=='__main__':
     unittest.main()

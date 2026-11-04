@@ -311,6 +311,20 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3, s
     return sorted(out, key=lambda c: (c['start'], c['end']))
 
 
+SNAP_MIN_SECONDS = .6      # a snapped cue is never shorter than this ...
+SNAP_SECONDS_PER_CHAR = .12  # ... or than this much per source character
+SNAP_KEEP_RATIO = .5       # nor than this share of its original length
+
+
+def _snap_too_short(cue, start, end):
+    """True when snapping to speech would cut the cue to a length that cannot hold its text (background music
+    above the threshold makes the 'speech' only a blip): the original span is kept then."""
+    old = cue['end'] - cue['start']
+    chars = len(''.join(str(cue.get('original') or '').split()))
+    need = min(old, max(SNAP_MIN_SECONDS, SNAP_SECONDS_PER_CHAR * chars))
+    return end - start < need - 1e-9 or end - start < SNAP_KEEP_RATIO * old - 1e-9
+
+
 def snap_to_speech(cues, rms, hop, threshold=None, pad=.05):
     """Move cue edges onto real speech (rms above threshold), at most .5 s beyond the original
     timing and never into the previous/next cue. Only for ASR-timed cues: cues with source 'ocr' or
@@ -334,6 +348,6 @@ def snap_to_speech(cues, rms, hop, threshold=None, pad=.05):
             continue
         start = max(lo, (i0 + act[0]) * hop - pad)
         end = min(hi, (i0 + act[-1] + 1) * hop + pad)
-        if end > start:
+        if end > start and not _snap_too_short(c, start, end):
             c['start'], c['end'] = round(float(start), 6), round(float(end), 6)
     return out

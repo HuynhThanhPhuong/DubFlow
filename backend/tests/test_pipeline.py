@@ -150,7 +150,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_prepare_snaps_asr_cues_without_hardsubs(self):
         rms=[0.0]*250
-        for i in range(60,80): rms[i]=1.0   # speech 1.2s-1.6s
+        for i in range(60,90): rms[i]=1.0   # speech 1.2s-1.8s (long enough to hold the 3-character cue)
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory=Path(d)
             _,paths=self._prepare_source(directory,[],rms,vocals=True)
@@ -159,7 +159,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(cues),1)
             self.assertEqual(cues[0]['source'],'asr')
             self.assertAlmostEqual(cues[0]['start'],1.15,places=2)
-            self.assertAlmostEqual(cues[0]['end'],1.65,places=2)
+            self.assertAlmostEqual(cues[0]['end'],1.85,places=2)
             build=p.read(directory/'source-build.json')
             self.assertFalse(build['has_hardsubs'])
             self.assertEqual(build['asr_cues'],1)
@@ -953,7 +953,7 @@ class PipelineTests(unittest.TestCase):
         asr=[dict(id='a1',start=1.0,end=2.0,speaker='s',original='你好吗',text=''),
              dict(id='a2',start=4.0,end=5.0,speaker='s',original='没有字幕的话',text='')]
         rms=[0.0]*400
-        for i in range(210,240): rms[i]=1.0   # speech 4.2s-4.8s
+        for i in range(205,245): rms[i]=1.0   # speech 4.1s-4.9s
         with tempfile.TemporaryDirectory(dir=p.ROOT) as d:
             directory=Path(d)
             self._run_source(directory,asr,segments=[seg],rms=rms)
@@ -962,8 +962,8 @@ class PipelineTests(unittest.TestCase):
             snapped=[c for c in cues if c['source']=='asr']
             self.assertEqual((ocr[0]['start'],ocr[0]['end']),(1.0,2.0))
             self.assertEqual(len(snapped),1)
-            self.assertAlmostEqual(snapped[0]['start'],4.15,places=2)
-            self.assertAlmostEqual(snapped[0]['end'],4.85,places=2)
+            self.assertAlmostEqual(snapped[0]['start'],4.05,places=2)
+            self.assertAlmostEqual(snapped[0]['end'],4.95,places=2)
             build=p.read(directory/'source-build.json')
             self.assertTrue(build['has_hardsubs'])
             self.assertFalse(build['ocr_failed'])
