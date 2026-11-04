@@ -117,8 +117,8 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         for b in imp.get('skipped', []):
             tag = _tag(b.get('number'), b.get('text'), when)
             label = f"Khối {b['number']}" if b.get('number') is not None else 'Khối'
-            if f'srt-skip:{tag}' not in skip:
-                note(when,f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}"')
+            add(f'srt-skip:{tag}', 'srt', 'Nhập SRT', when,
+                f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}". Hãy sửa mốc thời gian hoặc ghép câu trong phần nhập SRT rồi nhập lại.')
     if job.get('status') in ('error', 'failed') or (job.get('status') == 'awaiting_review' and job.get('error')):
         stage = str(job.get('stage') or '')
         step = _STEP_BY_STAGE.get(stage, 'Phân tích')
@@ -128,15 +128,21 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
     for w in job.get('warnings') or []:
         if isinstance(w, str) and w.strip():
             note(job.get('updated_at') or _iso(folder/'cues.json'),w.strip())
+    flags: dict[str, list[dict]] = {}
     quality_codes=set()
     for f in (report or {}).get('flags',[]):
         ids=[i for i in f.get('cue_ids',[]) if i in number]
         if not ids or f.get('resolved'):
             continue
         code=f.get('code')
-        quality_codes.add(code)
         if code=='MISSING_TRANSLATION':
             continue  # all empty lines receive the same edit/retry controls below
+        for cid in ids:
+            flags.setdefault(cid, []).append(dict(code=code, severity='error' if f.get('severity')=='error' else 'warn',
+                                                  message=f.get('message','')))
+        if f.get('severity')!='error' and code!='LINES_OVERFLOW':
+            continue
+        quality_codes.add(code)
         add(f"quality:{f.get('id') or _tag(code,ids,f.get('message'))}",'blocking' if f.get('severity')=='error' else 'audit',
             'Xuất',_iso(folder/'cues.json'),f.get('message',''),ids[0],['jump'],
             severity='error' if f.get('severity')=='error' else 'warn',code=code,cue_ids=ids)
@@ -151,7 +157,6 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
     for cid in number:
         if not text_of[cid] and not any(i['cue_id']==cid and 'edit' in i['actions'] for i in items):
             add(f'empty:{cid}','translate','Dịch',_iso(folder/'cues.json'),'Câu chưa có lời Việt. Hãy nhập bản dịch hoặc bấm Dịch lại.',cid,['jump','edit','retry'])
-    flags: dict[str, list[dict]] = {}
     by_id = {c.get('id'): c for c in cues}
     try:
         findings = source_audit.audit_cues(cues, job.get('duration') or 0)
@@ -167,6 +172,8 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         ids = [i for i in f['cue_ids'] if i in number]
         for i in ids:
             flags.setdefault(i, []).append(dict(code=f['code'], severity=f['severity'], message=f['message_vi']))
+        if f['severity']!='error':
+            continue
         delete_ids = _extra_cues(f, by_id) if f['code'] in DELETABLE else []
         add(key, 'audit', 'Phân tích', when, f['message_vi'], ids[0] if ids else None,
             (['jump'] if ids else []) + (['delete_cues'] if delete_ids else []),

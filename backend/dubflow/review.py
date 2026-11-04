@@ -214,6 +214,11 @@ def current_assignment(cue,state):
 
 
 def translation_dependency(cue, state, cues=None, terminology=''):
+    context, basis = _context_before_omissions(cues or [], state)
+    return _translation_dependency(cue, basis, context, terminology)
+
+
+def _translation_dependency(cue, state, cues, terminology):
     source = {k:cue.get(k) for k in ('id','original','start','end','speaker')}
     if is_supplementary(cue):
         source['kind'] = 'supplementary'
@@ -221,6 +226,23 @@ def translation_dependency(cue, state, cues=None, terminology=''):
         review={k:state.get(k) for k in STATE_FIELDS},
         speaker_basis=state.get('assignment_basis',{}),listener_basis=state.get('listener_basis',{}),
         nearby_source=[{k:c.get(k) for k in ('id','original','start','end','speaker')} for c in (cues or [])],terminology=terminology or ''))
+
+
+def _context_before_omissions(cues, state):
+    """Keep dependency context stable across proven source omissions.
+
+    Retain omitted baseline rows in the hash context and remove their omission
+    reasons. This also matches hashes created before the deletion. All present
+    source/role/context fields remain current so real edits still stale them.
+    """
+    present = {c['id'] for c in cues}
+    omitted = [c for c in state.get('source_cues', []) if c['id'] not in present
+               and state.get('omissions', {}).get(c['id'], '').strip()]
+    if not omitted:
+        return cues, state
+    restored = {c['id'] for c in omitted}
+    basis = dict(state, omissions={k: v for k, v in state.get('omissions', {}).items() if k not in restored})
+    return sorted(cues + omitted, key=lambda c: (c['start'], c['end'])), basis
 
 
 def imported_links(value, previous):
@@ -291,7 +313,9 @@ def quality_report(folder, job, state=None):
             flag('INVALID_TIME',[c['id']], 'Mốc câu không hợp lệ hoặc vượt video.','error')
             continue
         text=c.get('text','').strip()
-        if text and c.get('translation_dependency') and c['translation_dependency']!=translation_dependency(c,state,cues,job.get('review_terms','')):
+        if (text and c.get('translation_dependency')
+                and c['translation_dependency']!=translation_dependency(c,state,cues,job.get('review_terms',''))
+                and c['translation_dependency']!=_translation_dependency(c,state,cues,job.get('review_terms',''))):
             flag('TRANSLATION_STALE',[c['id']], 'Nguồn, vai hoặc ngữ cảnh đã đổi từ lần sinh bản dịch. Kiểm tra/sửa hoặc xóa lời Việt để dịch lại.')
         if not text:
             flag('MISSING_TRANSLATION',[c['id']], 'Câu chưa có lời Việt.','error')

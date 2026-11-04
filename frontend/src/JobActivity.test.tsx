@@ -87,7 +87,7 @@ describe("JobActivity", () => {
     const errors = { count: 57, refresh: vi.fn(), items: [
       { ...common, key: "note", kind: "warning", message: "Đã gộp 3 lời gốc." },
       { ...common, key: "task", kind: "task", severity: "error", message: "Thiếu tệp. Hãy chọn lại video nguồn." },
-      { ...common, key: "long", kind: "audit", cue_id: "a", cue_number: 1, actions: ["jump", "dismiss"], message: "Câu quá dài." },
+      { ...common, key: "long", kind: "audit", code: "LINES_OVERFLOW", cue_id: "a", cue_number: 1, actions: ["jump", "dismiss"], message: "Câu quá dài." },
     ], activity: [{ t: common.time, msg: "Đã bỏ chữ nhận diện lẫn." }], onJump: vi.fn() } as never;
     render(<JobActivity job={{ ...base, activity: [] } as Job} notes={["Thông tin dự án"]} errors={errors} />);
     expect(screen.getByRole("button", { name: "Xem chi tiết · 2" })).toBeTruthy();
@@ -258,6 +258,44 @@ it("preserves informational rows when the hook filters the errors tab", async ()
     await waitFor(() => expect(result.current.activity).toContainEqual({ t: item.time, msg: item.message }));
     expect(result.current.items).toEqual([]);
     expect(result.current.count).toBe(0);
+  } finally {
+    request.mockRestore();
+  }
+});
+
+it("counts the latest unmatched SRT blocks in details without a cue link", async () => {
+  const item = { key: "srt-skip:x", kind: "srt", step: "Nhập SRT", time: "2026-11-02T17:33:44Z",
+    cue_id: null, cue_number: null, severity: "error", message: "Khối không khớp. Hãy nhập lại SRT.", actions: ["dismiss"] };
+  const request = vi.spyOn(api, "jobErrors").mockResolvedValue({ count: 1, items: [item], cue_flags: {} } as never);
+  try {
+    const { result } = renderHook(() => useJobErrors(base));
+    await waitFor(() => expect(result.current.count).toBe(1));
+    render(<JobActivity job={base} errors={result.current} />);
+    expect(screen.getByRole("button", { name: "Xem chi tiết · 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByRole("tab", { name: "Lỗi (1)" })).toBeTruthy();
+    expect(screen.getByText(item.message)).toBeTruthy();
+  } finally {
+    request.mockRestore();
+  }
+});
+
+it("excludes linked quality warnings from both counts while retaining cue chips", async () => {
+  const common = { step: "Xuất", time: "2026-11-02T17:33:44Z", cue_id: "a", cue_number: 1, actions: ["jump", "dismiss"] };
+  const warning = { ...common, key: "stale", kind: "audit", code: "TRANSLATION_STALE", severity: "warn", message: "Nguồn đổi" };
+  const overflow = { ...warning, key: "long", code: "LINES_OVERFLOW", message: "Câu quá dài" };
+  const blocker = { ...common, key: "missing", kind: "blocking", severity: "error", message: "Thiếu nguồn" };
+  const chip = { code: "TRANSLATION_STALE", severity: "warn", message: "Nguồn đổi" };
+  const request = vi.spyOn(api, "jobErrors").mockResolvedValue({ count: 3, items: [warning, overflow, blocker], cue_flags: { a: [chip] } } as never);
+  try {
+    const { result } = renderHook(() => useJobErrors(base));
+    await waitFor(() => expect(result.current.count).toBe(2));
+    expect(result.current.cue_flags).toEqual({ a: [chip] });
+    render(<JobActivity job={base} errors={result.current} />);
+    expect(screen.getByRole("button", { name: "Xem chi tiết · 2" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByRole("tab", { name: "Lỗi (2)" })).toBeTruthy();
+    expect(screen.queryByText(warning.message)).toBeNull();
   } finally {
     request.mockRestore();
   }

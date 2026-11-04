@@ -20,11 +20,11 @@ class ActionableErrorsTests(unittest.TestCase):
                                   message='Câu quá dài. Hãy rút gọn lời Việt.')])
         errors_store.save_import_issues(self.folder, [], [dict(number=9, text='Lạc')])
         data = errors_store.collect(self.folder, dict(warnings=['Đã gộp 3 lời gốc.']), report)
-        self.assertEqual(data['count'], 2)
-        self.assertEqual(len(data['activity']), 2)
+        self.assertEqual(data['count'], 3)
+        self.assertEqual(len(data['activity']), 1)
         self.assertTrue(any(i['cue_id']=='a' and 'jump' in i['actions'] for i in data['items']))
         self.assertTrue(any('Thiếu tệp' in i['message'] and 'Hãy' in i['message'] for i in data['items']))
-        self.assertFalse(any(i['kind']=='warning' or i['key'].startswith('srt-skip:') for i in data['items']))
+        self.assertTrue(any(i['key'].startswith('srt-skip:') for i in data['items']))
 
     def test_task_failure_without_a_log_remains_visible_with_recovery_instruction(self):
         data = errors_store.collect(self.folder, dict(status='error', stage='rendering', error='Thiếu tệp video.'))

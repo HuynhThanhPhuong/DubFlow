@@ -12,8 +12,10 @@ const clock = (iso: string) => {
 };
 
 const actionable = (item: JobErrorItem) =>
-  Boolean(item.cue_id && item.actions.includes("jump")) ||
-  ((item.kind === "task" || item.kind === "blocking") && item.severity !== "warn");
+  item.kind === "srt" ||
+  ((item.kind === "task" || item.kind === "blocking") && item.severity !== "warn") ||
+  (Boolean(item.cue_id && item.actions.includes("jump")) &&
+    (item.kind === "translate" || item.severity === "error" || item.code === "LINES_OVERFLOW"));
 
 function activityRows(job: Job, errors?: ErrorTools) {
   const information = (errors?.items ?? []).filter((item) => !actionable(item));
