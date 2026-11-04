@@ -57,6 +57,7 @@ class LenientReadingTests(unittest.TestCase):
         self.assertFalse(accept_reading('yc', .42))
         self.assertFalse(accept_reading('[师尊]', .4))
         self.assertFalse(accept_reading('这是一段很长的低置信度文字读数', .55))
+        self.assertFalse(accept_reading('阿普', .55))  # no brackets: not the subtitle style
         self.assertFalse(accept_reading('', .9))
 
 

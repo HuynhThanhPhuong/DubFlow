@@ -26,8 +26,9 @@ LENIENT_CHARS = 8
 
 def accept_reading(text, score):
     """Dot13: does an OCR row of the subtitle band count? Confidence >= READ_SCORE always. Between LENIENT_SCORE and READ_SCORE
-    only a short reading (at most LENIENT_CHARS characters without brackets) of which at least 3 in 4 are Han: the wide-spaced
-    brackets of test2 '[师尊]' were read at .58 and lost, while junk next to a real line ('00【师]①') stays out."""
+    only a short bracketed reading (the decoration brackets the subtitle style puts around a line; at most LENIENT_CHARS
+    characters without them) of which at least 3 in 4 are Han: the wide-spaced '[师尊]' of test2 was read at .58 and lost, while
+    junk next to a real line ('00【师]①') or an unbracketed patch of picture stays out."""
     text = (text or '').strip()
     if not text:
         return False
@@ -37,7 +38,7 @@ def accept_reading(text, score):
         return False
     core = [c for c in text if c not in BRACKETS and not c.isspace()]
     han = chinese(text)
-    return bool(core) and len(core) <= LENIENT_CHARS and len(han) >= .75*len(core)
+    return any(c in BRACKETS for c in text) and bool(core) and len(core) <= LENIENT_CHARS and len(han) >= .75*len(core)
 
 
 def line_key(text):
