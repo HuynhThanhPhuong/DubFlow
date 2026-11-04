@@ -16,6 +16,85 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+it.each([{ orientation: "v" as const }, { kind: "supplementary" as const }])(
+  "labels an editable auxiliary cue and retains its layout metadata: %j",
+  (kind) => {
+    const original = {
+      id: "aux",
+      start: 0,
+      end: 4,
+      speaker: "",
+      original: "风",
+      text: "Gió bay",
+      box: [100, 50, 150, 300],
+      band: [100, 50, 150, 300],
+      region: 1,
+      reveal: [{ t: 0, fraction: 0.2 }],
+      ...kind,
+    };
+    let edited: Cue | undefined;
+    function Editor() {
+      const [cue, setCue] = useState<Cue>(original);
+      return (
+        <CueList
+          cues={[cue]}
+          active="aux"
+          disabled={false}
+          loading={false}
+          error=""
+          onSelect={() => {}}
+          onEdit={(_, patch) => {
+            edited = { ...cue, ...patch };
+            setCue(edited);
+          }}
+        />
+      );
+    }
+    render(<Editor />);
+    expect(screen.getByText("Sub phụ")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Lời Việt câu 1"), {
+      target: { value: "Gió cuốn bay" },
+    });
+    expect(edited).toEqual({ ...original, text: "Gió cuốn bay" });
+  },
+);
+it("does not present obsolete auxiliary speech or overflow warnings but retains translation warnings", () => {
+  const cue: Cue = {
+    id: "aux",
+    start: 0,
+    end: 4,
+    speaker: "unconfirmed",
+    original: "风",
+    text: "Gió bay",
+    orientation: "v",
+    take_url: "/api/jobs/old/take",
+    overrun: 3,
+    auto_flags: [
+      "Chữ tràn vùng; nên rút gọn lời Việt.",
+      "Nhân vật nói chưa chắc chắn; hệ thống cần phân nhóm giọng hoặc sửa nhãn ngay ở Lời dịch.",
+      "Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.",
+      "Lời Việt còn ký tự Trung; kiểm tra ngôn ngữ hoặc tên riêng.",
+    ],
+  };
+  render(
+    <CueList
+      cues={[cue]}
+      active="aux"
+      disabled={false}
+      loading={false}
+      error=""
+      onSelect={() => {}}
+      onEdit={() => {}}
+    />,
+  );
+  expect(screen.queryByText(/Chữ tràn vùng/)).toBeNull();
+  expect(screen.queryByText(/Nhân vật nói chưa chắc chắn/)).toBeNull();
+  expect(screen.queryByText(/Lời Việt dài hơn thời lượng/)).toBeNull();
+  expect(screen.queryByText(/Lời đọc vượt khe/)).toBeNull();
+  expect(screen.queryByTitle("Chưa rõ giọng")).toBeNull();
+  expect(screen.queryByLabelText("Nghe giọng câu 1")).toBeNull();
+  expect(screen.getByText(/Lời Việt còn ký tự Trung/)).toBeTruthy();
+});
 it("keeps a focused textarea mounted when its expanded details move it to the next page", () => {
   vi.useFakeTimers();
   vi.stubGlobal(

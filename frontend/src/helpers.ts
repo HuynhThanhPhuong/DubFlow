@@ -16,6 +16,12 @@ export function navigate(page: Page, jobId?: string | null) {
 export function editCue(cues: Cue[], id: string, patch: Partial<Cue>): Cue[] {
   return cues.map((cue) => (cue.id === id ? { ...cue, ...patch } : cue));
 }
+/** Old jobs can still carry speech/vertical-fit flags predating auxiliary captions. */
+export function cueFlags(cue: Cue): string[] {
+  const flags = cue.auto_flags ?? [];
+  if (cue.kind !== "supplementary" && cue.orientation !== "v") return flags;
+  return flags.filter((flag) => !/^(Chữ tràn vùng|Nhân vật nói chưa chắc chắn|Lời Việt dài hơn thời lượng câu|(?:Câu )?[Cc]hưa có giọng|Máy chưa xác định chắc người nghe\/xưng hô)/.test(flag));
+}
 export function playerSource(job: Job, view: "source" | "output") {
   return mediaUrl(view === "source" ? job.source_url_path : job.output_url);
 }

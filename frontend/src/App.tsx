@@ -15,6 +15,7 @@ import { api, ApiError, mediaUrl } from "./api";
 import type { AnalysisRegions, Cue, Health, Job, Mode, Voice } from "./types";
 import {
   editCue,
+  cueFlags,
   isBusy,
   modeLabels,
   navigate,
@@ -490,7 +491,7 @@ export default function App() {
       ...(currentJob?.warnings || []),
       ...(health?.warnings || []),
       ...(currentJob?.error ? [currentJob.error] : []),
-      ...cues.flatMap((c) => c.auto_flags || []),
+      ...cues.flatMap(cueFlags),
     ]),
   );
   useEffect(() => {

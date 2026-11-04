@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Cue } from "./types";
-import { time } from "./helpers";
+import { cueFlags, time } from "./helpers";
+import { isSupplementary } from "./SubtitlePreview";
 import { Empty } from "./ui";
 import { Pagination, useCapacity } from "./Pagination";
 import type { PageRange } from "./Pagination";
@@ -33,7 +34,8 @@ function CueRow({
     el.style.height = "22px";
     el.style.height = Math.max(22, el.scrollHeight + 2) + "px";
   }, [cue.text]);
-  const flags = cue.auto_flags ?? [];
+  const flags = cueFlags(cue);
+  const auxiliary = isSupplementary(cue);
   const label = (s: string) => (measuring ? undefined : s);
   return (
     <article
@@ -55,19 +57,24 @@ function CueRow({
             {time(cue.start)} → {time(cue.end)}
           </span>
           <span className="cue-badges">
-            <span
-              title={
-                cue.speaker === "unconfirmed"
-                  ? "Chưa rõ giọng"
-                  : `Người nói: ${cue.speaker}`
-              }
-            >
-              {cue.speaker === "unconfirmed"
-                ? "?"
-                : cue.speaker.startsWith("SPK_")
-                  ? `Giọng ${Number(cue.speaker.slice(4)) + 1}`
-                  : cue.speaker}
-            </span>
+            {isSupplementary(cue) && (
+              <span title="Lời trang trí, chỉ hiện chữ">Sub phụ</span>
+            )}
+            {!auxiliary && (
+              <span
+                title={
+                  cue.speaker === "unconfirmed"
+                    ? "Chưa rõ giọng"
+                    : `Người nói: ${cue.speaker}`
+                }
+              >
+                {cue.speaker === "unconfirmed"
+                  ? "?"
+                  : cue.speaker.startsWith("SPK_")
+                    ? `Giọng ${Number(cue.speaker.slice(4)) + 1}`
+                    : cue.speaker}
+              </span>
+            )}
             {cue.source && (
               <span title="Nguồn lời gốc">
                 {cue.source === "asr"
@@ -133,15 +140,19 @@ function CueRow({
               ) : (
                 <p className="muted">Không có điểm máy đánh dấu.</p>
               )}
-              <label>
-                Người nói{" "}
-                <input
-                  aria-label={label(`Người nói câu ${index + 1}`)}
-                  value={cue.speaker}
-                  disabled={disabled}
-                  onChange={(e) => onEdit(cue.id, { speaker: e.target.value })}
-                />
-              </label>
+              {!auxiliary && (
+                <label>
+                  Người nói{" "}
+                  <input
+                    aria-label={label(`Người nói câu ${index + 1}`)}
+                    value={cue.speaker}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      onEdit(cue.id, { speaker: e.target.value })
+                    }
+                  />
+                </label>
+              )}
               <details
                 className="cue-details"
                 open={editing}
@@ -184,15 +195,17 @@ function CueRow({
                   ))}
                 </div>
               </details>
-              {cue.take_url && cue.take_url.startsWith("/api/") && (
-                <audio
-                  controls
-                  preload="none"
-                  src={measuring ? undefined : cue.take_url}
-                  aria-label={label(`Nghe giọng câu ${index + 1}`)}
-                />
-              )}
-              {!!cue.overrun && (
+              {!auxiliary &&
+                cue.take_url &&
+                cue.take_url.startsWith("/api/") && (
+                  <audio
+                    controls
+                    preload="none"
+                    src={measuring ? undefined : cue.take_url}
+                    aria-label={label(`Nghe giọng câu ${index + 1}`)}
+                  />
+                )}
+              {!auxiliary && !!cue.overrun && (
                 <p className="warning">
                   Lời đọc vượt khe {cue.overrun.toFixed(2)}s. Hãy rút gọn câu.
                 </p>

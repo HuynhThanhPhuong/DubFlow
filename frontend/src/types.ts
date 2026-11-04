@@ -85,7 +85,9 @@ export interface Job {
   subtitle_style?: SubtitleStyle;
   translation_usage?: TranslationUsage | null;
   setting?: AddressSetting;
-  translation_context?: { setting?: { era: "modern" | "ancient"; note: string } } | null;
+  translation_context?: {
+    setting?: { era: "modern" | "ancient"; note: string };
+  } | null;
   overlays?: Overlay[];
 }
 export interface TranslationUsage {
@@ -139,7 +141,12 @@ export interface Cue {
   source_partial?: boolean;
   ocr_empty?: boolean;
   box?: number[] | null;
+  /** User-drawn subtitle band in source pixels, xyxy (unlike RegionRect). */
+  band?: number[] | null;
   region?: number | null;
+  cluster?: number | string | null;
+  kind?: "dialogue" | "supplementary" | null;
+  reveal?: { t: number; fraction: number }[] | null;
   orientation?: "h" | "v" | null;
   text_height?: number | null;
 }
@@ -159,6 +166,7 @@ export interface Region {
   confirmed?: boolean;
   label?: string;
   erased?: boolean;
+  orientation?: "h" | "v" | null;
 }
 export interface Part {
   id: string;

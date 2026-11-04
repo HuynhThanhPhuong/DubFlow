@@ -11,6 +11,12 @@ describe("API contract", () => {
         speaker: "A",
         original: "你好",
         text: "Xin chào",
+        box: [120, 600, 350, 650],
+        band: [40, 580, 1240, 700],
+        region: 0,
+        kind: "supplementary" as const,
+        orientation: "v" as const,
+        reveal: [{ t: 0, fraction: 0.5 }],
       },
     ];
     const fetch = vi

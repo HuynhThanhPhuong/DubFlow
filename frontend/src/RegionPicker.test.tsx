@@ -51,6 +51,14 @@ const drag = (el: Element, from: [number, number], to: [number, number]) => {
 };
 
 describe("RegionPicker", () => {
+  it("explains that one subtitle band automatically separates dialogue clusters", () => {
+    render(<RegionPicker job={job} onSave={vi.fn()} />);
+    expect(
+      screen.getByRole("button", { name: "Dải sub Trung" }).title,
+    ).toContain(
+      "Vẽ một dải phủ hết chỗ có sub; hệ thống tự tách câu trái/phải/giữa.",
+    );
+  });
   it("draws multiple subtitle boxes, changes orientation and disables delete when deselected", () => {
     const onSave = vi.fn();
     render(<RegionPicker job={job} onSave={onSave} pending />);
@@ -65,7 +73,9 @@ describe("RegionPicker", () => {
     expect(
       screen.getByRole("button", { name: "Sub Trung 2 · dọc" }),
     ).toBeTruthy();
-    expect(screen.getByRole('button',{name:'Sub Trung 2 · dọc'}).style.width).toBe('112px');
+    expect(
+      screen.getByRole("button", { name: "Sub Trung 2 · dọc" }).style.width,
+    ).toBe("112px");
     fireEvent.click(screen.getByRole("button", { name: "Sub Trung 2 · dọc" }));
     fireEvent.click(screen.getByRole("button", { name: "Lưu & phân tích" }));
     expect(onSave.mock.calls[0][0].subtitles).toEqual([
@@ -121,15 +131,15 @@ describe("RegionPicker", () => {
     expect(screen.queryByRole("button", { name: "Lưu vùng" })).toBeNull();
   });
   it("uses the latest seek before metadata and corrects a stale seek completion", () => {
-    const props={job,onSave:vi.fn(),onSeek:vi.fn()};
-    const {rerender}=render(<RegionPicker {...props} time={1} />);
-    const video=screen.getByLabelText('Khung hình video') as HTMLVideoElement;
+    const props = { job, onSave: vi.fn(), onSeek: vi.fn() };
+    const { rerender } = render(<RegionPicker {...props} time={1} />);
+    const video = screen.getByLabelText("Khung hình video") as HTMLVideoElement;
     rerender(<RegionPicker {...props} time={17} />);
     rerender(<RegionPicker {...props} time={4.25} />);
-    Object.defineProperty(video,'readyState',{value:1});
+    Object.defineProperty(video, "readyState", { value: 1 });
     fireEvent.loadedMetadata(video);
     expect(video.currentTime).toBe(4.25);
-    video.currentTime=17;
+    video.currentTime = 17;
     fireEvent.seeked(video);
     expect(video.currentTime).toBe(4.25);
   });

@@ -439,7 +439,7 @@ export function RegionPicker({
               className="rp-tool"
               aria-pressed={tool === k}
               disabled={busy || (k === "subtitle" && noHard)}
-              title={`${LABELS[k]} · Phím ${tools.indexOf(k) + 1}`}
+              title={k === "subtitle" ? "Vẽ một dải phủ hết chỗ có sub; hệ thống tự tách câu trái/phải/giữa. · Phím 1" : `${LABELS[k]} · Phím ${tools.indexOf(k) + 1}`}
               onClick={() => setTool(k)}
             >
               <span

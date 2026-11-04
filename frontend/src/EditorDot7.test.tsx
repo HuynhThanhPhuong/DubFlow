@@ -43,6 +43,19 @@ const cues = Array.from({ length: 12 }, (_, i) => ({
   original: `原文${i}`,
   text: i === 10 ? "" : "Lời Việt",
   speaker: "unconfirmed",
+  ...(i === 0
+    ? {
+        box: [100, 600, 400, 650],
+        band: [40, 580, 1240, 710],
+        region: 0,
+        kind: "dialogue" as const,
+        orientation: "h" as const,
+        reveal: [
+          { t: 0, fraction: 0.2 },
+          { t: 1, fraction: 1 },
+        ],
+      }
+    : {}),
 }));
 const snapshot = {
   id: "s1",
@@ -100,6 +113,22 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   location.hash = "";
+});
+
+it("saves edited translated text through the real editor without dropping OCR band or reveal data", async () => {
+  const fetch = setup();
+  fireEvent.change(await screen.findByLabelText("Lời Việt câu 1"), {
+    target: { value: "Bản sửa vẫn hiện dần" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Lưu lời dịch" }));
+  await screen.findByText("Đã lưu lời dịch.");
+  const saved = fetch.mock.calls.find(
+    ([path, init]) => path === "/api/jobs/dot7/cues" && init?.method === "PUT",
+  );
+  expect(JSON.parse(saved![1]!.body as string)[0]).toEqual({
+    ...cues[0],
+    text: "Bản sửa vẫn hiện dần",
+  });
 });
 
 it("disables adding cues while saving the editor", async () => {

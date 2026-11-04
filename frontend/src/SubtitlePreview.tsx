@@ -83,6 +83,8 @@ export function assignLanes(
     end: number;
     region?: number | null;
     box?: number[] | null;
+    kind?: Cue["kind"];
+    orientation?: Cue["orientation"];
   }[],
 ): number[] {
   const order = cues
@@ -92,6 +94,7 @@ export function assignLanes(
   const lanes: number[] = new Array(cues.length).fill(0);
   for (const i of order) {
     const c = cues[i];
+    if (isSupplementary(c) || (c.region != null && c.box)) continue;
     const group = c.region != null && c.box ? `region-${c.region}` : "legacy";
     const ends = groups.get(group) ?? [];
     groups.set(group, ends);
@@ -108,19 +111,63 @@ export const laneY = (y: number, lane: number, fs: number) =>
   Math.max(fs * 1.5, y - lane * fs * 3);
 
 const assSize = (size: number) => Math.max(8, Math.round(size * LIBASS_CELL));
+export const isSupplementary = (cue: Pick<Cue, "kind" | "orientation">) =>
+  cue.kind === "supplementary" || cue.orientation === "v";
+const defaultStyle = (width: number, height: number): SubtitleStyle => ({
+  font: "Roboto",
+  bold: true,
+  size: Math.round(height * (height > width ? 0.045 : 0.055)),
+  margin_v: Math.round(height * 0.04),
+  max_lines: 2,
+  outline: Math.round(((3 * height) / 1080) * 10) / 10,
+});
 /** Mirror of backend subtitle_style.region_layout. Cue box is xyxy. */
 export function regionLayout(
-  cue: Pick<Cue, "text" | "box" | "orientation" | "text_height">,
+  cue: Pick<
+    Cue,
+    "text" | "box" | "band" | "kind" | "orientation" | "text_height"
+  > & { _layout_height?: number },
   width: number,
   height: number,
   custom?: SubtitleStyle | null,
 ) {
-  const st = custom ?? {
-    size: Math.round(height * (height > width ? 0.045 : 0.055)),
-    margin_v: Math.round(height * 0.04),
-    max_lines: 2,
-    outline: Math.round(((3 * height) / 1080) * 10) / 10,
-  };
+  const st = custom ?? defaultStyle(width, height);
+  if (isSupplementary(cue)) {
+    const text =
+      "[" +
+      cue.text
+        .trim()
+        .replace(/^[\[\]]+|[\[\]]+$/g, "")
+        .trim() +
+      "]";
+    let size = st.size * 0.9;
+    const available = Math.max(20, width - 20);
+    let lines = wrapText(
+      text,
+      assSize(size) / LIBASS_CELL,
+      available,
+      regionUnits,
+    );
+    while (lines.length > 2 && size > st.size * 0.54 + 0.01) {
+      size = Math.max(st.size * 0.54, size - st.size * 0.009);
+      lines = wrapText(
+        text,
+        assSize(size) / LIBASS_CELL,
+        available,
+        regionUnits,
+      );
+    }
+    if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
+    return {
+      x: width / 2,
+      y: height - st.margin_v,
+      align: 2,
+      size,
+      lines,
+      available,
+      overflow: false,
+    };
+  }
   const box = cue.box;
   if (!box || box.length !== 4) {
     const available = Math.max(20, width - 20);
@@ -129,65 +176,197 @@ export function regionLayout(
       ...fit,
       x: width / 2,
       y: height - st.margin_v,
+      align: 2,
       available,
       overflow: fit.lines.length > st.max_lines,
     };
   }
-  const [x0, y0, x1, y1] = box;
+  let [x0, y0, x1, y1] = box;
+  if (cue.band) {
+    const center = (x0 + x1) / 2;
+    const available = Math.max(
+      1,
+      2 *
+        Math.min(
+          center - Math.max(0, cue.band[0]),
+          Math.min(width, cue.band[2]) - center,
+        ),
+    );
+    x0 = center - available / 2;
+    x1 = center + available / 2;
+    const roomHeight =
+      cue._layout_height || Math.max(1, cue.band[3] - cue.band[1]);
+    const middle = (y0 + y1) / 2;
+    y0 = middle - roomHeight / 2;
+    y1 = middle + roomHeight / 2;
+  }
   const bw = Math.max(1, x1 - x0),
     bh = Math.max(1, y1 - y0),
-    minimum = st.size * 0.6;
+    normalMinimum = st.size * 0.6;
+  const minimum = cue._layout_height
+    ? Math.min(normalMinimum, Math.max(1, bh / 2 / LIBASS_CELL - 0.5))
+    : normalMinimum;
   const stroke = 2 * st.outline;
   let maximum = st.size,
     size = maximum,
     lines: string[],
     overflow: boolean,
     available: number;
-  if (cue.orientation === "v") {
-    lines = cue.text.split(/\s+/).filter(Boolean);
-    const longest = lines.length ? Math.max(...lines.map(regionUnits)) : 1;
-    size = Math.max(
-      minimum,
-      Math.min(
-        maximum,
-        Math.max(1, bw * 1.2 - stroke) / Math.max(longest, 0.01),
-        bh / Math.max(1, lines.length) / LIBASS_CELL,
-      ),
+  {
+    maximum = Math.max(
+      normalMinimum,
+      Math.min(maximum, cue.text_height || maximum),
     );
-    while ((longest * assSize(size) / LIBASS_CELL + stroke > bw * 1.2 + 0.01 || assSize(size) * lines.length > bh + 0.01) && size > minimum + 0.01)
-      size = Math.max(minimum, size - maximum * 0.01);
-    overflow =
-      longest * assSize(size) / LIBASS_CELL + stroke > bw * 1.2 + 0.01 ||
-      assSize(size) * lines.length > bh + 0.01;
-    available = bw * 1.2;
-  } else {
-    maximum = Math.max(minimum, Math.min(maximum, cue.text_height || maximum));
     const room = Math.max(1, bw - stroke);
     size = maximum;
     lines = wrapText(cue.text, assSize(size) / LIBASS_CELL, room, regionUnits);
     while (
       (lines.length > 2 ||
-        lines.some((line) => regionUnits(line) * assSize(size) / LIBASS_CELL > room + 0.01) || assSize(size) * lines.length > bh + 0.01) &&
+        lines.some(
+          (line) =>
+            (regionUnits(line) * assSize(size)) / LIBASS_CELL > room + 0.01,
+        ) ||
+        assSize(size) * lines.length > bh + 0.01) &&
       size > minimum + 0.01
     ) {
       size = Math.max(minimum, size - maximum * 0.01);
-      lines = wrapText(cue.text, assSize(size) / LIBASS_CELL, room, regionUnits);
+      lines = wrapText(
+        cue.text,
+        assSize(size) / LIBASS_CELL,
+        room,
+        regionUnits,
+      );
     }
     overflow =
       lines.length > 2 ||
-      lines.some((line) => regionUnits(line) * assSize(size) / LIBASS_CELL > room + 0.01) ||
-      assSize(size) * lines.length > bh + 0.01;
+      lines.some(
+        (line) =>
+          (regionUnits(line) * assSize(size)) / LIBASS_CELL > room + 0.01,
+      ) ||
+      assSize(size) * lines.length > bh + 0.01 ||
+      size < normalMinimum - 0.01;
     if (lines.length > 2) lines = [lines[0], lines.slice(1).join(" ")];
     available = bw;
   }
   return {
     x: (x0 + x1) / 2,
     y: (y0 + y1) / 2,
+    align: 5,
     size,
     lines,
     overflow,
     available,
   };
+}
+
+/** Active neighbours constrain width and auxiliary placement exactly as in ASS. */
+export function cueLayout(
+  cues: Cue[],
+  index: number,
+  width: number,
+  height: number,
+  now: number,
+  custom?: SubtitleStyle | null,
+) {
+  const st = custom ?? defaultStyle(width, height);
+  const cue = cues[index];
+  const active = cues
+    .map((_, i) => i)
+    .filter(
+      (i) => cues[i].text.trim() && cues[i].start <= now && now < cues[i].end,
+    );
+  let fit = regionLayout(cue, width, height, st);
+  const gap = Math.max(4, st.outline * 2);
+  if (isSupplementary(cue)) {
+    const dialogue: ReturnType<typeof regionLayout>[] = [];
+    for (const i of active) {
+      if (isSupplementary(cues[i])) continue;
+      const other = cueLayout(cues, i, width, height, now, st);
+      dialogue.push(other);
+      const top =
+        other.y -
+        (assSize(other.size) * other.lines.length) /
+          (other.align === 2 ? 1 : 2);
+      fit.y = Math.min(fit.y, top - gap);
+    }
+    if (dialogue.length) {
+      const sized = regionLayout(cue, width, height, {
+        ...st,
+        size: Math.max(...dialogue.map((d) => d.size)),
+      });
+      fit.size = sized.size;
+      fit.lines = sized.lines;
+    }
+    for (const i of active) {
+      if (i >= index || !isSupplementary(cues[i])) continue;
+      const other = regionLayout(cues[i], width, height, st);
+      fit.y -= assSize(other.size) * other.lines.length + gap;
+    }
+    return fit;
+  }
+  if (cue.band && cue.box) {
+    const box = cue.box,
+      band = [...cue.band],
+      center = (box[0] + box[2]) / 2;
+    const centerY = (box[1] + box[3]) / 2;
+    let top = band[1],
+      bottom = band[3],
+      stacked = false;
+    for (const i of active) {
+      const other = cues[i],
+        b = other.box;
+      if (i === index || isSupplementary(other) || !b) continue;
+      const otherY = (b[1] + b[3]) / 2;
+      const overlap = Math.max(
+        0,
+        Math.min(box[2], b[2]) - Math.max(box[0], b[0]),
+      );
+      if (
+        overlap > 0.25 * Math.min(box[2] - box[0], b[2] - b[0]) &&
+        Math.abs(centerY - otherY) >
+          0.6 * Math.min(box[3] - box[1], b[3] - b[1])
+      ) {
+        stacked = true;
+        if (otherY > centerY) bottom = Math.min(bottom, (centerY + otherY) / 2);
+        else top = Math.max(top, (centerY + otherY) / 2);
+        continue;
+      }
+      if (Math.abs((box[1] + box[3] - b[1] - b[3]) / 2) >= 2 * assSize(st.size))
+        continue;
+      const otherCenter = (b[0] + b[2]) / 2;
+      if (otherCenter > center)
+        band[2] = Math.min(band[2], (box[2] + b[0]) / 2);
+      else if (otherCenter < center)
+        band[0] = Math.max(band[0], (b[2] + box[0]) / 2);
+    }
+    fit = regionLayout(
+      {
+        ...cue,
+        band,
+        ...(stacked ? { _layout_height: Math.max(1, bottom - top) } : {}),
+      },
+      width,
+      height,
+      st,
+    );
+    const half = (assSize(fit.size) * fit.lines.length) / 2;
+    fit.y = Math.max(top + half, Math.min(fit.y, bottom - half));
+  }
+  const lane = assignLanes(cues)[index];
+  if (lane) fit.y = laneY(fit.y, lane, assSize(fit.size));
+  return fit;
+}
+
+export function revealWords(cue: Cue, now: number) {
+  if (isSupplementary(cue) || !cue.reveal?.length) return null;
+  let fraction = 0;
+  for (const point of [...cue.reveal].sort((a, b) => a.t - b.t)) {
+    if (point.t > now + 1e-9) break;
+    fraction = Math.max(fraction, Math.min(1, Math.max(0, point.fraction)));
+  }
+  return Math.ceil(
+    fraction * cue.text.split(/\s+/).filter(Boolean).length - 1e-9,
+  );
 }
 
 type MaskRegion = Partial<Region> & { preview_mask_url?: string };
@@ -213,11 +392,9 @@ export function SubtitlePreview({
   subtitleStyle?: SubtitleStyle | null;
   cleanVideo?: boolean;
 }) {
-  const lyrics = cues.filter((c) => c.text.trim());
-  const laneOf = assignLanes(lyrics);
-  const active = lyrics
-    .map((c, i) => ({ c, lane: laneOf[i] }))
-    .filter(({ c }) => c.start <= now && now < c.end);
+  const active = cues
+    .map((c, index) => ({ c, index }))
+    .filter(({ c }) => c.text.trim() && c.start <= now && now < c.end);
   const measured = regions
     .flatMap((parent) =>
       (parent.boxes ?? [parent]).map((box) => ({
@@ -230,6 +407,7 @@ export function SubtitlePreview({
     .filter(
       (r) =>
         r.enabled &&
+        r.orientation !== "v" &&
         !r.erased &&
         !(cleanVideo && r.kind === "subtitle") &&
         [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
@@ -280,28 +458,54 @@ export function SubtitlePreview({
             }}
           />
         ))}
-      {active.map(({ c, lane }) => {
-        const box = c.box && c.box.length === 4 ? c.box : null;
-        const fit = regionLayout(c, width, height, st);
+      {active.map(({ c, index }) => {
+        const fit = cueLayout(cues, index, width, height, now, st);
         const fs = assSize(fit.size);
         const x = Math.round(fit.x),
           y = Math.round(fit.y);
-        const yLane = lane === 0 ? y : laneY(y, lane, fs);
+        let remaining = revealWords(c, now);
         return (
           <div
             key={c.id}
-            className={`vietnamese-preview${box ? "" : " at-bottom"}`}
+            className={`vietnamese-preview${fit.align === 2 ? " at-bottom" : ""}`}
             aria-label="Phụ đề Việt xem trước"
             style={{
               left: `${(x / width) * 100}%`,
-              top: `${(yLane / height) * 100}%`,
+              top: `${(y / height) * 100}%`,
               maxWidth: `${(fit.available / width) * 100}%`,
               fontSize: ratio ? (fs / LIBASS_CELL) * ratio : 16,
               lineHeight: LIBASS_CELL,
               WebkitTextStrokeWidth: outline * 2,
             }}
           >
-            <span>{fit.lines.join("\n")}</span>
+            <span>
+              {remaining === null
+                ? fit.lines.join("\n")
+                : fit.lines.map((line, i) => {
+                    const words = line.split(/\s+/).filter(Boolean);
+                    const shown = Math.max(
+                      0,
+                      Math.min(remaining!, words.length),
+                    );
+                    remaining! -= shown;
+                    const visible = words.slice(0, shown).join(" ");
+                    const hidden = words.slice(shown).join(" ");
+                    return (
+                      <span key={i}>
+                        {i > 0 ? "\n" : ""}
+                        {visible}
+                        {hidden && (
+                          <span
+                            aria-hidden="true"
+                            style={{ visibility: "hidden" }}
+                          >
+                            {(visible ? " " : "") + hidden}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+            </span>
           </div>
         );
       })}
