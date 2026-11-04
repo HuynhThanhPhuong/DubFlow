@@ -123,3 +123,28 @@ class PublishDot14Tests(unittest.TestCase):
         self.assertEqual(self.store.get_job(self.job['id'])['exported_paths'], [str(p) for p in previous])
         self.assertFalse((self.output / 'tét (2).mp4').exists())
 
+
+    def test_reexport_keeps_usable_legacy_sidecars_without_uuid_temporaries(self):
+        previous=self.legacy_outputs()
+        original={p.suffix:p.read_bytes() for p in previous[1:]}
+        unlink=Path.unlink
+        def locked_temporary(path,*args,**kwargs):
+            if '.dot14-' in path.name:
+                raise PermissionError('scanner holds temporary file')
+            return unlink(path,*args,**kwargs)
+        with patch('dubflow.publisher.Path.unlink',locked_temporary):
+            publish(self.store,self.settings,self.job['id'])
+        self.assertFalse(list(self.output.rglob('*.dot14-*')))
+        for path in previous[1:]:
+            archived=self.output/'Phụ đề và báo cáo'/path.name
+            self.assertEqual(archived.read_bytes(),original[path.suffix])
+
+    def test_moving_legacy_sidecars_never_replaces_an_existing_child(self):
+        previous=self.legacy_outputs()
+        child=self.output/'Phụ đề và báo cáo'
+        child.mkdir()
+        other=child/'tét.srt';other.write_bytes(b'other job')
+        publish(self.store,self.settings,self.job['id'])
+        self.assertEqual(other.read_bytes(),b'other job')
+        self.assertFalse(previous[1].exists())
+        self.assertFalse(list(child.glob('*.dot14-*')))

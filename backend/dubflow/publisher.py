@@ -1,12 +1,10 @@
 """Publish local render artifacts without replacing any existing file."""
 import hashlib
 import json
-import logging
 from pathlib import Path
 import re
 import shutil
 import unicodedata
-import uuid
 from .media import contained, read_json
 from .preferences import preferences
 
@@ -163,7 +161,15 @@ def publish(store, settings, job_id, *, rendering=False, render_values=None):
                 if not retirement_dir.exists():
                     created_dirs.append(retirement_dir)
                 retirement_dir.mkdir(parents=True,exist_ok=True)
-                backup=contained(retirement_dir,path.name+'.dot14-'+uuid.uuid4().hex)
+                # Retain usable sidecars paired with the old MP4 instead of
+                # requiring a fallible post-commit deletion of UUID backups.
+                suffix = '.review.json' if path.name.endswith('.review.json') else '.srt'
+                stem = path.name[:-len(suffix)]
+                backup=contained(retirement_dir,path.name)
+                number=1
+                while backup.exists():
+                    backup=contained(retirement_dir,f'{stem} - legacy ({number}){suffix}')
+                    number+=1
                 path.rename(backup)
                 retired.append((path,backup))
             job.update(exported_paths=[str(p) for p in targets],export_dir=str(dest),render_signature=signature)
@@ -178,9 +184,4 @@ def publish(store, settings, job_id, *, rendering=False, render_values=None):
             except OSError:
                 pass  # Preserve directories containing another publisher's files.
         raise
-    for _,backup in retired:
-        try:
-            backup.unlink(missing_ok=True)
-        except OSError:
-            logging.getLogger(__name__).warning('Chưa dọn được bản phụ đề cũ đã thay thế: %s',backup)
     return job
