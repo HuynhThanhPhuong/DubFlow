@@ -7,7 +7,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { FontPopover } from "./FontPopover";
-import { cueLayout, regionLayout } from "./SubtitlePreview";
+import { cueLayout, regionLayout, SubtitlePreview } from "./SubtitlePreview";
+import { useSubtitleFont } from "./fonts";
 import { api } from "./api";
 import type { Cue, Job, SubtitleStyle } from "./types";
 
@@ -221,4 +222,19 @@ it("restores legacy size after a rejected size change", async () => {
       subtitle_italic: true,
     }),
   );
+});
+
+it("permits synthetic italic for bundled fonts without an italic face", () => {
+  vi.mocked(useSubtitleFont).mockReturnValue({ id: "roboto", italic: true,
+    font: { id: "roboto", family: "Roboto", cell: 1.319, advances: {} } } as never);
+  const { container } = render(<SubtitlePreview
+    cues={[{ id: "a", start: 0, end: 2, text: "Xin chào" } as Cue]}
+    regions={[]} now={1} width={1280} height={720}
+    rect={{ left: 0, top: 0, width: 1280, height: 720 }} blurOriginal={false}
+    subtitleStyle={{ ...style, font_id: "roboto", italic: true }}
+  />);
+  const caption = container.querySelector<HTMLElement>(".vietnamese-preview")!;
+  expect(caption.style.fontStyle).toBe("italic");
+  // The app root sets font-synthesis:none, so an explicit override is needed.
+  expect(caption.style.fontSynthesis).toBe("style");
 });

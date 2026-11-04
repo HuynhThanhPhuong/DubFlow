@@ -673,6 +673,7 @@ export function SubtitlePreview({
                 lineHeight: cell,
                 fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
                 fontStyle: st.italic ? "italic" : "normal",
+                fontSynthesis: "style",
                 WebkitTextStrokeColor: st.outline_color ?? "#000",
                 textShadow: st.shadow
                   ? `${st.shadow * ratio}px ${st.shadow * ratio}px ${(st.shadow_blur ?? 0) * ratio}px rgba(0,0,0,.5)`
@@ -727,6 +728,7 @@ export function SubtitlePreview({
                 lineHeight: cell,
                 fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
                 fontStyle: st.italic ? "italic" : "normal",
+                fontSynthesis: "style",
                 WebkitTextStrokeColor: st.outline_color ?? "#000",
                 textShadow: st.shadow
                   ? `${st.shadow * ratio}px ${st.shadow * ratio}px ${(st.shadow_blur ?? 0) * ratio}px rgba(0,0,0,.5)`
