@@ -17,3 +17,10 @@ frontend/tsconfig.tsbuildinfo
 models/
 
 /tmp/
+
+# Linux runtime (scripts/setup-linux.sh)
+runtime/
+.venv/
+**/.venv/
+.env.*
+!.env.example
