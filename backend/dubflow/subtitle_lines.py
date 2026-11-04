@@ -475,6 +475,167 @@ def _asr_outside_text(c, lines, a, b):
     return ''.join(original[idx[j]:idx[k - 1] + 1] for j, k in keep), sure
 
 
+_NEGATIONS = set('不没别无非未')
+
+
+def _near_text(a, b):
+    """True when two line keys are the same sentence read twice (OCR flicker): equal, one at least 4 characters inside the
+    other, or (5+ characters) at least 80% alike - without a negation being the only difference."""
+    if a == b:
+        return bool(a)
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < 4:
+        return False
+    if short in long:
+        return True
+    if len(short) < 5:
+        return False
+    blocks = SequenceMatcher(None, short, long, autojunk=False).get_matching_blocks()
+    used = set()
+    for blk in blocks:
+        used.update(range(blk.b, blk.b + blk.size))
+    if any(c in _NEGATIONS for i, c in enumerate(long) if i not in used):
+        return False
+    matched = sum(blk.size for blk in blocks)
+    return matched / len(short) >= .8 or 2 * matched / (len(short) + len(long)) >= .8
+
+
+def _near_prefix(frag, nxt):
+    """A 1-2 character fragment that starts the next line (or all but its last character does: '再厅' / '再续烟火凡尘')."""
+    if len(nxt) <= len(frag) or not frag:
+        return False
+    return nxt.startswith(frag) or (len(frag) == 2 and frag[0] == nxt[0])
+
+
+def _union_geometry(a, b):
+    out = {}
+    if all(k in a and k in b for k in ('x0', 'y0', 'x1', 'y1')):
+        out.update(x0=min(a['x0'], b['x0']), y0=min(a['y0'], b['y0']), x1=max(a['x1'], b['x1']), y1=max(a['y1'], b['y1']))
+    if a.get('box') and b.get('box'):
+        out['box'] = [min(a['box'][0], b['box'][0]), min(a['box'][1], b['box'][1]), max(a['box'][2], b['box'][2]), max(a['box'][3], b['box'][3])]
+    return out
+
+
+def _is_supp(sg):
+    return sg.get('kind') == 'supplementary' or sg.get('orientation') == 'v'
+
+
+def _asr_words(s, e, asrs):
+    """The Chinese ASR words that fall in (s, e), cut by time share (as the cue builder does)."""
+    parts = []
+    for c in asrs:
+        if _overlap(s, e, c['start'], c['end']) <= 1e-9:
+            continue
+        han = chinese(c['original'])
+        d = c['end'] - c['start']
+        a, b = max(s, c['start']), min(e, c['end'])
+        parts.append(han[int(round((a - c['start']) / d * len(han))):int(round((b - c['start']) / d * len(han)))])
+    return ''.join(parts)
+
+
+def _same_line_group(a, b):
+    """Two neighbouring readings of one region may be the same displayed line (dialogue: same cluster or the same horizontal
+    place; supplementary: the cluster of a vertical text jitters, so only the region counts)."""
+    if a.get('region') != b.get('region') or _is_supp(a) != _is_supp(b):
+        return False
+    if _is_supp(a) or a.get('cluster') == b.get('cluster'):
+        return True
+    ba, bb = a.get('box'), b.get('box')
+    if not ba or not bb:
+        return False
+    width = min(ba[2] - ba[0], bb[2] - bb[0])
+    return width > 0 and min(ba[2], bb[2]) - max(ba[0], bb[0]) >= .5 * width
+
+
+def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2):
+    """Dot12: the extra and duplicated readings of the OCR before cues are built (segments sorted by time).
+
+    1. In a Chinese video a reading without any Chinese character (Latin junk like 'KEIN') is dropped; when the ASR hears Chinese
+       at that time the reading is kept with the words of that ASR cue instead. Dropped readings go to stats['dropped_ocr'].
+    2. Neighbouring readings of one region (same cluster / same place, or any supplementary ones) with nearly the same text and at
+       most `gap` s apart become one: the span is the union, the text the reading that agrees best with the ASR (then the
+       longest, then the longest shown). Merged groups go to stats['merged_ocr'].
+    3. A fragment of at most `frag_max` s and `frag_chars` characters that starts a line of its region is folded into it: the
+       line on screen while the fragment is read (the start of the line read again as it fades), else the next line (at most
+       `gap` s away; it then starts earlier, never before the end of the line before), else the line before (at most `gap` s
+       back). A fragment that matches nothing stays, flagged source_uncertain."""
+    chinese_source = any(chinese(s.get('text', '')) for s in segs) or any(chinese(c['original']) for c in asrs)
+    kept = []
+    for sg in segs:
+        if chinese_source and not chinese(sg.get('text', '')):
+            s, e = float(sg['s']), float(sg['e'])
+            words = '' if _is_supp(sg) else _asr_words(s, e, asrs)  # a lone character is not speech under this reading
+            if len(words) >= 2:
+                kept.append(dict(sg, text=words))
+                continue
+            if stats is not None:
+                stats.setdefault('dropped_ocr', []).append(dict(start=s, end=e, text=sg.get('text', ''), region=sg.get('region')))
+            continue
+        kept.append(dict(sg))
+    # 2. near-identical neighbours
+    last, merged = {}, []
+    for sg in kept:
+        key = (sg.get('region'), _is_supp(sg))
+        prev = merged[last[key]] if key in last else None
+        pk, ck = line_key(prev['text']) if prev else '', line_key(sg['text'])
+        gap_s = float(sg['s']) - float(prev['e']) if prev else 0.0
+        if prev is not None and gap_s <= gap + 1e-6 and (gap_s >= -1e-9 or prev.get('cluster') == sg.get('cluster')) \
+                and _same_line_group(prev, sg) and _near_text(pk, ck):
+            s, e = min(float(prev['s']), float(sg['s'])), max(float(prev['e']), float(sg['e']))
+            words = _asr_words(s, e, asrs)
+            best = max((prev, sg), key=lambda o: (round(_agreement(o['text'], words), 2) if words and not _is_supp(o) else 0,
+                                                  len(line_key(o['text'])), float(o['e']) - float(o['s'])))
+            row = dict(best, s=s, e=e, **_union_geometry(prev, sg))
+            if prev.get('reveal') and not _is_supp(row):
+                row['reveal'] = prev['reveal']
+            else:
+                row.pop('reveal', None)
+            if stats is not None:
+                stats.setdefault('merged_ocr', []).append(dict(start=s, end=e, texts=[prev['text'], sg['text']], kept=row['text']))
+            merged[last[key]] = row
+            continue
+        last[key] = len(merged)
+        merged.append(sg)
+    # 3. prefix fragments, from the end so a chain of fragments folds into the line at its end
+    out = list(merged)
+    for i in range(len(out) - 1, -1, -1):
+        f = out[i]
+        fk = line_key(f['text'])
+        if not fk or len(fk) > frag_chars or float(f['e']) - float(f['s']) > frag_max + 1e-9:
+            continue
+        key = (f.get('region'), _is_supp(f))
+        nxt = next((j for j in range(i + 1, len(out)) if (out[j].get('region'), _is_supp(out[j])) == key), None)
+        before = next((j for j in range(i - 1, -1, -1) if (out[j].get('region'), _is_supp(out[j])) == key), None)
+        nk = line_key(out[nxt]['text']) if nxt is not None else ''
+        bk = line_key(out[before]['text']) if before is not None else ''
+        into_before = before is not None and _near_prefix(fk, bk) and float(f['s']) < float(out[before]['e']) - 1e-9
+        into_next = nxt is not None and float(out[nxt]['s']) - float(f['e']) <= gap + 1e-6 and _near_prefix(fk, nk)
+        if into_before:  # the start of the line already on screen, read again while it fades
+            n = out[before]
+            n['e'] = max(float(n['e']), float(f['e']))
+            if stats is not None:
+                stats.setdefault('merged_ocr', []).append(dict(start=float(n['s']), end=float(n['e']), texts=[n['text'], f['text']], kept=n['text']))
+            del out[i]
+        elif into_next:
+            n = out[nxt]
+            start = min(float(n['s']), float(f['s']))
+            if before is not None:
+                start = max(start, min(float(n['s']), float(out[before]['e'])))
+            n['s'] = start
+            if stats is not None:
+                stats.setdefault('merged_ocr', []).append(dict(start=start, end=float(n['e']), texts=[f['text'], n['text']], kept=n['text']))
+            del out[i]
+        elif before is not None and _near_prefix(fk, bk) and float(f['s']) - float(out[before]['e']) <= gap + 1e-6:
+            n = out[before]
+            n['e'] = max(float(n['e']), float(f['e']))
+            if stats is not None:
+                stats.setdefault('merged_ocr', []).append(dict(start=float(n['s']), end=float(n['e']), texts=[n['text'], f['text']], kept=n['text']))
+            del out[i]
+        else:
+            f['source_uncertain'] = True  # too short to be a sentence and it belongs to no line: check against the video
+    return out
+
+
 def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_window=.3, dup_cover=.5, min_gap=.5):
     """Source cues when the subtitle band is known: the on-screen lines are the text (one OCR cue per line); ASR only
     fills the time where no line is displayed and never overlaps an OCR cue.
@@ -488,6 +649,8 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
     segs = sorted((s for s in segments if float(s['e']) > float(s['s']) and line_key(s.get('text', ''))),
                   key=lambda s: (float(s['s']), float(s['e'])))
     asrs = sorted(asr_cues, key=lambda c: (c['start'], c['end']))
+    segs = clean_ocr_segments([dict(s, e=min(float(s['e']), float(duration))) for s in segs if float(s['s']) < float(duration)],
+                              asrs, stats)
     out = []
     for i, sg in enumerate(segs, 1):
         s, e = float(sg['s']), min(float(sg['e']), float(duration))
@@ -511,7 +674,7 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
                    source_agreement=_agreement(text, asr_text))
         if all(k in sg for k in ('x0', 'y0', 'x1', 'y1')):
             cue['box'] = [sg['x0'], sg['y0'], sg['x1'], sg['y1']]
-        for field in ('region', 'box', 'orientation', 'text_height', 'band', 'kind', 'reveal', 'cluster'):
+        for field in ('region', 'box', 'orientation', 'text_height', 'band', 'kind', 'reveal', 'cluster', 'source_uncertain'):
             if field in sg:
                 cue[field] = sg[field]
         if supplementary:

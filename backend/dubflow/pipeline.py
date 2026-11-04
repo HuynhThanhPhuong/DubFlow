@@ -538,6 +538,10 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
             segment.setdefault('text_height', max(1, segment.get('y1', y+h) - segment.get('y0', y)))
         emit('subband', 'Đang dựng lời gốc từ sub trên hình và giọng nói', 33)
         cues = build_source_cues_primary(segments, asr_cues, meta['duration'], stats=stats)
+        for dropped in stats.get('dropped_ocr', []):
+            warnings.append(f"Đã bỏ chữ nhận diện thừa không có chữ Hán: '{dropped['text']}' ({dropped['start']:.1f}-{dropped['end']:.1f} s).")
+        if stats.get('merged_ocr'):
+            warnings.append(f"Đã gộp {len(stats['merged_ocr'])} lời gốc nhận diện trùng hoặc cụt; kiểm tra lại nếu thấy thiếu câu.")
     if any(c['source'] == 'asr' for c in cues):
         check_cancel(directory)
         try:
