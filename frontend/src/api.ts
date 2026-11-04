@@ -143,6 +143,8 @@ export const api = {
   jobErrors: (id: string) => request<JobErrors>(`/jobs/${key(id)}/errors`),
   dismissError: (id: string, errorKey: string) =>
     request<{ ok: boolean }>(`/jobs/${key(id)}/errors/dismiss`, json("POST", { key: errorKey })),
+  deleteCues: (id: string, cueIds: string[]) =>
+    request<Cue[]>(`/jobs/${key(id)}/cues/delete`, json("POST", { cue_ids: cueIds })),
   resetSource: (id: string) =>
     request<Job>(`/jobs/${key(id)}/analyze?reset_source=1`, json("POST")),
   render: (id:string,kind:'auto'|'draft'|'final')=>request<Job>(`/jobs/${key(id)}/render`,json('POST',{kind})),

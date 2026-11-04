@@ -103,6 +103,27 @@ describe("JobActivity", () => {
     expect(screen.getByText("Không có lỗi")).toBeTruthy();
   });
 
+  it("shows batch and reason, retries the batch ids and deletes extra cues after a confirm", () => {
+    const onRetry = vi.fn();
+    const onDeleteCues = vi.fn();
+    const batch = { key: "trb:1", kind: "translate", step: "Dịch", time: "2026-11-02T17:33:44Z", cue_id: "a", cue_number: 1,
+      message: "Lô 2/5: 2 câu chưa được dịch. Lý do: 503 quá tải.", batch: 2, batches: 5, cue_ids: ["a", "b"], actions: ["jump", "retry_batch", "dismiss"] };
+    const audit = { key: "audit:NO_CJK:c", kind: "audit", step: "Phân tích", time: "2026-11-02T17:33:44Z", cue_id: "c", cue_number: 3,
+      message: "Lời gốc không có chữ Hán.", severity: "error", cue_ids: ["c"], delete_ids: ["c"], actions: ["jump", "delete_cues", "dismiss"] };
+    const errors = { items: [batch, audit], count: 2, refresh: vi.fn(), onRetry, onDeleteCues, onJump: vi.fn() } as never;
+    render(<JobActivity job={{ ...base, activity: [] } as Job} errors={errors} />);
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByText("Lô 2/5")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dịch lại các câu lỗi của lô này" }));
+    expect(onRetry).toHaveBeenCalledWith(["a", "b"]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    fireEvent.click(screen.getByRole("button", { name: "Xoá câu" }));
+    expect(onDeleteCues).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Xoá câu" }));
+    expect(onDeleteCues).toHaveBeenCalledWith(["c"]);
+    confirm.mockRestore();
+  });
+
   it("keeps the details button after the job finished, and renders nothing when there is nothing to show", () => {
     const done = { ...base, status: "awaiting_review", stage_step: null, activity: [{ t: "2026-11-02T17:33:44Z", msg: "Xong." }] } as Job;
     const { container, rerender } = render(<JobActivity job={done} />);

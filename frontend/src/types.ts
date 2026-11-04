@@ -53,17 +53,30 @@ export interface SrtPreview {
 }
 export interface JobErrorItem {
   key: string;
-  kind: "translate" | "srt" | "task" | "warning" | "blocking";
+  kind: "translate" | "srt" | "task" | "warning" | "blocking" | "audit";
+  severity?: "error" | "warn";
+  code?: string;
+  cue_ids?: string[];
+  delete_ids?: string[];
+  batch?: number | null;
+  batches?: number | null;
+  reason?: string | null;
   step: string;
   time: string;
   cue_id: string | null;
   cue_number: number | null;
   message: string;
-  actions: ("jump" | "edit" | "retry" | "delete_block" | "dismiss")[];
+  actions: ("jump" | "edit" | "retry" | "retry_batch" | "delete_block" | "delete_cues" | "dismiss")[];
+}
+export interface CueAuditFlag {
+  code: string;
+  severity: "error" | "warn";
+  message: string;
 }
 export interface JobErrors {
   count: number;
   items: JobErrorItem[];
+  cue_flags?: Record<string, CueAuditFlag[]>;
 }
 export interface JobActivityRow {
   /** ISO time the worker reported the message */

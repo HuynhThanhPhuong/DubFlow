@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Cue } from "./types";
+import type { Cue, CueAuditFlag } from "./types";
 import { cueFlags, time } from "./helpers";
 import { isSupplementary } from "./SubtitlePreview";
 import { Empty } from "./ui";
@@ -15,6 +15,7 @@ function CueRow({
   onSelect,
   onEdit,
   onEditing,
+  audit,
   measuring = false,
 }: {
   cue: Cue;
@@ -25,6 +26,7 @@ function CueRow({
   onSelect: (id: string, seek?: boolean) => void;
   onEdit: (id: string, patch: Partial<Cue>) => void;
   onEditing: (id: string | null) => void;
+  audit?: CueAuditFlag[];
   measuring?: boolean;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -82,6 +84,15 @@ function CueRow({
                   : cue.source === "ocr"
                     ? "hình"
                     : "hình + nghe"}
+              </span>
+            )}
+            {!!audit?.length && (
+              <span
+                className={`cue-flag-badge cue-audit-badge${audit.some((a) => a.severity === "error") ? " error" : ""}`}
+                title={audit.map((a) => a.message).join(" · ")}
+                aria-label={label(`${audit.length} lỗi nguồn do kiểm tra tự động`)}
+              >
+                Kiểm tra {audit.length}
               </span>
             )}
             {!!flags.length && (
@@ -226,7 +237,9 @@ export function CueList({
   error,
   onSelect,
   onEdit,
+  audit,
 }: {
+  audit?: Record<string, CueAuditFlag[]>;
   cues: Cue[];
   active: string | null;
   disabled: boolean;
@@ -287,6 +300,7 @@ export function CueList({
     onSelect,
     onEdit,
     onEditing: setEditing,
+    audit: audit?.[cue.id],
   });
   return (
     <>

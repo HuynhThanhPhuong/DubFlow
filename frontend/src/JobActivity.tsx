@@ -13,7 +13,7 @@ const clock = (iso: string) => {
 
 /** Live list of the job's current errors (translation, SRT import, tasks, export blockers); refreshes with the job. */
 export function useJobErrors(job: Job | null) {
-  const [data, setData] = useState<JobErrors>({ count: 0, items: [] });
+  const [data, setData] = useState<JobErrors>({ count: 0, items: [], cue_flags: {} });
   const [tick, setTick] = useState(0);
   const id = job?.id;
   const stamp = `${job?.status}|${job?.updated_at}|${job?.stage}`;
@@ -34,7 +34,7 @@ export function useJobErrors(job: Job | null) {
     return () => window.clearInterval(timer);
   }, [id]);
   useEffect(() => {
-    if (!id) setData({ count: 0, items: [] });
+    if (!id) setData({ count: 0, items: [], cue_flags: {} });
   }, [id]);
   return { ...data, refresh: () => setTick((t) => t + 1) };
 }
@@ -46,6 +46,7 @@ export interface ErrorTools {
   onJump?: (cueId: string) => void;
   onEditCue?: (cueId: string, text: string) => void;
   onRetry?: (cueIds: string[]) => Promise<void> | void;
+  onDeleteCues?: (cueIds: string[]) => Promise<void> | void;
 }
 
 function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: ErrorTools }) {
@@ -67,6 +68,11 @@ function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: E
       <div className="job-error-head">
         <span className="job-error-step">{item.step}</span>
         <time dateTime={item.time}>{clock(item.time)}</time>
+        {item.batch ? (
+          <span className="job-error-step">
+            Lô {item.batch}/{item.batches}
+          </span>
+        ) : null}
         {item.cue_id && has("jump") && tools.onJump && (
           <button type="button" className="job-error-link" onClick={() => tools.onJump?.(item.cue_id as string)}>
             Câu {item.cue_number}
@@ -96,6 +102,23 @@ function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: E
             Dịch lại
           </Button>
         )}
+        {has("retry_batch") && tools.onRetry && item.cue_ids?.length ? (
+          <Button disabled={busy} onClick={() => void run(() => tools.onRetry?.(item.cue_ids as string[]))}>
+            Dịch lại các câu lỗi của lô này
+          </Button>
+        ) : null}
+        {has("delete_cues") && tools.onDeleteCues && item.delete_ids?.length ? (
+          <Button
+            disabled={busy}
+            onClick={() => {
+              const n = item.delete_ids?.length ?? 0;
+              if (window.confirm(`Xoá ${n} câu thừa khỏi danh sách? Bản hiện tại được lưu vào lịch sử bản dịch.`))
+                void run(() => tools.onDeleteCues?.(item.delete_ids as string[]));
+            }}
+          >
+            Xoá câu
+          </Button>
+        ) : null}
         {has("delete_block") && (
           <Button
             disabled={busy}

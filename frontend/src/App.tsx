@@ -494,6 +494,26 @@ export default function App() {
   const failedIds = Array.from(
     new Set(jobErrors.items.filter((e) => e.actions.includes("retry") && e.cue_id).map((e) => e.cue_id as string)),
   );
+  const auditErrorIds = Array.from(
+    new Set(
+      jobErrors.items
+        .filter((e) => e.kind === "audit" && e.severity === "error")
+        .flatMap((e) => e.cue_ids ?? []),
+    ),
+  );
+  const filterIds = Array.from(new Set([...failedIds, ...auditErrorIds]));
+  const deleteCues = async (ids: string[]) => {
+    if (!currentJob) return;
+    try {
+      const rows = await api.deleteCues(currentJob.id, ids);
+      setCues(rows);
+      setActive((a) => (a && ids.includes(a) ? null : a));
+      setNotice(`Đã xoá ${ids.length} câu.`);
+      await refresh();
+    } catch (e) {
+      showError(e);
+    }
+  };
   const retryCues = async (ids: string[]) => {
     if (!currentJob) return;
     try {
@@ -517,6 +537,7 @@ export default function App() {
     },
     onEditCue: (id: string, text: string) => modify(id, { text }),
     onRetry: retryCues,
+    onDeleteCues: deleteCues,
   };
   const projectWarnings = Array.from(
     new Set([
@@ -986,19 +1007,22 @@ export default function App() {
                       }}
                     />
                   </div>
-                  {failedIds.length > 0 && (
+                  {filterIds.length > 0 && (
                     <div className="cue-failed-bar">
                       <label>
-                        <input type="checkbox" checked={onlyFailed} onChange={(e) => setOnlyFailed(e.target.checked)} /> Câu lỗi/còn trống ({failedIds.length})
+                        <input type="checkbox" checked={onlyFailed} onChange={(e) => setOnlyFailed(e.target.checked)} /> Câu lỗi/còn trống ({filterIds.length})
                       </label>
-                      <Button disabled={busy || isBusy(currentJob)} onClick={() => void retryCues(failedIds)}>
-                        Dịch lại các câu lỗi
-                      </Button>
+                      {failedIds.length > 0 && (
+                        <Button disabled={busy || isBusy(currentJob)} onClick={() => void retryCues(failedIds)}>
+                          Dịch lại các câu lỗi
+                        </Button>
+                      )}
                     </div>
                   )}
                   <CueList
                     key={currentJob.id}
-                    cues={onlyFailed && failedIds.length ? cues.filter((c) => failedIds.includes(c.id)) : cues}
+                    cues={onlyFailed && filterIds.length ? cues.filter((c) => filterIds.includes(c.id)) : cues}
+                    audit={jobErrors.cue_flags}
                     active={active}
                     disabled={busy || isBusy(currentJob)}
                     loading={cueLoading}
