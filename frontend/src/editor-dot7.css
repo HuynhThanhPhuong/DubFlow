@@ -231,6 +231,67 @@
 .font-popover > .button {
   white-space: normal;
 }
+.font-italic-control,
+.font-size-control > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 12px;
+}
+.font-italic-control input {
+  width: auto;
+}
+.font-size-control {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.font-size-control > label {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.font-size-control output {
+  color: var(--muted);
+}
+.font-size-control input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.font-size-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+.font-size-presets button {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  min-height: 36px;
+  font: inherit;
+  font-size: 12px;
+}
+.font-size-presets button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--tint);
+}
+.studio-app .cue-failed-bar {
+  padding-left: 12px;
+}
+.cue-failed-bar > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cue-failed-bar input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex-shrink: 0;
+}
 .studio-app .sentences {
   display: flex;
   flex-direction: column;

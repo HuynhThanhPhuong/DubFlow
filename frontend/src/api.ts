@@ -112,7 +112,7 @@ export const api = {
     request<Job>("/jobs", { method: "POST", body: data }),
   updateJob: (
     id: string,
-    data: { subtitle_font?: string; mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string; setting?: AddressSetting },
+    data: { subtitle_font?: string; subtitle_italic?: boolean; subtitle_size?: number; mode?: Mode; voice_id?: string; source_url?: string; title?:string; collection_id?:string|null; episode?:string; setting?: AddressSetting },
   ) => request<Job>(`/jobs/${key(id)}`, json("PUT", data)),
   action: (id: string, action: "analyze" | "translate" | "render" | "cancel") =>
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),

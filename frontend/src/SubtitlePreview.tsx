@@ -153,6 +153,7 @@ export function regionSizes(
   cues: Pick<Cue, "region" | "box" | "text_height" | "kind" | "orientation">[],
   st: SubtitleStyle,
 ) {
+  if (st.fixed_size) return new Map<number, number>();
   const heights = new Map<number, number[]>();
   for (const c of cues) {
     const h = c.text_height;
@@ -210,6 +211,48 @@ export function regionLayout(
   const cell = st.cell ?? LIBASS_CELL;
   const measure = (text: string) => regionUnits(text, st.advances);
   const fs = (size: number) => assSize(size, cell);
+  if (st.fixed_size) {
+    const auxiliary = isSupplementary(cue);
+    const box = cue.box;
+    const safeX = width * SAFE_BOTTOM;
+    const x =
+      auxiliary || !box
+        ? width / 2
+        : Math.max(safeX, Math.min(width - safeX, (box[0] + box[2]) / 2));
+    const band = auxiliary ? null : cue.band;
+    const left = Math.max(safeX, band?.[0] ?? safeX);
+    const right = Math.min(width - safeX, band?.[2] ?? width - safeX);
+    const available = Math.max(
+      1,
+      2 * Math.min(x - left, right - x) - 2 * st.outline,
+    );
+    const size = st.size * (auxiliary ? 0.85 : 1);
+    const text = auxiliary
+      ? "[" +
+        cue.text
+          .trim()
+          .replace(/^[\[\]]+|[\[\]]+$/g, "")
+          .trim() +
+        "]"
+      : cue.text;
+    let lines = wrapText(text, fs(size) / cell, available, measure);
+    const overflow =
+      lines.length > 3 ||
+      lines.some(
+        (line) => (measure(line) * fs(size)) / cell > available + 0.01,
+      );
+    if (lines.length > 3)
+      lines = [...lines.slice(0, 2), lines.slice(2).join(" ")];
+    return {
+      x,
+      y: auxiliary || !box ? height - st.margin_v : (box[1] + box[3]) / 2,
+      align: auxiliary || !box ? 2 : 5,
+      size,
+      lines,
+      available: available + 2 * st.outline,
+      overflow,
+    };
+  }
   if (isSupplementary(cue)) {
     const text =
       "[" +
@@ -360,11 +403,13 @@ export function cueLayout(
         (fs(other.size) * other.lines.length) / (other.align === 2 ? 1 : 2);
       fit.y = Math.min(fit.y, top - gap);
     }
-    const base = sizes.size
-      ? Math.max(...sizes.values())
-      : dialogue.length
-        ? Math.max(...dialogue.map((d) => d.size))
-        : 0;
+    const base = st.fixed_size
+      ? 0
+      : sizes.size
+        ? Math.max(...sizes.values())
+        : dialogue.length
+          ? Math.max(...dialogue.map((d) => d.size))
+          : 0;
     if (base) {
       // one auxiliary size for the whole video, tied to the dialogue size (a region's, not the caption on screen)
       const sized = regionLayout(cue, width, height, { ...st, size: base });
@@ -376,7 +421,7 @@ export function cueLayout(
       const other = regionLayout(cues[i], width, height, st);
       fit.y -= fs(other.size) * other.lines.length + gap;
     }
-    return fit;
+    return st.fixed_size ? safeFixedBlock(fit, width, height, cell) : fit;
   }
   if (cue.band && cue.box) {
     const box = cue.box,
@@ -445,6 +490,26 @@ export function cueLayout(
   }
   const lane = assignLanes(cues)[index];
   if (lane) fit.y = laneY(fit.y, lane, fs(fit.size));
+  return st.fixed_size ? safeFixedBlock(fit, width, height, cell) : fit;
+}
+
+function safeFixedBlock(
+  fit: ReturnType<typeof regionLayout>,
+  width: number,
+  height: number,
+  cell: number,
+) {
+  const block = assSize(fit.size, cell) * fit.lines.length;
+  const top = height * SAFE_BOTTOM;
+  const bottom = height * (1 - SAFE_BOTTOM);
+  const low = top + (fit.align === 2 ? block : block / 2);
+  const high = bottom - (fit.align === 2 ? 0 : block / 2);
+  fit.y = Math.min(Math.floor(high), Math.max(Math.ceil(low), fit.y));
+  if (low > high) fit.overflow = true;
+  fit.x = Math.max(
+    width * SAFE_BOTTOM,
+    Math.min(width * (1 - SAFE_BOTTOM), fit.x),
+  );
   return fit;
 }
 
@@ -488,7 +553,11 @@ export function SubtitlePreview({
   sample?: boolean;
 }) {
   const selectedId = fontId ?? subtitleStyle?.font_id;
-  const loaded = useSubtitleFont(selectedId);
+  const italic =
+    fontId && fontId !== subtitleStyle?.font_id
+      ? fontId === "public-sans"
+      : !!subtitleStyle?.italic;
+  const loaded = useSubtitleFont(selectedId, italic);
   const fontReady = !selectedId || !!loaded?.font;
   if (
     sample &&
@@ -547,6 +616,7 @@ export function SubtitlePreview({
         font_id: loaded.font.id,
         cell: loaded.font.cell,
         advances: loaded.font.advances,
+        italic,
       }
     : base;
   const cell = st.cell ?? LIBASS_CELL;
@@ -602,6 +672,11 @@ export function SubtitlePreview({
                 fontSize: ratio ? (fs / cell) * ratio : 16,
                 lineHeight: cell,
                 fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
+                fontStyle: st.italic ? "italic" : "normal",
+                WebkitTextStrokeColor: st.outline_color ?? "#000",
+                textShadow: st.shadow
+                  ? `${st.shadow * ratio}px ${st.shadow * ratio}px ${(st.shadow_blur ?? 0) * ratio}px rgba(0,0,0,.5)`
+                  : "none",
                 WebkitTextStrokeWidth: outline * 2,
               }}
             >
@@ -651,6 +726,11 @@ export function SubtitlePreview({
                   : 16,
                 lineHeight: cell,
                 fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
+                fontStyle: st.italic ? "italic" : "normal",
+                WebkitTextStrokeColor: st.outline_color ?? "#000",
+                textShadow: st.shadow
+                  ? `${st.shadow * ratio}px ${st.shadow * ratio}px ${(st.shadow_blur ?? 0) * ratio}px rgba(0,0,0,.5)`
+                  : "none",
                 WebkitTextStrokeWidth: outline * 2,
               }}
             >

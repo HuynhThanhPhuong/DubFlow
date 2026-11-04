@@ -96,6 +96,7 @@ export default function App() {
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [dropped, setDropped] = useState<File>();
   const [fontPreview, setFontPreview] = useState<{ jobId: string; id: string } | null>(null);
+  const [stylePreview, setStylePreview] = useState<{ jobId: string; subtitle_size?: number; subtitle_italic: boolean } | null>(null);
   const [now, setNow] = useState(0);
   const [seek, setSeek] = useState({ time: 0, token: 0 });
   const [active, setActive] = useState<string | null>(null);
@@ -548,6 +549,7 @@ export default function App() {
     }
   };
   const errorTools = {
+    activity: jobErrors.activity,
     items: jobErrors.items,
     count: jobErrors.count,
     refresh: jobErrors.refresh,
@@ -893,6 +895,7 @@ export default function App() {
                       <Player
                         job={currentJob}
                         previewFont={fontPreview?.jobId === currentJob.id ? fontPreview.id : undefined}
+                        previewStyle={stylePreview?.jobId === currentJob.id ? stylePreview : undefined}
                         cues={cues}
                         onTime={setNow}
                         seek={{ ...seek, time: now }}
@@ -978,6 +981,7 @@ export default function App() {
                       defaultFont={studioSettings?.default_subtitle_font ?? "public-sans"}
                       disabled={busy || isBusy(currentJob)}
                       onPreview={(id) => setFontPreview(id ? { jobId: currentJob.id, id } : null)}
+                      onStylePreview={(values) => setStylePreview(values ? { jobId: currentJob.id, ...values } : null)}
                       onJob={(j) => {
                         if (selected.current !== currentJob.id) return;
                         setJob(j);

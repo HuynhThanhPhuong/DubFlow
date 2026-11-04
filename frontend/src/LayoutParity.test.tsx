@@ -6,6 +6,7 @@ import {
   LIBASS_CELL,
 } from "./SubtitlePreview";
 import fixture from "../../backend/tests/fixtures/layout-dot13.json";
+import fixedFixture from "../../backend/tests/fixtures/layout-dot14.json";
 import type { Cue, SubtitleStyle } from "./types";
 
 // The fixture is produced by the backend (backend/tests/gen_layout_fixture.py) from subtitle_style.cue_layout, which also
@@ -14,6 +15,33 @@ const st = {
   ...fixture.style,
   advances: fixture.advances,
 } as unknown as SubtitleStyle;
+
+it.each(Object.entries(fixedFixture.scenarios))(
+  "fixed-size preview equals the backend (ASS) layout: %s",
+  (_name, scenario) => {
+    const style = {
+      ...fixedFixture.style,
+      advances: fixedFixture.advances,
+    } as unknown as SubtitleStyle;
+    const cues = scenario.cues as unknown as Cue[];
+    for (const row of scenario.rows) {
+      const fit = cueLayout(
+        cues,
+        row.index,
+        fixedFixture.width,
+        fixedFixture.height,
+        row.t,
+        style,
+      );
+      expect(fit.lines).toEqual(row.lines);
+      expect(fit.align).toBe(row.align);
+      expect(fit.size).toBeCloseTo(row.size, 4);
+      expect(fit.x).toBeCloseTo(row.x, 4);
+      expect(fit.y).toBeCloseTo(row.y, 4);
+      expect(Boolean(fit.overflow)).toBe(row.overflow);
+    }
+  },
+);
 
 it.each(Object.entries(fixture.scenarios))(
   "preview layout equals the backend (ASS) layout: %s",

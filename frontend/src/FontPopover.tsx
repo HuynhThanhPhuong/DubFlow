@@ -28,7 +28,7 @@ function FontTile({
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
-    loadFont(font)
+    loadFont(font, font.id === "public-sans")
       .then(() => {
         if (live) setReady(true);
       })
@@ -55,6 +55,7 @@ function FontTile({
         className="font-tile-sample"
         style={{
           fontFamily: ready ? fontFamily(font) : undefined,
+          fontStyle: font.id === "public-sans" ? "italic" : "normal",
           visibility: ready ? "visible" : "hidden",
         }}
       >
@@ -74,6 +75,7 @@ export function FontPopover({
   defaultFont,
   disabled,
   onPreview,
+  onStylePreview,
   onJob,
   onDefault,
   onError,
@@ -82,6 +84,9 @@ export function FontPopover({
   defaultFont: string;
   disabled: boolean;
   onPreview: (id: string | null) => void;
+  onStylePreview?: (
+    values: { subtitle_size?: number; subtitle_italic: boolean } | null,
+  ) => void;
   onJob: (job: Job) => void;
   onDefault: (id: string) => void;
   onError: (error: unknown) => void;
@@ -91,8 +96,24 @@ export function FontPopover({
   const [query, setQuery] = useState(""),
     [group, setGroup] = useState("Tất cả");
   const [selected, setSelected] = useState(job.subtitle_font ?? "public-sans");
+  const [size, setSize] = useState(job.subtitle_size ?? 5.5);
+  const [italic, setItalic] = useState(
+    job.subtitle_italic ??
+      (job.subtitle_font ?? "public-sans") === "public-sans",
+  );
+  const stylePreview = useRef(onStylePreview);
+  stylePreview.current = onStylePreview;
+  const fixedSize = useRef(job.subtitle_size !== null);
+  const sizeEdited = useRef(false);
+  const savedStyle = useRef({
+    subtitle_size: job.subtitle_size ?? 5.5,
+    subtitle_italic:
+      job.subtitle_italic ??
+      (job.subtitle_font ?? "public-sans") === "public-sans",
+  });
   const [pending, setPending] = useState(false),
     [loading, setLoading] = useState(false);
+  const saving = useRef(false);
   const [position, setPosition] = useState({ top: 12, left: 12 });
   const trigger = useRef<HTMLButtonElement>(null),
     panel = useRef<HTMLDivElement>(null);
@@ -103,10 +124,26 @@ export function FontPopover({
     setSelected(job.subtitle_font ?? "public-sans");
   }, [job.subtitle_font]);
   useEffect(() => {
+    setSize(job.subtitle_size ?? 5.5);
+    fixedSize.current = job.subtitle_size !== null;
+    sizeEdited.current = false;
+    setItalic(
+      job.subtitle_italic ??
+        (job.subtitle_font ?? "public-sans") === "public-sans",
+    );
+    savedStyle.current = {
+      subtitle_size: job.subtitle_size ?? 5.5,
+      subtitle_italic:
+        job.subtitle_italic ??
+        (job.subtitle_font ?? "public-sans") === "public-sans",
+    };
+  }, [job.subtitle_size, job.subtitle_italic, job.subtitle_font]);
+  useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
       preview.current(null);
+      stylePreview.current?.(null);
     };
   }, []);
   const close = () => {
@@ -190,7 +227,8 @@ export function FontPopover({
         .includes(query.trim().toLocaleLowerCase("vi")),
   );
   const choose = async (font: SubtitleFont) => {
-    if (pending || disabled) return;
+    if (saving.current || pending || disabled) return;
+    saving.current = true;
     setPending(true);
     try {
       await loadFont(font);
@@ -203,10 +241,56 @@ export function FontPopover({
     } catch (e) {
       if (alive.current) onError(e);
     } finally {
+      saving.current = false;
+      if (alive.current) setPending(false);
+    }
+  };
+  const styleValues = (nextSize: number, nextItalic: boolean) => ({
+    ...(fixedSize.current || sizeEdited.current
+      ? { subtitle_size: nextSize }
+      : {}),
+    subtitle_italic: nextItalic,
+  });
+  const saveStyle = async (nextSize = size, nextItalic = italic) => {
+    if (saving.current || pending || disabled) return;
+    const values = styleValues(nextSize, nextItalic);
+    if (
+      (values.subtitle_size === undefined ||
+        (fixedSize.current &&
+          values.subtitle_size === savedStyle.current.subtitle_size)) &&
+      values.subtitle_italic === savedStyle.current.subtitle_italic
+    )
+      return;
+    saving.current = true;
+    setPending(true);
+    try {
+      const updated = await api.updateJob(job.id, values);
+      if (alive.current) {
+        savedStyle.current = {
+          subtitle_size: nextSize,
+          subtitle_italic: nextItalic,
+        };
+        fixedSize.current ||= values.subtitle_size !== undefined;
+        sizeEdited.current = false;
+        onJob(updated);
+        stylePreview.current?.(null);
+      }
+    } catch (error) {
+      if (alive.current) {
+        sizeEdited.current = false;
+        setSize(savedStyle.current.subtitle_size);
+        setItalic(savedStyle.current.subtitle_italic);
+        stylePreview.current?.(null);
+        onError(error);
+      }
+    } finally {
+      saving.current = false;
       if (alive.current) setPending(false);
     }
   };
   const makeDefault = async () => {
+    if (saving.current || pending || disabled) return;
+    saving.current = true;
     setPending(true);
     try {
       await workspaceApi.updateSettings({ default_subtitle_font: selected });
@@ -214,6 +298,7 @@ export function FontPopover({
     } catch (e) {
       if (alive.current) onError(e);
     } finally {
+      saving.current = false;
       if (alive.current) setPending(false);
     }
   };
@@ -264,6 +349,75 @@ export function FontPopover({
                 preview.current(null);
             }}
           >
+            <label className="font-italic-control">
+              <input
+                type="checkbox"
+                checked={italic}
+                disabled={pending || disabled}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  setItalic(next);
+                  stylePreview.current?.(styleValues(size, next));
+                  void saveStyle(size, next);
+                }}
+              />
+              Nghiêng
+            </label>
+            <div className="font-size-control">
+              {job.subtitle_size === null && !fixedSize.current && (
+                <small className="muted">
+                  Video này đang giữ cỡ chữ cũ. Chọn một mức cỡ để áp dụng đồng
+                  đều.
+                </small>
+              )}
+              <label htmlFor="subtitle-size">
+                Cỡ chữ{" "}
+                <output>{size.toLocaleString("vi-VN")}% chiều cao video</output>
+              </label>
+              <input
+                id="subtitle-size"
+                aria-label="Cỡ chữ"
+                type="range"
+                min="1"
+                max="10"
+                step="0.1"
+                value={size}
+                disabled={pending || disabled}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  sizeEdited.current = true;
+                  setSize(next);
+                  stylePreview.current?.(styleValues(next, italic));
+                }}
+                onPointerUp={() => void saveStyle()}
+                onKeyUp={() => void saveStyle()}
+                onBlur={() => void saveStyle()}
+              />
+              <div className="font-size-presets">
+                {[
+                  ["Nhỏ", 3.5],
+                  ["Vừa", 5.5],
+                  ["Lớn", 7],
+                  ["Rất lớn", 9],
+                ].map(([label, value]) => (
+                  <button
+                    type="button"
+                    key={label}
+                    aria-pressed={size === value}
+                    disabled={pending || disabled}
+                    onClick={() => {
+                      const next = Number(value);
+                      sizeEdited.current = true;
+                      setSize(next);
+                      stylePreview.current?.(styleValues(next, italic));
+                      void saveStyle(next);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <input
               type="search"
               aria-label="Tìm phông chữ"

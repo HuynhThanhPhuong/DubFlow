@@ -12,8 +12,9 @@ export function getFontCatalog() {
 }
 export const fontFamily = (font: SubtitleFont) => `"DubFlow ${font.id}"`;
 const loaded = new Map<string, Promise<SubtitleFont>>();
-export function loadFont(font: SubtitleFont) {
-  let promise = loaded.get(font.id);
+export function loadFont(font: SubtitleFont, italic = false) {
+  const key = `${font.id}-${italic && font.italic_url ? "italic" : "normal"}`;
+  let promise = loaded.get(key);
   if (!promise) {
     promise = (async () => {
       // libass puts the baseline at winAscent inside a winAscent+winDescent line box.
@@ -26,26 +27,33 @@ export function loadFont(font: SubtitleFont) {
               lineGapOverride: "0%",
             }
           : {};
-      const face = new FontFace(`DubFlow ${font.id}`, `url("${font.url}")`, {
-        weight: "700",
-        style: "normal",
-        ...metrics,
-      });
+      const face = new FontFace(
+        `DubFlow ${font.id}`,
+        `url("${italic && font.italic_url ? font.italic_url : font.url}")`,
+        {
+          weight: "700",
+          style: italic && font.italic_url ? "italic" : "normal",
+          ...metrics,
+        },
+      );
       await face.load();
       document.fonts.add(face);
-      return font;
+      return italic && font.italic_advances
+        ? { ...font, advances: font.italic_advances }
+        : font;
     })().catch((error) => {
-      loaded.delete(font.id);
+      loaded.delete(key);
       throw error;
     });
-    loaded.set(font.id, promise);
+    loaded.set(key, promise);
   }
   return promise;
 }
 
-export function useSubtitleFont(id?: string) {
+export function useSubtitleFont(id?: string, italic = false) {
   const [result, setResult] = useState<{
     id: string;
+    italic: boolean;
     font?: SubtitleFont;
     error?: string;
   }>();
@@ -56,21 +64,24 @@ export function useSubtitleFont(id?: string) {
       .then((catalog) => {
         const font = catalog.fonts.find((f) => f.id === id);
         if (!font) throw new Error("Phông chữ không hợp lệ.");
-        return loadFont(font);
+        return loadFont(font, italic);
       })
       .then((font) => {
-        if (live) setResult({ id, font });
+        if (live) setResult({ id, italic, font });
       })
       .catch(() => {
         if (live)
           setResult({
             id,
+            italic,
             error: "Chưa tải được phông chữ. Mở lại video để thử lại.",
           });
       });
     return () => {
       live = false;
     };
-  }, [id]);
-  return result?.id === id ? result : undefined;
+  }, [id, italic]);
+  return result && result.id === id && result.italic === italic
+    ? result
+    : undefined;
 }

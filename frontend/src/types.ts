@@ -76,6 +76,7 @@ export interface CueAuditFlag {
   message: string;
 }
 export interface JobErrors {
+  activity?: JobActivityRow[];
   count: number;
   items: JobErrorItem[];
   cue_flags?: Record<string, CueAuditFlag[]>;
@@ -148,6 +149,8 @@ export interface Job {
   dry_url?: string | null;
   zip_url?: string | null;
   subtitle_font?: string;
+  subtitle_italic?: boolean;
+  subtitle_size?: number | null;
   subtitle_style?: SubtitleStyle;
   translation_usage?: TranslationUsage | null;
   setting?: AddressSetting;
@@ -179,6 +182,11 @@ export interface TranslateEstimate {
 }
 export type TranslateScope = "missing" | "all";
 export interface SubtitleStyle {
+  fixed_size?: boolean;
+  italic?: boolean;
+  outline_color?: string;
+  shadow?: number;
+  shadow_blur?: number;
   font_id?: string;
   cell?: number;
   advances?: Record<string, number>;
@@ -199,6 +207,8 @@ export interface SubtitleFont {
   ascent?: number;
   descent?: number;
   url: string;
+  italic_url?: string;
+  italic_advances?: Record<string, number>;
   advances: Record<string, number>;
 }
 export interface FontCatalog {

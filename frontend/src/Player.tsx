@@ -29,9 +29,11 @@ export function Player({
   onAddCue,
   editingDisabled = false,
   previewFont,
+  previewStyle,
 }: {
   job: Job;
   previewFont?: string;
+  previewStyle?: { subtitle_size?: number; subtitle_italic: boolean };
   cues: Cue[];
   onTime: (t: number) => void;
   seek: { time: number; token: number };
@@ -46,7 +48,25 @@ export function Player({
   const preferred =
     job.output_url && !draft ? "output" : hasVietnamese ? "preview" : "source";
   const [chosenView, setView] = useState<"source" | "preview" | "output">(preferred);
-  const view = previewFont ? "preview" : chosenView;
+  const view = previewFont || previewStyle ? "preview" : chosenView;
+  const previewSize = previewStyle?.subtitle_size === undefined
+    ? undefined
+    : Math.round((job.height || 1080) * previewStyle.subtitle_size / 100);
+  const subtitleStyle = previewStyle && job.subtitle_style
+    ? {
+        ...job.subtitle_style,
+        italic: previewStyle.subtitle_italic,
+        ...(previewSize === undefined ? {} : {
+          size: previewSize,
+          fixed_size: true,
+          max_lines: 3,
+          outline: previewSize * .06,
+          outline_color: "#2b2b2b",
+          shadow: .6,
+          shadow_blur: .8,
+        }),
+      }
+    : job.subtitle_style;
   const [error, setError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const pendingSeek = useRef<number | null>(null);
@@ -495,9 +515,9 @@ export function Player({
             height={job.height || 1080}
             rect={rect}
             blurOriginal={blurOriginal}
-            subtitleStyle={job.subtitle_style}
+            subtitleStyle={subtitleStyle}
             fontId={previewFont}
-            sample={!!previewFont}
+            sample={!!previewFont || !!previewStyle}
             cleanVideo={!!cleanSource}
           />
         )}
