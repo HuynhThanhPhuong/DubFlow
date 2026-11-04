@@ -8,9 +8,11 @@ import type {
   Job,
   Mode,
   TranslateEstimate,
+  SrtPreview,
   TranslateScope,
 } from "./types";
 import { Button, Modal } from "./ui";
+import { SrtReviewDialog } from "./SrtReviewDialog";
 import { TranslationContext } from "./TranslationContext";
 
 const modeLabels: Record<Mode, string> = {
@@ -57,6 +59,7 @@ export function TranslatePanel({
     [estimate, setEstimate] = useState<TranslateEstimate | null>(null),
     [working, setWorking] = useState(false),
     [prompt, setPrompt] = useState<string | null>(null),
+    [preview, setPreview] = useState<SrtPreview | null>(null),
     input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLDivElement>(null),
@@ -129,6 +132,15 @@ export function TranslatePanel({
       onError(e);
     } finally {
       setWorking(false);
+    }
+  };
+  const commit = async (assignments: Record<string, string>, translateIds: string[]) => {
+    const result = await api.srtCommit(job.id, assignments);
+    onCues(result.cues);
+    onNotice(`Đã nhập ${result.summary.matched}/${result.summary.total} câu từ SRT Việt.`);
+    if (translateIds.length) {
+      onJob(await api.translate(job.id, "ids", false, undefined, translateIds));
+      onNotice("Đã nhập bản dịch và gửi các câu còn trống tới Gemini.");
     }
   };
   const askEstimate = () =>
@@ -335,11 +347,26 @@ export function TranslatePanel({
           e.target.value = "";
           if (!file) return;
           void guard(async () => {
-            onCues(await api.translationSrt(job.id, file));
-            onNotice("Đã nhập bản dịch từ SRT Việt.");
+            const result = await api.srtPreview(job.id, file);
+            if (result.problems === 0) {
+              await commit(Object.fromEntries(result.rows.filter((r) => r.cue_id).map((r) => [r.cue_id as string, r.text])), []);
+            } else setPreview(result);
           });
         }}
       />
+      {preview && (
+        <SrtReviewDialog
+          preview={preview}
+          busy={working}
+          onCancel={() => setPreview(null)}
+          onApply={(result, translateEmpty) =>
+            void guard(async () => {
+              await commit(result.assignments, translateEmpty ? result.translateIds : []);
+              setPreview(null);
+            })
+          }
+        />
+      )}
       {estimate && (
         <Modal
           title={`Dịch bằng ${providerLabel}`}

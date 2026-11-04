@@ -113,7 +113,7 @@ it("uses Dịch tiếp for a quota pause", async () => {
 it("shows the 422 message verbatim when importing a Vietnamese SRT fails", async () => {
   location.hash = "#editor?job=job1";
   stub({}, [], (path) =>
-    path === "/api/jobs/job1/translation-srt"
+    path === "/api/jobs/job1/translation-srt/preview"
       ? new Response(JSON.stringify({ detail: "Thiếu số 2, 3 trong file SRT." }), { status: 422 })
       : undefined,
   );

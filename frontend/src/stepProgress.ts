@@ -1,4 +1,5 @@
 import type { Job, StageStep } from "./types";
+import { stageLabels } from "./helpers";
 
 /** Vietnamese duration: "<1 phút", "~45 giây", "~3 phút", "~1 giờ 5 phút". */
 export function formatDuration(seconds: number): string {
@@ -99,4 +100,63 @@ export function agoText(iso: string | undefined, nowMs: number): string {
   if (s < 3) return "vừa xong";
   if (s < 60) return `${s} giây trước`;
   return `${Math.floor(s / 60)} phút trước`;
+}
+
+export interface StatusPanelModel {
+  title: string;
+  percent: number;
+  chips: string[];
+  /** soft warning for a transient problem (retry, dead worker) */
+  warn: string | null;
+  /** neutral live note such as "đang gửi tới Gemini…" */
+  info: string | null;
+  stuck: boolean;
+}
+
+/** Turns the worker note "Gemini lỗi 503, thử lại lần 2/4 sau 5 giây…" into a short warning; null when it is not a retry. */
+export function retryWarning(note: string | undefined): string | null {
+  if (!note) return null;
+  const m = note.match(/^(.*?)\s+(?:lỗi\s+(\S+?)|giới hạn tốc độ \((\d+)\)),\s*thử lại lần (\d+)\/(\d+) sau ([\d.,]+) giây/);
+  if (!m) return null;
+  const who = m[1].trim();
+  const code = m[2] ?? m[3];
+  const what = m[3] ? `${who} giới hạn tốc độ (${code})` : /^5(\d\d|xx)$/.test(code) ? `${who} quá tải (${code})` : `${who} lỗi ${code}`;
+  return `${what} · thử lại ${m[4]}/${m[5]} sau ${m[6]} giây`;
+}
+
+/** Everything the single status panel under the step cards shows; null when nothing runs. */
+export function statusModel(job: Job, nowMs: number): StatusPanelModel | null {
+  const percent = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+  const chips: string[] = [];
+  const ago = agoText(job.updated_at, nowMs);
+  if (job.deleting || job.stopping) {
+    return { title: job.deleting ? "Đang xóa…" : "Đang dừng…", percent, chips, warn: null, info: null, stuck: false };
+  }
+  if (job.status === "queued") {
+    const q = job.queue;
+    chips.push(q ? `Hàng đợi: vị trí ${q.position}` : "Hàng đợi: đang xếp");
+    if (q?.running_ahead) chips.push("Máy đang chạy tác vụ khác");
+    if (ago) chips.push(`Cập nhật ${ago}`);
+    const stuck = !!q && !q.worker_alive;
+    return {
+      title: "Đang chờ máy xử lý", percent, chips, info: null, stuck,
+      warn: stuck ? "Máy xử lý không phản hồi, hãy khởi động lại DubFlow" : null,
+    };
+  }
+  if (job.status !== "processing") return null;
+  const started = job.stage_started_at ? Date.parse(job.stage_started_at) : NaN;
+  if (Number.isFinite(started)) chips.push(`Đã chạy ${formatClock((nowMs - started) / 1000)}`);
+  if (ago) chips.push(`Cập nhật ${ago}`);
+  const detail = job.stage_detail;
+  if (job.stage_step === "translate" && detail) {
+    const unit = detail.unit || "câu";
+    const title =
+      detail.batch && detail.batches
+        ? `Đang dịch lô ${detail.batch}/${detail.batches}${detail.batch_size ? ` · ${detail.batch_size} ${unit}` : ""}`
+        : `Đang dịch ${detail.done}/${detail.total} ${unit}`;
+    const warn = retryWarning(detail.note);
+    return { title, percent, chips, warn, info: warn ? null : detail.note || null, stuck: false };
+  }
+  const last = job.activity?.length ? job.activity[job.activity.length - 1].msg : "";
+  return { title: last || stageLabels[job.stage] || "Đang xử lý", percent, chips, warn: null, info: null, stuck: false };
 }

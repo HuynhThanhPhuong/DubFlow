@@ -1,8 +1,8 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JobActivity } from "./JobActivity";
+import { JobActivity, StatusPanel } from "./JobActivity";
 import { PipelineSteps } from "./PipelineSteps";
-import { agoText, formatClock, liveLine } from "./stepProgress";
+import { agoText, formatClock, liveLine, retryWarning } from "./stepProgress";
 import type { Job } from "./types";
 
 const T0 = Date.parse("2026-11-02T17:33:44Z");
@@ -62,20 +62,16 @@ describe("liveLine", () => {
 describe("JobActivity", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(T0 + 30_000); });
 
-  it("ticks the elapsed time and lists the worker messages (newest first) in the details popup", () => {
+  it("lists the worker messages (newest first) in the details popup", () => {
     const job = {
       ...base,
-      stage_detail: { done: 0, total: 40, unit: "câu", batch: 1, batches: 1, batch_size: 40, note: "đang gửi tới Gemini, chờ trả lời…" },
       activity: [
         { t: "2026-11-02T17:33:44Z", msg: "Máy xử lý đã nhận tác vụ." },
         { t: "2026-11-02T17:33:45Z", msg: "Lô 1/1 (40 câu): đang gửi tới Gemini, chờ trả lời…" },
       ],
     } as Job;
     render(<JobActivity job={job} />);
-    expect(screen.getByRole("status").textContent).toContain("Đang dịch lô 1/1 (40 câu) · đang gửi tới Gemini, chờ trả lời… · 00:30 đã chạy");
-    act(() => { vi.advanceTimersByTime(5000); });
-    expect(screen.getByRole("status").textContent).toContain("00:35 đã chạy");
-    expect(document.querySelector("details")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
     expect(screen.getByRole("tab", { name: "Hoạt động (2)" }).getAttribute("aria-selected")).toBe("true");
     const items = [...document.querySelectorAll(".job-activity-log li")].map((li) => li.textContent ?? "");
@@ -84,20 +80,84 @@ describe("JobActivity", () => {
     expect(items[1]).toContain("Máy xử lý đã nhận tác vụ.");
   });
 
-  it("shows the queue position for a queued job and flags a dead worker", () => {
-    const job = { ...base, status: "queued", stage_step: null, queue: { position: 1, running_ahead: false, worker_alive: false } } as Job;
-    const { container } = render(<JobActivity job={job} />);
-    expect(screen.getByRole("status").textContent).toContain("Đang chờ máy xử lý (vị trí 1)");
-    expect(container.querySelector(".job-activity.is-stuck")).not.toBeNull();
+  it("adds a third tab with the live error list, count on the button, actions and empty state", () => {
+    const onRetry = vi.fn();
+    const onJump = vi.fn();
+    const item = { key: "tr:a", kind: "translate", step: "Dịch", time: "2026-11-02T17:33:44Z", cue_id: "a", cue_number: 3,
+      message: "Gemini không trả bản dịch hợp lệ cho câu này.", actions: ["jump", "edit", "retry", "dismiss"] };
+    const errors = { items: [item], count: 1, refresh: vi.fn(), onRetry, onJump, onEditCue: vi.fn() } as never;
+    const job = { ...base, activity: [{ t: "2026-11-02T17:33:44Z", msg: "x" }] } as Job;
+    const { rerender } = render(<JobActivity job={job} errors={errors} />);
+    expect(screen.getByRole("button", { name: /Xem chi tiết · 1/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByRole("tab", { name: "Lỗi (1)" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Gemini không trả bản dịch hợp lệ cho câu này.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Câu 3" }));
+    expect(onJump).toHaveBeenCalledWith("a");
+    fireEvent.click(screen.getByRole("button", { name: "Dịch lại" }));
+    expect(onRetry).toHaveBeenCalledWith(["a"]);
+    expect(screen.getByRole("button", { name: "Bỏ qua" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sửa lời Việt" })).toBeTruthy();
+    rerender(<JobActivity job={job} errors={{ items: [], count: 0, refresh: vi.fn() } as never} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Lỗi (0)" }));
+    expect(screen.getByText("Không có lỗi")).toBeTruthy();
   });
 
   it("keeps the details button after the job finished, and renders nothing when there is nothing to show", () => {
     const done = { ...base, status: "awaiting_review", stage_step: null, activity: [{ t: "2026-11-02T17:33:44Z", msg: "Xong." }] } as Job;
     const { container, rerender } = render(<JobActivity job={done} />);
-    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("button", { name: /Xem chi tiết/ })).toBeTruthy();
     rerender(<JobActivity job={{ ...done, activity: [] } as Job} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("StatusPanel", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(T0 + 12_000); });
+  const text = () => screen.getByRole("status").textContent ?? "";
+
+  it("shows a queued job once, with queue chip and no repeated words", () => {
+    const job = { ...base, status: "queued", stage: "queued", progress: 0, stage_step: null, queue: { position: 1, running_ahead: false, worker_alive: true }, updated_at: "2026-11-02T17:33:56Z" } as Job;
+    render(<StatusPanel job={job} onCancel={() => undefined} />);
+    expect(text()).toContain("Đang chờ máy xử lý");
+    expect(text()).toContain("Hàng đợi: vị trí 1");
+    expect(text()).not.toMatch(/Đang chờ · Đang chờ/);
+    expect(document.querySelectorAll('[role="status"]').length).toBe(1);
+  });
+
+  it("shows batch title, percent, elapsed and updated chips while translating", () => {
+    const job = { ...base, progress: 47, updated_at: "2026-11-02T17:33:49Z",
+      stage_detail: { done: 0, total: 124, unit: "câu", batch: 1, batches: 1, batch_size: 124 } } as Job;
+    render(<StatusPanel job={job} onCancel={() => undefined} />);
+    expect(text()).toContain("Đang dịch lô 1/1 · 124 câu");
+    expect(text()).toContain("47%");
+    expect(text()).toContain("Đã chạy 00:12");
+    expect(text()).toContain("Cập nhật 7 giây trước");
+    expect(document.querySelector(".status-panel-warn")).toBeNull();
+  });
+
+  it("turns a 503 retry note into a soft warning inside the panel and cancels from it", () => {
+    const onCancel = vi.fn();
+    const job = { ...base, stage_detail: { done: 0, total: 124, unit: "câu", batch: 1, batches: 1, batch_size: 124, note: "Gemini lỗi 503, thử lại lần 2/4 sau 5 giây…" } } as Job;
+    render(<StatusPanel job={job} onCancel={onCancel} />);
+    expect(document.querySelector(".status-panel-warn")?.textContent).toBe("Gemini quá tải (503) · thử lại 2/4 sau 5 giây");
+    expect(text()).not.toContain("thử lại lần");
+    fireEvent.click(screen.getByRole("button", { name: "Huỷ" }));
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("flags a dead worker and renders nothing for finished or failed jobs", () => {
+    const dead = { ...base, status: "queued", stage_step: null, queue: { position: 1, running_ahead: false, worker_alive: false } } as Job;
+    const { container, rerender } = render(<StatusPanel job={dead} onCancel={() => undefined} />);
+    expect(container.querySelector(".status-panel.is-stuck")).not.toBeNull();
+    expect(text()).toContain("Máy xử lý không phản hồi");
+    rerender(<StatusPanel job={{ ...base, status: "error", error: "Lỗi" } as Job} onCancel={() => undefined} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("parses retry notes", () => {
+    expect(retryWarning("Gemini giới hạn tốc độ (429), thử lại lần 1/3 sau 10 giây…")).toBe("Gemini giới hạn tốc độ (429) · thử lại 1/3 sau 10 giây");
+    expect(retryWarning("đang gửi tới Gemini, chờ trả lời…")).toBeNull();
   });
 });
 

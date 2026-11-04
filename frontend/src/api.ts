@@ -2,6 +2,9 @@ import type {
   AnalysisRegions,
   AddressSetting,
   Cue,
+  SrtImportSummary,
+  SrtPreview,
+  JobErrors,
   TranslateEstimate,
   TranslateScope,
   Health,
@@ -115,8 +118,8 @@ export const api = {
     request<Job>(`/jobs/${key(id)}/${action}`, json("POST")),
   translateEstimate: (id: string, scope: TranslateScope, setting?: AddressSetting) =>
     request<TranslateEstimate>(`/jobs/${key(id)}/translate/estimate?scope=${scope}${setting ? `&setting=${setting}` : ""}`),
-  translate: (id: string, scope: TranslateScope, allow_over_cap: boolean, setting?: AddressSetting) =>
-    request<Job>(`/jobs/${key(id)}/translate`, json("POST", { scope, allow_over_cap, setting })),
+  translate: (id: string, scope: TranslateScope | "ids", allow_over_cap: boolean, setting?: AddressSetting, cue_ids?: string[]) =>
+    request<Job>(`/jobs/${key(id)}/translate`, json("POST", { scope, allow_over_cap, setting, cue_ids })),
   translatePrompt: async (id: string, setting?: AddressSetting) => {
     const response = await fetch(`/api/jobs/${key(id)}/translate-prompt${setting ? `?setting=${setting}` : ""}`);
     if (!response.ok) throw new ApiError(response.status, "Không lấy được lệnh mẫu.");
@@ -125,8 +128,21 @@ export const api = {
   translationSrt: (id: string, file: File) => {
     const data = new FormData();
     data.set("file", file);
-    return request<Cue[]>(`/jobs/${key(id)}/translation-srt`, { method: "POST", body: data });
+    return request<{ cues: Cue[]; summary: SrtImportSummary }>(`/jobs/${key(id)}/translation-srt`, { method: "POST", body: data });
   },
+  srtPreview: (id: string, file: File) => {
+    const data = new FormData();
+    data.set("file", file);
+    return request<SrtPreview>(`/jobs/${key(id)}/translation-srt/preview`, { method: "POST", body: data });
+  },
+  srtCommit: (id: string, assignments: Record<string, string>) =>
+    request<{ cues: Cue[]; summary: SrtImportSummary }>(
+      `/jobs/${key(id)}/translation-srt/commit`,
+      json("POST", { assignments }),
+    ),
+  jobErrors: (id: string) => request<JobErrors>(`/jobs/${key(id)}/errors`),
+  dismissError: (id: string, errorKey: string) =>
+    request<{ ok: boolean }>(`/jobs/${key(id)}/errors/dismiss`, json("POST", { key: errorKey })),
   resetSource: (id: string) =>
     request<Job>(`/jobs/${key(id)}/analyze?reset_source=1`, json("POST")),
   render: (id:string,kind:'auto'|'draft'|'final')=>request<Job>(`/jobs/${key(id)}/render`,json('POST',{kind})),

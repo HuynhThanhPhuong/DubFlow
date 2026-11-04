@@ -43,7 +43,7 @@ import { vietnameseMessage } from "./messages";
 import { Player, Timeline } from "./Player";
 import { isSupplementary } from "./SubtitlePreview";
 import { PipelineSteps } from "./PipelineSteps";
-import { JobActivity } from "./JobActivity";
+import { JobActivity, StatusPanel, useJobErrors } from "./JobActivity";
 import { RegionPicker } from "./RegionPicker";
 import type { RegionDraft } from "./RegionPicker";
 import { subtitleRegions, sameRegions } from "./analysisRegions";
@@ -489,6 +489,35 @@ export default function App() {
     setPollKey((k) => k + 1);
   };
   const currentJob = job?.id === route.jobId ? job : null;
+  const jobErrors = useJobErrors(currentJob);
+  const [onlyFailed, setOnlyFailed] = useState(false);
+  const failedIds = Array.from(
+    new Set(jobErrors.items.filter((e) => e.actions.includes("retry") && e.cue_id).map((e) => e.cue_id as string)),
+  );
+  const retryCues = async (ids: string[]) => {
+    if (!currentJob) return;
+    try {
+      setJob(await api.translate(currentJob.id, "ids", false, undefined, ids));
+      setPollKey((k) => k + 1);
+      setNotice(`Đã gửi ${ids.length} câu lỗi để dịch lại.`);
+    } catch (e) {
+      showError(e);
+    }
+  };
+  const errorTools = {
+    items: jobErrors.items,
+    count: jobErrors.count,
+    refresh: jobErrors.refresh,
+    onJump: (id: string) => {
+      setPickerOpen(false);
+      if (currentJob) setPickerDismissed(currentJob.id);
+      setActive(id);
+      const cue = cues.find((c) => c.id === id);
+      if (cue) seekTo(cue.start);
+    },
+    onEditCue: (id: string, text: string) => modify(id, { text }),
+    onRetry: retryCues,
+  };
   const projectWarnings = Array.from(
     new Set([
       ...(currentJob?.warnings || []),
@@ -696,7 +725,6 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                    <small>Chỉ đọc</small>
                   </div>
                 </div>
                 <div
@@ -784,27 +812,11 @@ export default function App() {
                   <JobActivity
                     job={currentJob}
                     notes={projectWarnings.map(vietnameseMessage)}
+                    errors={errorTools}
                   />
                 </div>
               </div>
-              {isBusy(currentJob) && (
-                <div className="job-progress">
-                  <span>
-                    {statusLabels[currentJob.status] || currentJob.status} ·{" "}
-                    {stageLabels[currentJob.stage] || "Đang xử lý"}
-                  </span>
-                  <progress max={100} value={currentJob.progress || 0} />
-                  <span>{currentJob.progress || 0}%</span>
-                  <Button
-                    disabled={
-                      busy || currentJob.stopping || currentJob.deleting
-                    }
-                    onClick={() => void action("cancel")}
-                  >
-                    {currentJob.stopping ? "Đang dừng…" : "Huỷ"}
-                  </Button>
-                </div>
-              )}
+              <StatusPanel job={currentJob} busy={busy} onCancel={() => void action("cancel")} />
               {currentJob.regions_stale && (
                 <p role="alert" className="error regions-stale">
                   {REGIONS_STALE}
@@ -974,9 +986,19 @@ export default function App() {
                       }}
                     />
                   </div>
+                  {failedIds.length > 0 && (
+                    <div className="cue-failed-bar">
+                      <label>
+                        <input type="checkbox" checked={onlyFailed} onChange={(e) => setOnlyFailed(e.target.checked)} /> Câu lỗi/còn trống ({failedIds.length})
+                      </label>
+                      <Button disabled={busy || isBusy(currentJob)} onClick={() => void retryCues(failedIds)}>
+                        Dịch lại các câu lỗi
+                      </Button>
+                    </div>
+                  )}
                   <CueList
                     key={currentJob.id}
-                    cues={cues}
+                    cues={onlyFailed && failedIds.length ? cues.filter((c) => failedIds.includes(c.id)) : cues}
                     active={active}
                     disabled={busy || isBusy(currentJob)}
                     loading={cueLoading}

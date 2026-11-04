@@ -71,7 +71,7 @@ function setup(saveGate?: Promise<void>, importGate?: Promise<void>) {
   const fetch = vi.fn(async (path: string, _init?: RequestInit) => {
     if (path === "/api/jobs/dot7/cues" && _init?.method === "PUT")
       await saveGate;
-    if (path.endsWith("/translation-srt")) await importGate;
+    if (path.endsWith("/translation-srt/preview")) await importGate;
     let value: unknown = [];
     if (path === "/api/health")
       value = { capabilities: { automatic_translation: true }, warnings: [] };
@@ -84,8 +84,11 @@ function setup(saveGate?: Promise<void>, importGate?: Promise<void>) {
       value = { ...job, id: "other", title: "Video khác" };
     else if (path === "/api/jobs/other/cues")
       value = [{ ...cues[0], id: "other-cue", text: "Lời của video khác" }];
-    else if (path.endsWith("/translation-srt"))
-      value = cues.map((c) => ({ ...c, text: "Bản nhập cũ" }));
+    else if (path.endsWith("/translation-srt/preview"))
+      value = { mode: "index", total: 1, matched: 1, problems: 0, empty_cues: [], cues: [],
+        rows: [{ block: 0, number: 1, start: 0, end: 2, text: "Bản nhập cũ", cue_id: cues[0].id, cue_number: 1, original: "", issues: [] }] };
+    else if (path.endsWith("/translation-srt/commit"))
+      value = { cues: cues.map((c) => ({ ...c, text: "Bản nhập cũ" })), summary: { mode: "manual", total: 1, blocks: 1, matched: 1, empty: [], skipped: [], empty_blocks: 0 } };
     else if (path.endsWith("/quality"))
       value = {
         draft_allowed: false,
@@ -189,6 +192,7 @@ it("shows read-only mode badges and a translation popover at the top of the scri
     expect(
       (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  expect(screen.queryByText("Chỉ đọc")).toBeNull();
   expect(screen.queryByText("Giữ âm thanh gốc")).toBeNull();
   expect(screen.queryByText("Nhập SRT có sẵn")).toBeNull();
   expect(screen.queryByRole("button", { name: "Dịch bằng Gemini" })).toBeNull();

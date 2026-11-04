@@ -15,6 +15,56 @@ export interface StageDetail {
   batch_size?: number;
   note?: string;
 }
+export interface SrtImportSummary {
+  mode: "index" | "time";
+  total: number;
+  blocks: number;
+  matched: number;
+  empty: { id: string; number: number; start: number; end: number }[];
+  skipped: { number: number | null; text: string; start: number; end: number }[];
+  empty_blocks: number;
+}
+export interface SrtPreviewRow {
+  block: number;
+  number: number | null;
+  start: number;
+  end: number;
+  text: string;
+  cue_id: string | null;
+  cue_number: number | null;
+  original: string;
+  issues: ("empty_block" | "no_match" | "dup_time" | "big_shift")[];
+}
+export interface SrtPreviewCue {
+  id: string;
+  number: number;
+  start: number;
+  end: number;
+  original: string;
+}
+export interface SrtPreview {
+  mode: "index" | "time";
+  total: number;
+  matched: number;
+  problems: number;
+  rows: SrtPreviewRow[];
+  empty_cues: SrtPreviewCue[];
+  cues: SrtPreviewCue[];
+}
+export interface JobErrorItem {
+  key: string;
+  kind: "translate" | "srt" | "task" | "warning" | "blocking";
+  step: string;
+  time: string;
+  cue_id: string | null;
+  cue_number: number | null;
+  message: string;
+  actions: ("jump" | "edit" | "retry" | "delete_block" | "dismiss")[];
+}
+export interface JobErrors {
+  count: number;
+  items: JobErrorItem[];
+}
 export interface JobActivityRow {
   /** ISO time the worker reported the message */
   t: string;
