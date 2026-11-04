@@ -12,7 +12,7 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -140,6 +140,7 @@ class Outcome:
     cost_usd: float | None
     paused: str | None  # None | 'quota' | 'cost_cap' | 'cancelled'
     error: str | None = None  # lỗi provider giữa chừng; phần đã dịch vẫn nằm trong texts
+    batches: list[list[str]] = field(default_factory=list)  # cue ids of each batch, in order (1-based 'Lô i/n')
 
 
 def _payload_item(it: Item, mode: str, prefs) -> dict:
@@ -477,6 +478,7 @@ class _Run:
         self.paused = None
         self.chunk_keys: dict[str, str] = {}
         self.n_chunks = 0
+        self.batch_ids: list[list[str]] = []
         self.on_progress = on_progress
         self.on_event = on_event
         self.on_result = on_result
@@ -672,6 +674,7 @@ class _Run:
         chunks = _translation_chunks(self.items, self.mode, self.prefs, self.terminology,
                                      self.setting, self.metadata, self.source_dialogue)
         self.n_chunks = len(chunks)
+        self.batch_ids = [[i.id for i in part] for part in chunks]
         total, done = len(self.items), 0
         try:
             if self.needs_overview:
@@ -730,7 +733,7 @@ def run_translation(directory: Path, items: list[Item], mode: str, prefs, provid
         _atomic_json(run.dir / CONTEXT_FILE, run.context)
         run.log(error)
     return Outcome(run.texts, run.failed, run.context, run.requests, run.usage,
-                   run.spent if run.paid else None, run.paused, error)
+                   run.spent if run.paid else None, run.paused, error, run.batch_ids)
 
 
 class RateLimiter:

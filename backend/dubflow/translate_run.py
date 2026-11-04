@@ -21,6 +21,7 @@ from .translation_history import save_snapshot
 REQUEST_FILE = 'translate-request.json'
 USAGE_FILE = 'translation-usage.json'
 FAILED_FILE = 'translation-failed.json'
+BATCH_FILE = 'translation-failed-batches.json'
 RATE_FILE = 'translation-rate.json'
 CONTEXT_META_FILE = 'translation-context-meta.json'
 SCOPES = ('missing', 'all', 'ids')
@@ -157,6 +158,44 @@ def apply_outcome(folder: Path, items: list[Item], outcome, scope: str, terminol
     _write(folder / FAILED_FILE, failed)
 
 
+def batch_reason(outcome, cancelled: bool = False) -> str:
+    """Vietnamese reason shared by the batches that never completed in this run."""
+    err = (outcome.error or '').lower()
+    if cancelled or outcome.paused == 'cancelled':
+        return 'bị dừng'
+    if outcome.paused == 'quota' or 'hạn mức' in err or 'quota' in err or '429' in err:
+        return 'hết hạn mức'
+    if outcome.paused == 'cost_cap':
+        return 'vượt trần chi phí'
+    if '503' in err or '5xx' in err or 'quá tải' in err or 'overload' in err or 'unavailable' in err:
+        return '503 quá tải'
+    if outcome.error:
+        return 'lỗi nhà cung cấp dịch'
+    return 'kết quả hỏng'
+
+
+def failed_batches(outcome, cancelled: bool = False) -> list[dict]:
+    """One record per batch (lô i/n) that left cues untranslated: cue ids + reason. A batch whose reply came back but
+    held bad lines is 'kết quả hỏng'; a batch never finished (provider error, pause, stop) gets the run's reason."""
+    batches = getattr(outcome, 'batches', None) or []
+    bad = set(outcome.failed)
+    now = datetime.now(timezone.utc).isoformat()
+    records = []
+    for n, ids in enumerate(batches, 1):
+        missing = [i for i in ids if i not in outcome.texts]
+        if not missing:
+            continue
+        reason = 'kết quả hỏng' if not (outcome.error or outcome.paused or cancelled) or all(i in bad for i in missing)             else batch_reason(outcome, cancelled)
+        records.append(dict(batch=n, batches=len(batches), cue_ids=missing, reason=reason, time=now))
+    return records
+
+
+def record_failed_batches(folder: Path, items: list[Item], outcome, cancelled: bool = False) -> None:
+    ran = {i.id for i in items}
+    kept = [r for r in _read(folder / BATCH_FILE, []) if not set(r.get('cue_ids', [])) & ran]
+    _write(folder / BATCH_FILE, kept + failed_batches(outcome, cancelled))
+
+
 def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_cancel=lambda: None) -> dict:
     """Chạy bước 'translate' trong tiến trình. Trả {'warnings': [...]}. ProviderError -> warnings."""
     folder = Path(folder)
@@ -223,6 +262,7 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     snapshot(outcome.texts,outcome.requests,outcome.usage,outcome.cost_usd,status,outcome.error,update=True)
     if not cancelled:
         apply_outcome(folder, items, outcome, scope, terminology)
+    record_failed_batches(folder, items, outcome, cancelled)
     _add_usage(folder, name, model, mode, outcome)
     if not cancelled:
         _set_paused(folder, outcome.paused)

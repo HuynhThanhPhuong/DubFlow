@@ -110,6 +110,10 @@ class SrtCommitRequest(BaseModel):
     assignments: dict[str, str] = Field(default_factory=dict, max_length=5000)
 
 
+class DeleteCuesRequest(BaseModel):
+    cue_ids: list[str] = Field(min_length=1, max_length=50)
+
+
 class DismissRequest(BaseModel):
     key: str = Field(min_length=1, max_length=200)
 

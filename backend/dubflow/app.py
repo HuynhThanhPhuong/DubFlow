@@ -29,7 +29,7 @@ from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
 from . import logos as logo_lib
-from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest, SrtCommitRequest, DismissRequest
+from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest, SrtCommitRequest, DismissRequest, DeleteCuesRequest
 from . import review
 from . import analysis_regions, lifecycle, translation_history
 from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale, without_supplementary_masks
@@ -495,6 +495,24 @@ def create_app(settings: Settings | None = None, start_worker=True):
         writable(job_id)
         errors_store.dismiss(job_dir(job_id), body.key)
         return dict(ok=True)
+
+    @app.post('/api/jobs/{job_id}/cues/delete')
+    def delete_cues(job_id: str, body: DeleteCuesRequest):
+        """Remove surplus source cues (flagged by the audit). The state before is kept in the translation history."""
+        writable(job_id)
+        folder = job_dir(job_id)
+        review.load_state(folder)
+        current = read_json(folder / 'cues.json', [])
+        gone = set(body.cue_ids)
+        if not gone & {c.get('id') for c in current}:
+            raise HTTPException(404, 'Không tìm thấy câu cần xoá.')
+        translation_history.save_snapshot(folder, current, source='before-delete')
+        values = [c for c in current if c.get('id') not in gone]
+        atomic_json(folder / 'cues.json', values)
+        translation_history.save_snapshot(folder, values, source='manual')
+        store.update_job(job_id, cue_count=len(values))
+        invalidate(job_id)
+        return values
 
     @app.put('/api/jobs/{job_id}/cues')
     def put_cues(job_id: str, cs: list[Cue]):

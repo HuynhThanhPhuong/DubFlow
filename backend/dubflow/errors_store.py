@@ -6,10 +6,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import source_audit
+
 IMPORT_FILE = 'srt-import-issues.json'
 DISMISS_FILE = 'errors-dismissed.json'
 FAILED_FILE = 'translation-failed.json'
 LOG_FILE = 'last-error.log'
+BATCH_FILE = 'translation-failed-batches.json'
+DELETABLE = ('NO_CJK', 'NEAR_DUPLICATE', 'FRAGMENT')
 
 _STEP_BY_STAGE = {'translating': 'Dịch', 'rendering': 'Xuất', 'exporting': 'Xuất', 'synthesizing': 'Giọng'}
 
@@ -61,11 +65,12 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
     skip = dismissed(folder)
     items: list[dict] = []
 
-    def add(key, kind, step, time, message, cue_id=None, actions=()):
+    def add(key, kind, step, time, message, cue_id=None, actions=(), **extra):
         if key in skip:
             return
         items.append(dict(key=key, kind=kind, step=step, time=time, cue_id=cue_id, cue_number=number.get(cue_id),
-                          message=message, actions=list(actions) + ['dismiss']))
+                          severity=extra.pop('severity', 'warn' if kind == 'warning' else 'error'),
+                          message=message, actions=list(actions) + ['dismiss'], **extra))
 
     failed_time = _iso(folder / FAILED_FILE)
     for cid in _read(folder / FAILED_FILE, []):
@@ -73,6 +78,16 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
             add(f'tr:{cid}', 'translate', 'Dịch', failed_time,
                 'Gemini không trả bản dịch hợp lệ cho câu này (lỗi tạm thời, hết hạn mức hoặc kết quả hỏng).',
                 cid, ['jump', 'edit', 'retry'])
+    for rec in _read(folder / BATCH_FILE, []):
+        ids = [i for i in rec.get('cue_ids', []) if i in number and not text_of.get(i)]
+        if not ids:
+            continue
+        tag = hashlib.sha1('|'.join(ids).encode('utf-8')).hexdigest()[:8]
+        label = f"Lô {rec.get('batch')}/{rec.get('batches')}" if rec.get('batch') else 'Lô'
+        add(f'trb:{tag}', 'translate', 'Dịch', rec.get('time') or failed_time,
+            f"{label}: {len(ids)} câu chưa được dịch. Lý do: {rec.get('reason', 'kết quả hỏng')}.",
+            ids[0], ['jump', 'retry_batch'], cue_ids=ids, batch=rec.get('batch'), batches=rec.get('batches'),
+            reason=rec.get('reason'))
     imp = _read(folder / IMPORT_FILE, {})
     if imp:
         when = imp.get('time') or _iso(folder / IMPORT_FILE)
@@ -101,4 +116,34 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         ids = [i for i in r.get('cue_ids', []) if i in number]
         add(f"block:{r.get('code')}", 'blocking', 'Xuất', datetime.now(timezone.utc).isoformat(), r.get('message', ''),
             ids[0] if ids else None, ['jump'] if ids else [])
-    return dict(count=len(items), items=items)
+    flags: dict[str, list[dict]] = {}
+    try:
+        findings = source_audit.audit_cues(cues, job.get('duration') or 0)
+    except Exception:  # noqa: BLE001 - the audit must never break the error list
+        findings = []
+    when = _iso(folder / 'cues.json')
+    by_id = {c.get('id'): c for c in cues}
+    for f in findings:
+        key = f"audit:{f['code']}:{','.join(str(i) for i in f['cue_ids'])}"
+        if key in skip:
+            continue
+        ids = [i for i in f['cue_ids'] if i in number]
+        for i in ids:
+            flags.setdefault(i, []).append(dict(code=f['code'], severity=f['severity'], message=f['message_vi']))
+        delete_ids = _extra_cues(f, by_id) if f['code'] in DELETABLE else []
+        add(key, 'audit', 'Phân tích', when, f['message_vi'], ids[0] if ids else None,
+            (['jump'] if ids else []) + (['delete_cues'] if delete_ids else []),
+            severity=f['severity'], code=f['code'], cue_ids=ids, delete_ids=delete_ids)
+    return dict(count=len(items), items=items, cue_flags=flags)
+
+
+def _extra_cues(finding: dict, by_id: dict) -> list[str]:
+    """Which cue of a finding is the surplus one: the only cue (NO_CJK / FRAGMENT) or, of a duplicate pair, the ASR one,
+    else the one with the shorter source text (the later one on a tie)."""
+    ids = [i for i in finding['cue_ids'] if i in by_id]
+    if len(ids) <= 1:
+        return ids
+    a, b = by_id[ids[0]], by_id[ids[1]]
+    if (a.get('source') == 'asr') != (b.get('source') == 'asr'):
+        return [ids[0] if a.get('source') == 'asr' else ids[1]]
+    return [ids[0] if len(str(a.get('original') or '')) < len(str(b.get('original') or '')) else ids[1]]
