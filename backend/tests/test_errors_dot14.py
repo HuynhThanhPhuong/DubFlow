@@ -39,6 +39,13 @@ class ActionableErrorsTests(unittest.TestCase):
         self.assertEqual(data['items'][0]['cue_id'], 'a')
         self.assertIn('edit', data['items'][0]['actions'])
 
+    def test_awaiting_review_task_failure_stays_visible(self):
+        data=errors_store.collect(self.folder,dict(status='awaiting_review',stage='awaiting_review',
+            error='Không tìm thấy file logo đã gắn vào video.'))
+        task=[i for i in data['items'] if i['kind']=='task']
+        self.assertEqual(len(task),1)
+        self.assertIn('Hãy',task[0]['message'])
+
 
 class DeletedSourceTests(unittest.TestCase):
     def setUp(self):

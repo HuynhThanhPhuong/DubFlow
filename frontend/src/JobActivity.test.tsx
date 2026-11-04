@@ -247,3 +247,18 @@ describe("status panel with missing backend fields", () => {
     expect(text).toContain("Đang dịch");
   });
 });
+
+it("preserves informational rows when the hook filters the errors tab", async () => {
+  const item = { key: "note", kind: "warning", severity: "warn", step: "Phân tích", time: "2026-11-02T17:33:44Z",
+    cue_id: null, cue_number: null, message: "Đã gộp lời gốc.", actions: ["dismiss"] };
+  const request = vi.spyOn(api, "jobErrors").mockResolvedValue({ count: 1, items: [item], activity: [] } as never);
+  try {
+    const { result } = renderHook(() => useJobErrors(base));
+    await waitFor(() => expect(request).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.activity).toContainEqual({ t: item.time, msg: item.message }));
+    expect(result.current.items).toEqual([]);
+    expect(result.current.count).toBe(0);
+  } finally {
+    request.mockRestore();
+  }
+});

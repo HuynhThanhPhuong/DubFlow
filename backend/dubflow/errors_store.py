@@ -119,7 +119,7 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
             label = f"Khối {b['number']}" if b.get('number') is not None else 'Khối'
             if f'srt-skip:{tag}' not in skip:
                 note(when,f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}"')
-    if job.get('status') in ('error', 'failed'):
+    if job.get('status') in ('error', 'failed') or (job.get('status') == 'awaiting_review' and job.get('error')):
         stage = str(job.get('stage') or '')
         step = _STEP_BY_STAGE.get(stage, 'Phân tích')
         mtime = _iso(folder / LOG_FILE) if (folder / LOG_FILE).exists() else job.get('updated_at') or _iso(folder/'cues.json')

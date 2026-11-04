@@ -53,7 +53,11 @@ export function useJobErrors(job: Job | null) {
   }, [id]);
   const current = data.jobId === id ? data : { count: 0, items: [], cue_flags: {}, activity: [] };
   const items = current.items.filter(actionable);
-  return { ...current, items, count: items.length, refresh: () => setTick((t) => t + 1) };
+  const activity = [
+    ...(current.activity ?? []),
+    ...current.items.filter((item) => !actionable(item)).map((item) => ({ t: item.time, msg: item.message })),
+  ];
+  return { ...current, items, activity, count: items.length, refresh: () => setTick((t) => t + 1) };
 }
 
 export interface ErrorTools {
