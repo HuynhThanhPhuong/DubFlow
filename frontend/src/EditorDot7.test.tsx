@@ -78,6 +78,7 @@ function setup(saveGate?: Promise<void>, importGate?: Promise<void>) {
     else if (path === "/api/settings")
       value = { output_dir: "D:/Exports", translation_provider: "gemini" };
     else if (path === "/api/jobs") value = [job];
+    else if (path === "/api/jobs/dot7" && _init?.method === "PUT") value = { ...job, ...JSON.parse(String(_init.body)), status: "queued", updated_at: "2" };
     else if (path === "/api/jobs/dot7") value = job;
     else if (path === "/api/jobs/dot7/cues") value = cues;
     else if (path === "/api/jobs/other")
@@ -185,13 +186,13 @@ it("packs real row heights including an expanded cue and always keeps a long row
     { start: 1, end: 2 },
   ]);
 });
-it("shows read-only mode badges and a translation popover at the top of the script", async () => {
+it("shows mode controls and a translation popover at the top of the script", async () => {
   setup();
   await screen.findByText("Video đợt 7");
   for (const name of ["Lồng tiếng", "Thuyết minh", "Vietsub"])
     expect(
       (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    ).toBe(name === "Vietsub");
   expect(screen.queryByText("Chỉ đọc")).toBeNull();
   expect(screen.queryByText("Giữ âm thanh gốc")).toBeNull();
   expect(screen.queryByText("Nhập SRT có sẵn")).toBeNull();
@@ -201,6 +202,20 @@ it("shows read-only mode badges and a translation popover at the top of the scri
   expect(screen.getByLabelText("Dịch lại tất cả")).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("button", { name: "Dịch bằng Gemini" })).toBeNull();
+});
+it("switches an analyzed video to dubbing through the API and announces queued source analysis", async () => {
+  const fetch = setup();
+  fireEvent.click(await screen.findByRole("button", { name: "Lồng tiếng" }));
+  await screen.findByText("Đã đổi chế độ và gửi phân tích lời gốc vào hàng đợi.");
+  const request = fetch.mock.calls.find(([path, init]) => path === "/api/jobs/dot7" && init?.method === "PUT");
+  expect(JSON.parse(String(request?.[1]?.body))).toEqual({ mode: "dub" });
+});
+it("blocks mode switching while the editor has unsaved translation changes", async () => {
+  const fetch = setup();
+  fireEvent.change(await screen.findByLabelText("Lời Việt câu 1"), { target: { value: "Đang sửa" } });
+  expect(screen.getByRole("button", { name: "Lồng tiếng" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Lồng tiếng" }));
+  expect(fetch.mock.calls.some(([path, init]) => path === "/api/jobs/dot7" && init?.method === "PUT")).toBe(false);
 });
 it("requires explicit source reset confirmation before dispatch", async () => {
   const fetch = setup();

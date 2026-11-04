@@ -159,7 +159,7 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
             add(f'empty:{cid}','translate','Dịch',_iso(folder/'cues.json'),'Câu chưa có lời Việt. Hãy nhập bản dịch hoặc bấm Dịch lại.',cid,['jump','edit','retry'])
     by_id = {c.get('id'): c for c in cues}
     try:
-        findings = source_audit.audit_cues(cues, job.get('duration') or 0)
+        findings = source_audit.audit_cues(cues, job.get('duration') or 0, mode=job.get('mode'))
     except Exception:  # noqa: BLE001 - the audit must never break the error list
         findings = []
     when = _iso(folder / 'cues.json')
@@ -175,9 +175,12 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         if f['severity']!='error':
             continue
         delete_ids = _extra_cues(f, by_id) if f['code'] in DELETABLE else []
+        extra = {}
+        if f['code'] == 'NAME_OCR_AMBIGUOUS' and shown:
+            extra = dict(name_review=shown[0].get('name_review') or [], name_crop=shown[0].get('name_crop'))
         add(key, 'audit', 'Phân tích', when, f['message_vi'], ids[0] if ids else None,
             (['jump'] if ids else []) + (['delete_cues'] if delete_ids else []),
-            severity=f['severity'], code=f['code'], cue_ids=ids, delete_ids=delete_ids)
+            severity=f['severity'], code=f['code'], cue_ids=ids, delete_ids=delete_ids, **extra)
     return dict(count=len(items), items=items, cue_flags=flags, activity=activity)
 
 

@@ -5,6 +5,7 @@ import type {
   SrtImportSummary,
   SrtPreview,
   JobErrors,
+  JobNames, ApplyName, NameResult,
   TranslateEstimate,
   TranslateScope,
   Health,
@@ -96,6 +97,10 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 const key = encodeURIComponent;
 export const api = {
+  names: (id: string, search = "") => request<JobNames>(`/jobs/${key(id)}/names${search ? `?search=${key(search)}` : ""}`),
+  applyName: (id: string, body: ApplyName) => request<NameResult>(`/jobs/${key(id)}/names/apply`, json("POST", body)),
+  resolveName: (id: string, body: { cue_id: string; from_zh: string; to_zh: string; position: number; fingerprint: string }) =>
+    request<NameResult>(`/jobs/${key(id)}/names/resolve`, json("POST", body)),
   fonts: () => request<FontCatalog>("/fonts"),
   quality: (id: string) => request<ExportQuality>(`/jobs/${key(id)}/quality`),
   translationHistory: (id: string) => request<TranslationSnapshot[]>(`/jobs/${key(id)}/translation-history`),

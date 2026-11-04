@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Job, JobActivityRow, JobErrorItem, JobErrors } from "./types";
+import type { Cue, Job, JobActivityRow, JobErrorItem, JobErrors } from "./types";
 import { api } from "./api";
 import { isBusy } from "./helpers";
 import { statusModel } from "./stepProgress";
@@ -71,24 +71,30 @@ export interface ErrorTools {
   onEditCue?: (cueId: string, text: string) => void;
   onRetry?: (cueIds: string[]) => Promise<void> | void;
   onDeleteCues?: (cueIds: string[]) => Promise<void> | void;
+  onSourceChanged?: (cues: Cue[]) => Promise<void> | void;
+  resolveDisabled?: boolean;
 }
 
 function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: ErrorTools }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const has = (a: string) => (item.actions as string[]).includes(a);
   const run = async (fn: () => Promise<unknown> | unknown) => {
     setBusy(true);
+    setError("");
     try {
       await fn();
       tools.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Chưa thực hiện được thao tác. Hãy thử lại.");
     } finally {
       setBusy(false);
     }
   };
   return (
-    <li className="job-error-row">
+    <li className={`job-error-row${item.severity === "error" ? " error" : ""}`}>
       <div className="job-error-head">
         <span className="job-error-step">{item.step}</span>
         <time dateTime={item.time}>{clock(item.time)}</time>
@@ -104,6 +110,21 @@ function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: E
         )}
       </div>
       <p className="job-error-msg">{item.message}</p>
+      {error && <p role="alert" className="error">{error}</p>}
+      {!!item.name_review?.length && item.cue_id && <div className="name-review">
+        <img className="name-review-crop" src={`/api/jobs/${encodeURIComponent(job.id)}/name-crop/${encodeURIComponent(item.cue_id)}`} alt={`Chữ Trung trên hình câu ${item.cue_number}`} loading="lazy" />
+        {item.name_review.map((review) => <div key={`${review.position}|${review.from_zh}`} className="name-review-options">
+          <p className="small">Tên ở vị trí {review.position + 1} · <span lang="zh">{review.from_zh}</span></p>
+          <div className="job-error-actions">{review.variants.map((variant) => <Button key={variant} disabled={busy || tools.resolveDisabled}
+            aria-label={`Chọn ${variant} ở vị trí ${review.position + 1}`}
+            onClick={() => void run(async () => {
+              const fingerprint = item.fingerprint ?? (await api.names(job.id)).fingerprint;
+              const result = await api.resolveName(job.id, { cue_id: item.cue_id as string, from_zh: review.from_zh, to_zh: variant, position: review.position, fingerprint });
+              await tools.onSourceChanged?.(result.cues);
+            })}>Chọn <span lang="zh">{variant}</span></Button>)}</div>
+        </div>)}
+        {tools.resolveDisabled && <p className="muted small">Lưu các thay đổi trong danh sách câu trước khi chọn tên.</p>}
+      </div>}
       {editing && (
         <div className="job-error-edit">
           <textarea aria-label="Lời Việt" rows={2} value={text} onChange={(e) => setText(e.target.value)} />

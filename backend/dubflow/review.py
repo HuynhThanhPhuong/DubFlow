@@ -302,6 +302,11 @@ def quality_report(folder, job, state=None):
     covered=set()
     known={c['id'] for c in state['source_cues']}
     lane_cache=[]  # assign_lanes(cues) is the same for every cue: compute it once, on first use
+    if __package__:
+        from .source_audit import speech_mismatch, known_names
+    else:
+        from source_audit import speech_mismatch, known_names
+    names = known_names(cues) if job.get('mode') in ('dub', 'tm') else set()
     for cue_index,c in enumerate(cues):
         linked=c.get('source_ids') or ([c['id']] if c['id'] in known else [])
         covered.update(linked)
@@ -323,8 +328,9 @@ def quality_report(folder, job, state=None):
             flag('LANGUAGE_SUSPECT',[c['id']], 'Lời Việt còn ký tự Trung; kiểm tra ngôn ngữ hoặc tên riêng.')
         elif len(text.split())>=5 and text.isascii() and re.search(r'\b(the|you|your|with|have|this|that|only)\b',text,re.I):
             flag('LANGUAGE_SUSPECT',[c['id']], 'Câu có dấu hiệu là tiếng Anh; cần kiểm tra ngôn ngữ. Đây chỉ là sàng lọc.')
-        if c.get('source_mismatch'):
-            flag('SOURCE_MISMATCH',[c['id']], 'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
+        if job.get('mode') in ('dub','tm'):
+            if c.get('source_mismatch') or speech_mismatch(c, names):
+                flag('SOURCE_MISMATCH',[c['id']], 'Chữ trên hình và lời nghe được khác nhau; nghe và kiểm tra lời gốc.','error')
         if c.get('ocr_empty'):
             flag('OCR_EMPTY',[c['id']], 'Không đọc được chữ trên hình; lời gốc tạm lấy từ lời nghe được.')
         if c.get('source_partial'):
@@ -386,8 +392,8 @@ def quality_report(folder, job, state=None):
     for link in evidence:
         c=next(c for c in cues if c['id']==link['cue_id'])
         texts={norm(r['text']) for r in link['candidates']}
-        if norm(c.get('original','')) not in texts:
-            flag('ASR_OCR_CONFLICT',[c['id']], 'ASR và OCR có khác biệt; kiểm cả âm thanh và chữ, không tự chọn nguồn.')
+        if job.get('mode') in ('dub','tm') and norm(c.get('original','')) not in texts:
+            flag('ASR_OCR_CONFLICT',[c['id']], 'ASR và OCR có khác biệt; nghe và kiểm tra chữ trên hình.','error')
     for r in regions:
         if r.get('enabled') and r.get('kind')=='transient' and needs_translation(r.get('text','')) and not r.get('translation','').strip():
             if screen_text_noise(r,regions):  # an OCR flicker is a hint for the reviewer, never a block

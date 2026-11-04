@@ -27,6 +27,8 @@ class Cue(BaseModel):
     asr_text: str | None = Field(default=None, max_length=20000)
     source_agreement: FiniteFloat | None = None
     source_mismatch: bool | None = None
+    name_review: list[dict] | None = Field(default=None, max_length=100)
+    name_crop: str | None = Field(default=None, max_length=500)
     source_partial: bool | None = None
     ocr_empty: bool | None = None
     box: list[FiniteFloat] | None = Field(default=None, max_length=4)
@@ -217,3 +219,25 @@ class VoiceUpdate(BaseModel):
     ref_text: str | None = Field(default=None, max_length=20000)
     gender: Literal['male', 'female', 'other'] | None = None
     style: list[str] | None = None
+
+
+class NameSourceFix(BaseModel):
+    from_zh: str = Field(min_length=1, max_length=100)
+    to_zh: str = Field(min_length=1, max_length=100)
+
+
+class NamesApplyRequest(BaseModel):
+    from_vi: str = Field(default='', max_length=100)
+    to_vi: str = Field(min_length=1, max_length=100)
+    cue_ids: list[str] = Field(max_length=50000)
+    fix_source: NameSourceFix | None = None
+    scope: Literal['job', 'collection'] = 'job'
+    fingerprint: str = Field(min_length=1, max_length=100)
+
+
+class NameResolveRequest(BaseModel):
+    cue_id: str = Field(min_length=1, max_length=100)
+    from_zh: str = Field(min_length=1, max_length=100)
+    to_zh: str = Field(min_length=1, max_length=100)
+    position: int = Field(ge=0)
+    fingerprint: str = Field(min_length=1, max_length=100)

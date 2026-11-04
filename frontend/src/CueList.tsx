@@ -46,14 +46,17 @@ function CueRow({
     el.style.height = "22px";
     el.style.height = Math.max(22, el.scrollHeight + 2) + "px";
   }, [cue.text]);
-  const flags = cueFlags(cue);
+  const mismatchMessage = (message: string) => /^(Chữ trên hình và (?:lời nghe được|giọng nói) khác nhau|ASR và OCR có khác biệt)/.test(message);
+  const sourceMismatch = (code: string) => ["OCR_ASR_MISMATCH", "ASR_OCR_CONFLICT", "SOURCE_MISMATCH"].includes(code);
+  const flags = cueFlags(cue).filter((message) => showSpeaker || !mismatchMessage(message));
+  const visibleAudit = (audit ?? []).filter((finding) => showSpeaker || !sourceMismatch(finding.code));
   // The pipeline's own "picture and speech differ" flag and the audit's OCR_ASR_MISMATCH finding are one issue: count it once.
-  const mismatchAudited = (audit ?? []).some((a) => a.code === "OCR_ASR_MISMATCH");
+  const mismatchAudited = visibleAudit.some((a) => sourceMismatch(a.code));
   const notes = [
-    ...(audit ?? []).map((a) => ({ message: a.message, error: a.severity === "error" })),
+    ...visibleAudit.map((a) => ({ message: a.message, error: a.severity === "error" || (showSpeaker && sourceMismatch(a.code)) })),
     ...flags
-      .filter((message) => !(mismatchAudited && message.startsWith("Chữ trên hình và lời nghe được khác nhau")))
-      .map((message) => ({ message, error: false })),
+      .filter((message) => !(mismatchAudited && mismatchMessage(message)))
+      .map((message) => ({ message, error: showSpeaker && mismatchMessage(message) })),
   ];
   const hasError = notes.some((n) => n.error);
   const auxiliary = isSupplementary(cue);
@@ -97,8 +100,8 @@ function CueRow({
               </span>
             )}
             {cue.source && (
-              <span title={SOURCE_LABELS[cue.source].hint}>
-                {SOURCE_LABELS[cue.source].text}
+              <span title={SOURCE_LABELS[!showSpeaker && cue.source === "ocr+asr" ? "ocr" : cue.source].hint}>
+                {SOURCE_LABELS[!showSpeaker && cue.source === "ocr+asr" ? "ocr" : cue.source].text}
               </span>
             )}
             {!cue.original.trim() && (
@@ -158,7 +161,7 @@ function CueRow({
                   </button>
                 </div>
               )}
-              {cue.asr_text && (
+              {showSpeaker && cue.asr_text && (
                 <p className="cue-asr-text">
                   <strong>Nghe được:</strong>{" "}
                   <span lang="zh">{cue.asr_text}</span>

@@ -2,7 +2,7 @@
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from .font_catalog import DEFAULT_FONT, get_font, legacy_font, pin_subtitle_style
@@ -56,7 +56,8 @@ class Store:
         db.row_factory = sqlite3.Row
         try:
             yield db
-            db.commit()
+            if db.in_transaction:
+                db.commit()
         except Exception:
             db.rollback()
             raise
@@ -100,7 +101,7 @@ class Store:
         return job
 
     @contextmanager
-    def edit_idle_job(self, job_id):
+    def edit_idle_job(self, job_id, record_updates=None, file_transaction=None):
         """Serialize file edits with queue claims/enqueues and other guarded edits."""
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -111,9 +112,15 @@ class Store:
             active=db.execute("SELECT 1 FROM tasks WHERE job_id=? AND state IN ('pending','running')",(job_id,)).fetchone()
             if job.get('deleting') or job.get('status') in BUSY_STATUSES or active:
                 raise ValueError('Video đang được xử lý. Hãy dừng và chờ tác vụ kết thúc trước khi sửa.')
-            yield job
-            job['updated_at']=now()
-            db.execute('UPDATE jobs SET body=? WHERE id=?',(json.dumps(job,ensure_ascii=False),job_id))
+            with file_transaction if file_transaction is not None else nullcontext():
+                yield job
+                for kind, record_id, value in record_updates or []:
+                    db.execute('INSERT INTO studio_records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body',
+                               (kind, record_id, json.dumps(value, ensure_ascii=False)))
+                job['updated_at']=now()
+                db.execute('UPDATE jobs SET body=? WHERE id=?',(json.dumps(job,ensure_ascii=False),job_id))
+                if file_transaction is not None:
+                    db.commit()
 
     def begin_delete(self, job_id):
         """Atomically (one BEGIN IMMEDIATE transaction) check that the job is idle, has no pending/running task and mark

@@ -14,6 +14,7 @@ import type {
 import { Button, Modal } from "./ui";
 import { SrtReviewDialog } from "./SrtReviewDialog";
 import { TranslationContext } from "./TranslationContext";
+import { NamesDialog } from "./NamesDialog";
 
 const modeLabels: Record<Mode, string> = {
   dub: "lồng tiếng",
@@ -43,6 +44,7 @@ export function TranslatePanel({
   onCues,
   onError,
   onNotice,
+  onJump,
 }: {
   job: Job;
   providerLabel: string;
@@ -53,7 +55,9 @@ export function TranslatePanel({
   onCues: (cues: Cue[]) => void;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
+  onJump?: (cueId: string) => void;
 }) {
+  const [namesOpen, setNamesOpen] = useState(false);
   const [scopeChoice, setScope] = useState<TranslateScope | null>(null),
     [dialogError, setDialogError] = useState(""),
     [estimate, setEstimate] = useState<TranslateEstimate | null>(null),
@@ -273,6 +277,7 @@ export function TranslatePanel({
               )}
             </div>
             <TranslationContext job={job} />
+            <Button disabled={off} onClick={() => { setOpen(false); setNamesOpen(true); }}>Sửa tên nhân vật</Button>
             <fieldset className="translate-scope translate-import">
               <legend>Dịch bằng AI chat / nhập file</legend>
               <div className="translate-import-row">
@@ -358,6 +363,7 @@ export function TranslatePanel({
           });
         }}
       />
+      {namesOpen && <NamesDialog job={job} onClose={() => setNamesOpen(false)} onCues={onCues} onNotice={onNotice} onJump={onJump} />}
       {preview && (
         <SrtReviewDialog
           preview={preview}

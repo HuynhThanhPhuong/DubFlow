@@ -485,17 +485,18 @@ def audio_rms(path, ffmpeg='ffmpeg', sr=16000, frame=.02):
     frames = audio[:count*n].reshape(count, n).astype(np.float64)
     return np.sqrt((frames**2).mean(1)), frame
 
-def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=None, key=None):
+def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=None, key=None, use_asr=True, reuse_ocr=False, preserve_edits=False):
     """ASR cues + burned-in subtitle OCR -> cues.json and source-build.json.
     cfg: the user's analysis regions. With them only the drawn subtitle band is read (one cue per displayed line, ASR
     fills the time without a line); without them the whole bottom of the frame is searched (jobs from before regions)."""
     if __package__:
         from .subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
-        from .subtitle_lines import build_source_cues_primary
+        from .subtitle_lines import build_source_cues_primary, _agreement as source_agreement
     else:
         from subtitle_track import build_source_cues, clamp_asr_to_ocr, snap_to_speech
-        from subtitle_lines import build_source_cues_primary
-    asr_cues = read(directory/'source-asr-cues.json', [])
+        from subtitle_lines import build_source_cues_primary, _agreement as source_agreement
+    asr_cues = read(directory/'source-asr-cues.json', []) if use_asr else []
+    previous = read(directory/'cues.json', []) if preserve_edits else []
     ocr_failed = False
     stats = {}
     if cfg is None:
@@ -514,7 +515,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
         if stats.get('ocr_unreadable'):
             warnings.append(f"Có {stats['ocr_unreadable']} vùng sub không đọc được chữ và không nghe được lời; đã bỏ qua, kiểm tra và thêm câu nếu thiếu.")
     else:
-        if cfg['subtitle']:
+        if cfg['subtitle'] and not reuse_ocr:
             emit('subband', 'Đang đọc sub trong vùng đã chọn', 30)
             try:
                 engine('subband', directory, settings, {'source':str(source), 'box':cfg['subtitle'], 'subtitles':analysis_regions.subtitle_regions(cfg), **meta}, emit=emit)
@@ -524,7 +525,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
                 ocr_failed = True
                 warnings.append('Chưa đọc được sub trong vùng đã chọn: '+str(translate_message(str(exc))))
                 write(directory/'subtrack.json', dict(version=2, mode='band', box=cfg['subtitle'], segments=[]))
-        else:  # no hard subs: nothing on screen to read or erase, ASR is the source
+        elif not cfg['subtitle']:  # no hard subs: nothing on screen to read or erase, ASR is the source
             write(directory/'subtrack.json', dict(version=2, mode='none', box=None, segments=[]))
         segments = (read(directory/'subtrack.json', {}) or {}).get('segments', [])
         for segment in segments:
@@ -546,7 +547,40 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
             warnings.append(f"Đã bỏ chữ nhận diện lẫn giữa hai câu đang chuyển ('{ghost['text']}', {ghost['start']:.1f}-{ghost['end']:.1f} s).")
         if stats.get('merged_ocr'):
             warnings.append(f"Đã gộp {len(stats['merged_ocr'])} lời gốc nhận diện trùng hoặc cụt; kiểm tra lại nếu thấy thiếu câu.")
-    if any(c['source'] == 'asr' for c in cues):
+    if preserve_edits:
+        # A mode switch adds speech evidence to the edited subtitle inventory.
+        # It must keep manual cues and must not resurrect lines the user deleted.
+        fresh_by_slot = {(c.get('region'), c['start'], c['end']): c for c in cues if c.get('source') != 'asr'}
+        restored = []
+        for old in previous:
+            if old.get('source') == 'asr':
+                continue
+            cue = dict(old)
+            fresh = fresh_by_slot.get((old.get('region'), old['start'], old['end']))
+            for field in ('asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'asr_source_ids'):
+                cue.pop(field, None)
+                if fresh and field in fresh:
+                    cue[field] = fresh[field]
+            if fresh and old.get('source') in ('ocr', 'ocr+asr'):
+                cue['source'] = fresh['source']
+            restored.append(cue)
+        cues = sorted(restored + [c for c in cues if c.get('source') == 'asr'], key=lambda c: (c['start'], c['end']))
+    if use_asr:
+        if __package__:
+            from .source_audit import speech_mismatch, known_names
+        else:
+            from source_audit import speech_mismatch, known_names
+        names = known_names(cues)
+        for cue in cues:
+            if cue.get('asr_text'):
+                cue['source_agreement'] = source_agreement(cue.get('original', ''), cue['asr_text'])
+                cue['source_mismatch'] = False
+                cue['source_mismatch'] = speech_mismatch(cue, names)
+    else:
+        for cue in cues:
+            for field in ('asr_text', 'source_agreement', 'source_mismatch', 'source_partial', 'asr_source_ids'):
+                cue.pop(field, None)
+    if use_asr and any(c.get('source') == 'asr' for c in cues):
         check_cancel(directory)
         try:
             rms, hop = audio_rms(audio, getattr(settings, 'ffmpeg', None) or 'ffmpeg')
@@ -555,7 +589,7 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
                 raise ValueError('snap length mismatch')
             merged = []
             for i, (old, new) in enumerate(zip(cues, snapped)):
-                if old['source'] == 'asr':
+                if old.get('source') == 'asr':
                     lo = cues[i-1]['end'] if i else 0.0
                     hi = cues[i+1]['start'] if i+1 < len(cues) else meta['duration']
                     start, end = max(new['start'], lo), min(new['end'], hi)
@@ -575,8 +609,8 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
     else:
         from review import replace_source
     replace_source(directory, cues)
-    write(directory/'source-build.json', dict(version=1, has_hardsubs=bool(segments), ocr_failed=ocr_failed,
-        ocr_cues=sum(c['source'] != 'asr' for c in cues), asr_cues=sum(c['source'] == 'asr' for c in cues),
+    write(directory/'source-build.json', dict(version=2, has_hardsubs=bool(segments), ocr_failed=ocr_failed, use_asr=use_asr,
+        ocr_cues=sum(c.get('source') != 'asr' for c in cues), asr_cues=sum(c.get('source') == 'asr' for c in cues),
         mismatches=sum(bool(c.get('source_mismatch')) for c in cues),
         ocr_empty=sum(bool(c.get('ocr_empty')) for c in cues), ocr_unreadable=stats.get('ocr_unreadable', 0),
         **(dict(source_key=key, mode='regions', asr_dropped=stats.get('asr_dropped', 0)) if cfg is not None else {})))
@@ -872,6 +906,19 @@ def region_rows(directory, source, meta, settings, emit, warnings, cfg):
     (directory/'logo-candidates.json').unlink(missing_ok=True)
 
 
+def source_uses_asr(job, cfg=None):
+    cfg = cfg if cfg is not None else analysis_regions.usable((job or {}).get('analysis_regions'))
+    return (job or {}).get('mode') != 'vietsub' or cfg is None or cfg['no_hard_subs']
+
+
+def source_mode_stale(directory, job):
+    """Whether a mode switch needs queued source reconstruction."""
+    cfg = analysis_regions.usable((job or {}).get('analysis_regions'))
+    built = read(Path(directory)/'source-build.json', {}) or {}
+    return bool(cfg is not None and (Path(directory)/'cues.json').exists() and
+                not analysis_regions.source_matches(cfg, built.get('source_key'), use_asr=source_uses_asr(job, cfg)))
+
+
 def prepare(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
     emit('separating', 'Separating background and original voices', 5)
@@ -884,33 +931,41 @@ def prepare(job_dir, settings, emit):
             write(directory/'separate.json', dict(key=separate_key))
     audio = directory/'vocals.wav' if (directory/'vocals.wav').exists() else source
     transcribe_key = cache_key(dict(stage='transcribe', audio=source_stamp(audio), duration=meta['duration'], language='zh', version=1))
-    fresh_transcript = not read(directory/'cues.json', []) or not stage_stamp_current(directory/'transcribe.json', transcribe_key)
     warnings = []
     cfg = analysis_regions.usable(job.get('analysis_regions'))
+    use_asr = source_uses_asr(job, cfg)
+    asr_exists = (directory/'source-asr-cues.json').exists()
+    fresh_transcript = use_asr and (not asr_exists or (directory/'asr-failed.json').exists() or not stage_stamp_current(directory/'transcribe.json', transcribe_key))
+    if cfg is None:
+        fresh_transcript = not read(directory/'cues.json', []) or not stage_stamp_current(directory/'transcribe.json', transcribe_key)
     # Re-analysis of cleanup must not discard paid translations because an audio
     # cache stamp changed. Only a new band or explicit source reset rebuilds cues.
     if cfg is not None and read(directory/'cues.json',[]):
         built = read(directory/'source-build.json', {}) or {}
-        if analysis_regions.source_matches(cfg, built.get('source_key')):
+        if asr_exists and not (directory/'asr-failed.json').exists() and analysis_regions.source_matches(cfg, built.get('source_key'), use_asr=use_asr):
             fresh_transcript = False
     if fresh_transcript:
         emit('transcribing', 'Transcribing source with cached Whisper', 20)
         try:
             engine('transcribe', directory, settings, {'source':str(audio), **meta}, emit=emit)
             write(directory/'transcribe.json', dict(key=transcribe_key))
+            (directory/'asr-failed.json').unlink(missing_ok=True)
         except NeedsReview as exc:
             if cfg is None or not cfg['subtitle']:
                 raise
             warnings.append('Chưa nhận dạng được giọng nói; tiếp tục đọc sub trong vùng đã chọn. Chỗ không có sub có thể thiếu lời: '+str(translate_message(str(exc))))
             write(directory/'source-asr-cues.json', [])
+            write(directory/'asr-failed.json', dict(failed=True))
         if cfg is None:
             build_source(directory, source, audio, meta, settings, emit, warnings)
     if cfg is not None:
         # the user drew the regions: no search for the subtitle band, logos or screen text
-        key = analysis_regions.source_key(cfg)
+        key = analysis_regions.source_key(cfg, use_asr=use_asr)
         built = read(directory/'source-build.json', {}) or {}
         have = read(directory/'cues.json', [])
-        if fresh_transcript or not have or not analysis_regions.source_matches(cfg, built.get('source_key')):
+        ocr_key = cache_key(dict(version=13, source=source_stamp(source), no_hard_subs=cfg['no_hard_subs'], subtitles=analysis_regions.subtitle_regions(cfg)))
+        ocr_current = (read(directory/'source-ocr-key.json', {}) or {}).get('key') == ocr_key and (directory/'subtrack.json').exists()
+        if fresh_transcript or not have or not analysis_regions.source_matches(cfg, built.get('source_key'), use_asr=use_asr):
             if have:
                 if __package__:
                     from .translation_history import save_snapshot
@@ -918,7 +973,10 @@ def prepare(job_dir, settings, emit):
                     from translation_history import save_snapshot
                 save_snapshot(directory, have, source='before_reanalyze')
                 shutil.copy2(directory/'cues.json', directory/f"cues.before-regions-{time.strftime('%Y%m%d-%H%M%S')}.json")
-            build_source(directory, source, audio, meta, settings, emit, warnings, cfg=cfg, key=key)
+            build_source(directory, source, audio, meta, settings, emit, warnings, cfg=cfg, key=key, use_asr=use_asr,
+                         reuse_ocr=ocr_current, preserve_edits=bool(ocr_current and have))
+            if not read(directory/'source-build.json', {}).get('ocr_failed'):
+                write(directory/'source-ocr-key.json', dict(key=ocr_key))
         region_rows(directory, source, meta, settings, emit, warnings, cfg)
     elif not (directory/'regions.json').exists() or (not read(directory/'regions.json',[]) and not (directory/'ocr-complete.json').exists()):
         emit('ocr', 'Detecting source text regions', 35)
@@ -939,7 +997,7 @@ def prepare(job_dir, settings, emit):
     cues = read(directory/'cues.json', [])
     speaker_signature=cache_key([{k:c.get(k) for k in ('id','start','end','original')} for c in cues])
     speaker_marker=read(directory/'speaker-candidates.json',{})
-    if cues and job.get('mode') != 'tm' and getattr(settings,'speaker_python',None) and (speaker_marker.get('source_signature')!=speaker_signature or not speaker_marker.get('status')):
+    if cues and job.get('mode') == 'dub' and getattr(settings,'speaker_python',None) and (speaker_marker.get('source_signature')!=speaker_signature or not speaker_marker.get('status')):
         emit('speakers','Đang tự phân nhóm giọng; nhãn chưa chắc chắn sẽ được đánh dấu',40)
         try:
             engine('speakers',directory,settings,{'source':str(directory/'vocals.wav') if (directory/'vocals.wav').exists() else str(source)},emit=emit)

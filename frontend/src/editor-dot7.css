@@ -74,6 +74,8 @@
   background: var(--panel);
   box-shadow: 0 2px 5px #34488918;
 }
+.studio-app .mode-readonly button:not(:disabled) { opacity: 1; cursor: pointer; }
+.studio-app .mode-readonly button:hover:not(:disabled) { color: var(--accent); }
 .editor-membership {
   margin: 0;
   flex-shrink: 0;
@@ -1162,3 +1164,80 @@ button.rp-label {
 .cue-delete{font-size:11px;padding:2px 8px;border:1px solid #e3b4b4;border-radius:4px;background:#fdecec;color:#9b2c2c;cursor:pointer}
 .cue-delete:disabled{opacity:.5}
 .cue-audit-badge{max-width:100%}
+
+/* Dot15: name groups and per-cue review use the editor's existing control palette. */
+.names-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(800px, calc(100vw - 32px));
+  height: min(660px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+.names-dialog .dialog-head,
+.names-dialog #dialog-description,
+.names-dialog .dialog-foot,
+.names-search {
+  flex-shrink: 0;
+}
+.names-search {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.names-search label { flex: 1; min-width: 0; }
+.names-search input,
+.names-editor input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+.names-body {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+}
+.names-groups,
+.names-editor { min-width: 0; }
+.names-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px;
+  margin-bottom: 6px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel, white);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.names-group.selected { border-color: var(--accent); background: var(--tint); }
+.names-group span,
+.names-group small { color: var(--muted); font-size: 11px; }
+.names-editor { display: flex; flex-direction: column; gap: 10px; }
+.names-check { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.names-source-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.names-source-fields label { min-width: 0; }
+.names-occurrences { list-style: none; margin: 0; padding: 0; }
+.names-occurrences li { padding: 9px 0; border-top: 1px solid var(--line); }
+.names-occurrence-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.names-occurrences p { margin: 5px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.names-dialog .dialog-foot { margin-top: auto; padding-top: 12px; flex-wrap: wrap; }
+.name-review { margin: 8px 0; }
+.name-review-crop { display: block; max-width: 100%; max-height: 160px; object-fit: contain; border: 1px solid var(--line); border-radius: 5px; }
+.name-review-options { margin: 8px 0; }
+.name-review .job-error-actions { flex-wrap: wrap; }
+.job-error-row.error .job-error-msg { color: #9b2c2c; }
+@media (max-width: 560px) {
+  .names-dialog { padding: 16px; }
+  .names-body { grid-template-columns: minmax(0, 1fr); }
+  .names-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: 176px; overflow-y: auto; }
+  .names-group { margin-bottom: 0; }
+  .names-search { flex-wrap: wrap; }
+  .names-search .button { max-width: 100%; }
+  .names-source-fields { grid-template-columns: minmax(0, 1fr); }
+  .names-dialog .dialog-head { gap: 8px; }
+  .names-dialog .dialog-head h2 { font-size: 18px; }
+}

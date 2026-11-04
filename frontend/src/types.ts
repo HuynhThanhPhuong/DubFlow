@@ -33,7 +33,8 @@ export interface SrtPreviewRow {
   cue_id: string | null;
   cue_number: number | null;
   original: string;
-  issues: ("empty_block" | "no_match" | "dup_time" | "big_shift")[];
+  issues: ("empty_block" | "no_match" | "dup_time" | "big_shift" | "name_mismatch")[];
+  name_issues?: string[];
 }
 export interface SrtPreviewCue {
   id: string;
@@ -54,6 +55,9 @@ export interface SrtPreview {
   cues: SrtPreviewCue[];
 }
 export interface JobErrorItem {
+  name_review?: NameReview[];
+  name_crop?: string;
+  fingerprint?: string;
   key: string;
   kind: "translate" | "srt" | "task" | "warning" | "blocking" | "audit";
   severity?: "error" | "warn";
@@ -216,6 +220,8 @@ export interface FontCatalog {
   fonts: SubtitleFont[];
 }
 export interface Cue {
+  name_review?: NameReview[];
+  name_crop?: string;
   id: string;
   start: number;
   end: number;
@@ -244,6 +250,42 @@ export interface Cue {
   reveal?: { t: number; fraction: number }[] | null;
   orientation?: "h" | "v" | null;
   text_height?: number | null;
+}
+export interface NameReview {
+  from_zh: string;
+  variants: string[];
+  position: number;
+}
+export interface NameOccurrence {
+  cue_id: string;
+  number: number;
+  start: number;
+  end: number;
+  original: string;
+  translated: string;
+}
+export interface NameGroup {
+  from_vi: string;
+  forms_zh: string[];
+  occurrences: NameOccurrence[];
+  confusable: boolean;
+}
+export interface JobNames {
+  fingerprint: string;
+  groups: NameGroup[];
+}
+export interface ApplyName {
+  from_vi: string;
+  to_vi: string;
+  cue_ids: string[];
+  fix_source: { from_zh: string; to_zh: string } | null;
+  scope: "job" | "collection";
+  fingerprint: string;
+}
+export interface NameResult extends JobNames {
+  count: number;
+  cues: Cue[];
+  message?: string;
 }
 export interface Region {
   id: string;

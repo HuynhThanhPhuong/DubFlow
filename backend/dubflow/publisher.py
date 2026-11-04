@@ -79,7 +79,8 @@ def publish(store, settings, job_id, *, rendering=False, render_values=None):
             if (folder/'review-state.json').exists() or job.get('export_kind'):
                 from .review import require_export
                 current_collection=store.get_record('collection',job.get('collection_id')) if job.get('collection_id') else None
-                try:report=require_export(folder,dict(job,review_terms=(current_collection or {}).get('terminology','')),job.get('export_kind','draft'))
+                from .names import terminology as name_terminology
+                try:report=require_export(folder,dict(job,review_terms=name_terminology(job,(current_collection or {}).get('terminology',''))),job.get('export_kind','draft'))
                 except ValueError as exc:raise PublishConflict(str(exc)) from None
             if not rendering and (folder/'render-command.json').exists() and read_json(folder/'render-version.json',{}).get('version') != 'transparent-captions-v4':
                 raise PublishConflict('Cần kết xuất lại video để áp dụng cách che phụ đề mới.')

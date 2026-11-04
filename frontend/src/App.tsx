@@ -424,8 +424,11 @@ export default function App() {
     }
     setBusy(true);
     try {
-      setJob(await api.updateJob(job.id, patch));
-      setNotice("Đã lưu cấu hình. Cần xuất lại để áp dụng thay đổi.");
+      const updated = await api.updateJob(job.id, patch);
+      if (selected.current === job.id) setJob(updated);
+      setJobs((rows) => rows.map((row) => row.id === updated.id ? updated : row));
+      setPollKey((key) => key + 1);
+      setNotice(isBusy(updated) ? "Đã đổi chế độ và gửi phân tích lời gốc vào hàng đợi." : "Đã lưu cấu hình. Cần xuất lại để áp dụng thay đổi.");
     } catch (e) {
       showError(e);
     } finally {
@@ -549,6 +552,12 @@ export default function App() {
     }
   };
   const errorTools = {
+    resolveDisabled: dirty || busy || !!currentJob && isBusy(currentJob),
+    onSourceChanged: async (rows: Cue[]) => {
+      setCues(rows);
+      setDirty(false);
+      await refresh();
+    },
     activity: jobErrors.activity,
     items: jobErrors.items,
     count: jobErrors.count,
@@ -758,14 +767,15 @@ export default function App() {
                     <div
                       className="mode-line"
                       role="group"
-                      aria-label="Chế độ xử lý (chỉ đọc)"
+                      aria-label="Chế độ xử lý"
                     >
                       {(["dub", "tm", "vietsub"] as Mode[]).map((mode) => (
                         <button
                           key={mode}
-                          disabled
+                          disabled={busy || dirty || isBusy(currentJob) || currentJob.mode === mode}
                           aria-pressed={currentJob.mode === mode}
-                          title="Chế độ đã chọn khi tạo video"
+                          title={dirty ? "Lưu lời dịch trước khi đổi chế độ" : "Đổi chế độ xử lý video"}
+                          onClick={() => void updateJob({ mode })}
                         >
                           {modeLabels[mode]}
                         </button>
@@ -997,6 +1007,7 @@ export default function App() {
                     <TranslatePanel
                       key={currentJob.id}
                       job={currentJob}
+                      onJump={errorTools.onJump}
                       providerLabel={
                         providerLabels[
                           studioSettings?.translation_provider ?? "gemini"

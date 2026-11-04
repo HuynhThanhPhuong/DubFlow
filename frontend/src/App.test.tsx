@@ -101,7 +101,8 @@ it("edits Vietnamese and saves exact cue array to real API contract", async () =
   await screen.findByText("Đã lưu lời dịch.");
 });
 
-function stubReset(calls: string[], cue: Record<string, unknown>) {
+function stubReset(calls: string[], cue: Record<string, unknown>, mode = "vietsub") {
+  const current = { ...job, mode };
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, init: RequestInit) => {
@@ -110,8 +111,8 @@ function stubReset(calls: string[], cue: Record<string, unknown>) {
       if (path === "/api/health") response = { status: "ok", queue_backend: "sqlite", capabilities: {}, warnings: [] };
       else if (path === "/api/settings") response = { output_dir: "D:/Exports", organize_by_collection: true };
       else if (path === "/api/collections" || path === "/api/voices") response = [];
-      else if (path === "/api/jobs") response = [job];
-      else if (path === "/api/jobs/job1" || path.startsWith("/api/jobs/job1/analyze")) response = job;
+      else if (path === "/api/jobs") response = [current];
+      else if (path === "/api/jobs/job1" || path.startsWith("/api/jobs/job1/analyze")) response = current;
       else if (path === "/api/jobs/job1/cues") response = [cue];
       else throw Error(`Unexpected request ${path}`);
       return new Response(JSON.stringify(response), { status: 200 });
@@ -134,14 +135,22 @@ it("asks before re-analysing the source text and does nothing on cancel", async 
   fireEvent.click(within(dialog).getByRole('button',{name:'Phân tích lại'}));
   await waitFor(() => expect(calls).toContain("POST /api/jobs/job1/analyze?reset_source=1"));
 });
-it("labels the source of a cue and shows the heard text on mismatch", async () => {
+it("labels the source of a cue and hides persisted heard text in Vietsub", async () => {
   location.hash = "#editor?job=job1";
   stubReset([], { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr", asr_text: "你们好", source_mismatch: true });
   render(<App />);
   await screen.findByLabelText("Lời Việt câu 1");
   expect(screen.getByText("Chữ trên hình")).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Chọn và tua câu 1'}));
-  expect(screen.getByText('你们好').closest('p')?.textContent).toContain('Nghe được: 你们好');
+  expect(screen.queryByText('你们好')).toBeNull();
+});
+it.each(["dub", "tm"])("shows heard text on a source mismatch in %s", async (mode) => {
+  location.hash = "#editor?job=job1";
+  stubReset([], { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr", asr_text: "你们好", source_mismatch: true }, mode);
+  render(<App />);
+  await screen.findByLabelText("Lời Việt câu 1");
+  fireEvent.click(screen.getByRole("button", { name: "Chọn và tua câu 1" }));
+  expect(screen.getByText("你们好").closest("p")?.textContent).toContain("Nghe được: 你们好");
 });
 
 it("clears the paused-updates banner once polling succeeds again", async () => {

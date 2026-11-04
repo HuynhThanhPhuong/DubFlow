@@ -10,6 +10,7 @@ Codes: NO_CJK, NEAR_DUPLICATE, FRAGMENT, UNCONFIRMED_SHORT, SAME_REGION_OVERLAP,
 from __future__ import annotations
 
 from difflib import SequenceMatcher
+import re
 
 try:
     from .subtitle_cues import chinese
@@ -76,12 +77,61 @@ def _same_place(a, b):
     return width > 0 and min(ba[2], bb[2]) - max(ba[0], bb[0]) >= .5 * width
 
 
-def audit_cues(cues, duration):
+def known_names(cues):
+    """Repeated surname names supported by a familiar form elsewhere in this video."""
+    texts = [str(c.get(field) or '') for c in cues for field in ('original', 'asr_text')]
+    endings = {name[1] for text in texts for name in re.findall(r'阿[㐀-鿿]', text)}
+    surnames = set('古赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜谢邹苏潘葛范彭鲁韦马苗方俞任袁柳史唐费薛雷贺倪汤罗毕郝邬安常于傅齐康伍余顾孟黄萧尹姚邵汪毛戴宋熊纪舒董梁杜阮蓝季贾江郭林钟徐邱高夏蔡田樊胡霍万卢莫房')
+    counts = {}
+    for cue in cues:
+        found = set()
+        for field in ('original', 'asr_text'):
+            text = chinese(cue.get(field) or '')
+            for position, first in enumerate(text):
+                if first not in surnames:
+                    continue
+                for length in (2, 3):
+                    name = text[position:position+length]
+                    if len(name) == length and name[-1] in endings:
+                        found.add(name)
+        for name in found:
+            counts[name] = counts.get(name, 0) + 1
+    return {name for name, count in counts.items() if count >= 2}
+
+
+def names_disagree(ocr, asr, names=()):
+    """Compare paired name-shaped spans, retaining multiplicity in two-name lines."""
+    pattern = r'阿[㐀-鿿]|小[㐀-鿿]|[㐀-鿿]儿'
+    left, right = re.findall(pattern, ocr or ''), re.findall(pattern, asr or '')
+    if left and right and left != right:
+        return True
+    a, b = chinese(ocr or ''), chinese(asr or '')
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag != 'replace':
+            continue
+        for text, start, end in ((a, i1, i2), (b, j1, j2)):
+            if any(match.start() <= start < end <= match.end() for name in names for match in re.finditer(re.escape(name), text)):
+                return True
+    return False
+
+
+def speech_mismatch(cue, names=()):
+    asr = cue.get('asr_text') or ''
+    a, b = chinese(cue.get('original') or ''), chinese(asr)
+    matched = sum(block.size for block in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+    agreement = matched / max(len(a), len(b), 1)
+    return bool(chinese(asr)) and (bool(cue.get('source_mismatch')) or
+        agreement < .6 or
+        names_disagree(cue.get('original', ''), asr, names))
+
+
+def audit_cues(cues, duration, mode=None):
     """Findings for a list of source cues (dicts with start/end/original and, when known, source/region/cluster/kind/box/
     source_agreement/asr_text). `duration` is the video length in seconds."""
     rows = [c for c in cues if isinstance(c, dict) and _number(c.get('start')) and _number(c.get('end'))]
     rows.sort(key=lambda c: (float(c['start']), float(c['end'])))
     findings = []
+    names = known_names(rows)
     chinese_source = is_chinese_text([str(c.get('original') or '') for c in rows])
 
     for c in rows:
@@ -101,8 +151,14 @@ def audit_cues(cues, duration):
         elif len(han) >= 3 and e > s and len(han) / (e - s) > MAX_CHARS_PER_SECOND:
             findings.append(_finding('TOO_SHORT_FOR_TEXT', [c], f"Câu quá ngắn so với số chữ ({len(han) / (e - s):.0f} chữ/giây, đọc không kịp): {_label(c)}.", 'warn'))
         agreement = c.get('source_agreement')
-        if agreement is not None and len(chinese(c.get('asr_text', '') or '')) >= 2 and float(agreement) < MISMATCH_BELOW:
-            findings.append(_finding('OCR_ASR_MISMATCH', [c], f"Chữ trên hình và giọng nói lệch nhiều (độ khớp {float(agreement):.0%}): {_label(c)}; ASR nghe '{c.get('asr_text')}'.", 'warn'))
+        mismatch = speech_mismatch(c, names) if mode in ('dub', 'tm') else agreement is not None and len(chinese(c.get('asr_text', '') or '')) >= 2 and float(agreement) < MISMATCH_BELOW
+        if mode != 'vietsub' and mismatch:
+            findings.append(_finding('OCR_ASR_MISMATCH', [c], f"Chữ trên hình và giọng nói khác nhau: {_label(c)}; ASR nghe '{c.get('asr_text')}'. Hãy nghe và kiểm tra lời gốc.", 'error' if mode in ('dub', 'tm') else 'warn'))
+        if c.get('name_review'):
+            variants = list(dict.fromkeys(v for item in c['name_review'] for v in item.get('variants', [])))
+            finding = _finding('NAME_OCR_AMBIGUOUS', [c], 'Tên có thể đọc sai: ' + '/'.join(variants) + '. Hãy xem ảnh và chọn tên đúng.')
+            finding.update(name_review=c['name_review'], name_crop=c.get('name_crop'))
+            findings.append(finding)
 
     # neighbours of one group: the same sentence twice, or two readings of one place on screen at once
     groups = {}

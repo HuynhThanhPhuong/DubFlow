@@ -12,6 +12,8 @@ const sources: Record<string, string> = {
   ai_chat: "Nhập từ AI chat",
   before_reanalyze: "Trước khi phân tích lại lời gốc",
   before_restore: "Trước khi khôi phục",
+  "before-names": "Trước khi sửa tên",
+  names: "Sửa tên nhân vật",
 };
 const statuses: Record<string, string> = {
   done: "Xong",

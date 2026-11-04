@@ -61,7 +61,8 @@ def run_task(task, settings, store):
     jid = task['job_id']
     job = store.get_job(jid)
     collection = store.get_record('collection',job.get('collection_id')) if job and job.get('collection_id') else None
-    terminology = (collection or {}).get('terminology','')
+    from .names import terminology as name_terminology
+    terminology = name_terminology(job or {}, (collection or {}).get('terminology',''))
     if job:
         job['collection_name'] = (collection or {}).get('name', '')
         job['review_terms']=terminology

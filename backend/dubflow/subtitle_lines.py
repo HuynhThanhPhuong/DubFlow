@@ -236,6 +236,7 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
             else:
                 item.pop('reveal', None)
         item['s'], item['e'] = round(float(item['s']), 3), round(float(item['e']), 3)
+        item['ocr_votes'] = dict(item['votes'])
         for key in ('votes', '_keys', '_last_dur', '_samples'):
             item.pop(key)
     return out
@@ -339,7 +340,7 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
         if join:
             cur['idx'].append(i)
             cur['last_key'] = k
-            cur['votes'][sm['text']] = cur['votes'].get(sm['text'], 0.0) + 1
+            cur['votes'][sm['text']] = cur['votes'].get(sm['text'], 0.0) + float(sm.get('score', 1)) ** 2
             if stable[i]:
                 cur['stable'].add(k)
                 if sm.get('box'):
@@ -347,9 +348,11 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
             if len(k) > len(line_key(cur['best'])):
                 cur['best'] = sm['text']
         else:
-            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: 1.0}, stable={k} if stable[i] else set(), brk=brk,
+            cur = dict(idx=[i], last_key=k, best=sm['text'], votes={sm['text']: float(sm.get('score', 1)) ** 2}, stable={k} if stable[i] else set(), brk=brk,
                        boxes=[sm['box']] if stable[i] and sm.get('box') else [])
             lines.append(cur)
+        for reading in sm.get('name_readings') or []:
+            cur['votes'][reading['text']] = cur['votes'].get(reading['text'], 0.0) + float(reading['weight'])
         gap = []
     out = []
     for ln in lines:
@@ -784,7 +787,7 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
                    source_agreement=_agreement(text, asr_text))
         if all(k in sg for k in ('x0', 'y0', 'x1', 'y1')):
             cue['box'] = [sg['x0'], sg['y0'], sg['x1'], sg['y1']]
-        for field in ('region', 'box', 'orientation', 'text_height', 'band', 'kind', 'reveal', 'cluster', 'source_uncertain'):
+        for field in ('region', 'box', 'orientation', 'text_height', 'band', 'kind', 'reveal', 'cluster', 'source_uncertain', 'name_review', 'name_crop'):
             if field in sg:
                 cue[field] = sg[field]
         if supplementary:

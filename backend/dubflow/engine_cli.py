@@ -719,15 +719,21 @@ def subband(directory, request):
                     bx+max(g[2] for g in glyph_boxes), by+max(g[3] for g in glyph_boxes)]
                    if glyph_boxes else [bx, by, bx+bw, by+bh])
             return text, box if text else None, [dict(text=text, box=box, text_height=glyph_height, orientation='v')] if text else []
-        result, _ = reader(image, use_cls=False)
-        rows = [(min(xs), min(ys), max(xs), max(ys), text.strip())
-                for box, text, score in (result or []) if accept_reading(text, score)
-                for xs, ys in [zip(*box)]]
+        result, _ = reader(image, use_cls=False, return_word_box=True)
+        from name_ocr_images import initial_name_readings
+        name_readings = initial_name_readings(image, result or [], reader)
+        rows = [(min(xs), min(ys), max(xs), max(ys), row[1].strip())
+                for row in (result or []) if accept_reading(row[1], row[2])
+                for xs, ys in [zip(*row[0])]]
         if not rows:
             return '', None, []
         clusters = cluster_rows(rows)
         for cluster in clusters:
             x0, y0, x1, y1 = cluster['box']
+            scores = [float(row[2]) for row in (result or [])
+                      if min(p[0] for p in row[0]) >= x0 - 1 and max(p[0] for p in row[0]) <= x1 + 1]
+            cluster['score'] = sum(scores) / len(scores) if scores else 1.0
+            cluster['name_readings'] = [r for r in name_readings if r['line'] == cluster['text']]
             cluster['box'] = [max(bx, int(bx+x0)), max(by, int(by+y0)),
                               min(bx+bw, int(bx+x1)), min(by+bh, int(by+y1))]
         box = [min(c['box'][0] for c in clusters), min(c['box'][1] for c in clusters),
@@ -827,14 +833,16 @@ def subband(directory, request):
         box = [ln.get('x0', bx), ln.get('y0', by), ln.get('x1', bx + bw), ln.get('y1', by + bh)]
         segment = dict(ln, x0=int(box[0]), y0=int(box[1]), x1=int(box[2]), y1=int(box[3]),
                        box=list(box), band=[bx, by, bx+bw, by+bh], orientation=request.get('orientation', 'h'),
-                       readings=ln['readings'][:12])
+                       readings=ln['readings'])
         if request.get('orientation') == 'v':
             segment['kind'] = 'supplementary'
             segment.pop('reveal', None)
         segments.append(segment)
+    from name_ocr_images import refine_name_segments
+    name_reads = refine_name_segments(segments, directory, request, reader)
     write(directory/'subtrack.json', dict(version=2, mode='band', box=[bx, by, bw, bh], band=[by, by + bh], fps=fps, step=step,
-                                          orientation=request.get('orientation', 'h'), ocr_version=12,
-                                          samples=len(samples), ocr_reads=reads, segments=segments))
+                                          orientation=request.get('orientation', 'h'), ocr_version=13,
+                                          samples=len(samples), ocr_reads=reads, name_ocr_reads=name_reads, segments=segments))
 
 
 def cueprobe(directory, request):

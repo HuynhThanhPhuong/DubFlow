@@ -7,6 +7,7 @@ const REASON: Record<string, string> = {
   no_match: "Không khớp câu nào",
   dup_time: "Trùng thời gian với khối khác",
   big_shift: "Lệch thời gian lớn",
+  name_mismatch: "Tên chưa khớp danh sách đã lưu",
 };
 
 const clock = (s: number) => {
@@ -87,6 +88,7 @@ export function SrtReviewDialog({
                 ))}
               </header>
               {r.original && <p className="muted srt-review-zh">{r.original}</p>}
+              {r.name_issues?.map((message) => <p className="warning small" key={message}>{message}</p>)}
               <textarea
                 aria-label={`Lời Việt khối ${r.number ?? r.block + 1}`}
                 value={texts[r.block] ?? ""}

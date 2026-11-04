@@ -40,11 +40,12 @@ class ReviewTests(unittest.TestCase):
 
     def test_source_mismatch_flag_only_below_threshold(self):
         write(self.folder/'cues.json',[dict(self.cues[0],id='m',source_mismatch=True),dict(self.cues[0],id='ok',start=3,end=4,source_mismatch=False,source_partial=True)])
-        report=review.quality_report(self.folder,self.job)
+        report=review.quality_report(self.folder,dict(self.job,mode='tm'))
         flags=[f for f in report['flags'] if f['code']=='SOURCE_MISMATCH']
         self.assertEqual([f['cue_ids'] for f in report['flags'] if f['code']=='ASR_PARTIAL'],[['ok']])
-        self.assertEqual([f['cue_ids'] for f in flags],[['m']]); self.assertEqual(flags[0]['severity'],'review')
-        self.assertEqual(flags[0]['message'],'Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc.')
+        self.assertEqual([f['cue_ids'] for f in flags],[['m']]); self.assertEqual(flags[0]['severity'],'error')
+        self.assertEqual(flags[0]['message'],'Chữ trên hình và lời nghe được khác nhau; nghe và kiểm tra lời gốc.')
+        self.assertNotIn('SOURCE_MISMATCH', [f['code'] for f in review.quality_report(self.folder,self.job)['flags']])
 
     def test_lines_overflow_flag(self):
         long=' '.join(['Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn']*2)
@@ -89,11 +90,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(review.load_state(self.folder)['source_cues'][0]['original'], '有她在')
         self.assertEqual(state['assignments'], {})
 
-    def test_conflicts_flagged_and_draft_allowed_final_needs_review(self):
-        report = review.quality_report(self.folder, self.job)
+    def test_conflicts_are_errors_for_voice_modes_and_absent_for_vietsub(self):
+        report = review.quality_report(self.folder, dict(self.job,mode='tm'))
         self.assertIn('ASR_OCR_CONFLICT', [f['code'] for f in report['flags']])
-        self.assertEqual(report['export_status'], 'draft_allowed')
+        self.assertEqual(report['export_status'], 'blocked')
         self.assertFalse(report['final_allowed'])
+        self.assertNotIn('ASR_OCR_CONFLICT', [f['code'] for f in review.quality_report(self.folder,self.job)['flags']])
 
     def test_automatic_export_does_not_require_manual_review(self):
         self.assertEqual(review.require_export(self.folder,self.job,'auto')['technical_status'],'passed')

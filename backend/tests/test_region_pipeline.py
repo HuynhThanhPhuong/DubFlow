@@ -18,7 +18,7 @@ BOX = [60, 160, 200, 50]
 
 class RegionPrepareTests(unittest.TestCase):
     def test_asr_failure_with_drawn_subtitles_continues_real_ocr(self):
-        p.write(self.d/'job.json', dict(source_path='source.mp4', mode='vietsub', analysis_regions=self.cfg()))
+        p.write(self.d/'job.json', dict(source_path='source.mp4', mode='tm', analysis_regions=self.cfg()))
         def stage(name, directory, settings, payload, **kwargs):
             if name == 'transcribe':
                 raise p.NeedsReview('Whisper unavailable: paging file too small')
@@ -52,7 +52,7 @@ class RegionPrepareTests(unittest.TestCase):
                                                                   text='标题', translation='', enabled=True)])
 
     def prepare(self, cfg, **job):
-        p.write(self.d / 'job.json', dict(source_path='source.mp4', mode='vietsub', analysis_regions=cfg, **job))
+        p.write(self.d / 'job.json', dict(source_path='source.mp4', mode='tm', analysis_regions=cfg, **job))
         self.calls.clear()
         with patch.object(p, 'probe', return_value=dict(duration=12, width=320, height=240, fps=25)), patch.object(p, 'engine', side_effect=self.stage), \
                 patch.object(p, 'audio_rms', return_value=([0.0] * 600, .02)):
@@ -229,7 +229,7 @@ class RegionPrepareTests(unittest.TestCase):
                 p.write(directory / 'source-asr-cues.json', ASR)
             elif name == 'subband':
                 raise p.NeedsReview('subband unavailable or failed (exit 1); see subband.log (no model downloads attempted)')
-        p.write(self.d / 'job.json', dict(source_path='source.mp4', mode='vietsub', analysis_regions=self.cfg()))
+        p.write(self.d / 'job.json', dict(source_path='source.mp4', mode='tm', analysis_regions=self.cfg()))
         with patch.object(p, 'probe', return_value=dict(duration=12, width=320, height=240, fps=25)), patch.object(p, 'engine', side_effect=failing), \
                 patch.object(p, 'audio_rms', return_value=([0.0] * 600, .02)):
             with self.assertRaises(p.NeedsReview):  # the Vietnamese text is still to be entered

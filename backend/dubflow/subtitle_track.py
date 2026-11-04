@@ -269,6 +269,9 @@ def build_source_cues(segments, asr_cues, duration, mismatch=.6, uncovered=.3, s
                    source='ocr+asr' if hits else 'ocr', source_ids=[c['id'] for c, _ in hits] or [f'ocr-{i:06}'],
                    box=[sg['x0'], sg['y0'], sg['x1'], sg['y1']], source_agreement=_agreement(text, asr_text))
         cue['source_mismatch'] = cue['source_agreement'] < mismatch
+        for field in ('name_review', 'name_crop'):
+            if field in sg:
+                cue[field] = sg[field]
         if empty:
             cue['ocr_empty'] = True
         if hits:

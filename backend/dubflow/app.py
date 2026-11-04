@@ -31,7 +31,8 @@ from .media import atomic_json, contained, parse_srt, poster, probe, read_json, 
 from . import logos as logo_lib
 from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest, SrtCommitRequest, DismissRequest, DeleteCuesRequest
 from . import review
-from . import analysis_regions, lifecycle, translation_history
+from . import analysis_regions, lifecycle, translation_history, names
+from .schemas import NamesApplyRequest, NameResolveRequest
 from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale, without_supplementary_masks
 from .store import Store, push_activity
 from .subtitle_style import FONTS_DIR, style_for
@@ -95,11 +96,11 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     def review_job(job):
         collection=store.get_record('collection',job.get('collection_id')) if job.get('collection_id') else None
-        return dict(job,review_terms=(collection or {}).get('terminology',''),vietsub_cps=preferences(store,settings)['vietsub_cps'])
+        return dict(job,review_terms=names.terminology(job,(collection or {}).get('terminology','')),vietsub_cps=preferences(store,settings)['vietsub_cps'])
 
     def terminology_for(job):
         collection=store.get_record('collection',job.get('collection_id')) if job.get('collection_id') else None
-        return (collection or {}).get('terminology','')
+        return names.terminology(job,(collection or {}).get('terminology',''))
 
     def job_dir(job_id):
         job_or_404(job_id)
@@ -350,6 +351,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if any(key in fields and fields[key] != previous.get(key) for key in ('mode','voice_id','voice_ref')):
             invalidate(job_id)
         save_job_file(store.get_job(job_id))
+        if 'mode' in fields and fields['mode'] != previous.get('mode'):
+            from .pipeline import source_mode_stale
+            if source_mode_stale(job_dir(job_id), store.get_job(job_id)):
+                return dispatch(job_id, 'analyze')
         return public_job(store.get_job(job_id))
 
     @app.get('/api/jobs/{job_id}/cues')
@@ -404,6 +409,153 @@ def create_app(settings: Settings | None = None, start_worker=True):
                            setting=setting or job.get('setting', 'auto'), video_title=job.get('title', ''),
                            collection_name=(collection or {}).get('name', ''), cues=prompt_cues)
         return Response(text.encode('utf-8'), media_type='text/plain; charset=utf-8')
+
+    def raw_collection_terms(job):
+        collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
+        return (collection or {}).get('terminology', '')
+
+    def names_result(job, folder, source_cues, collection_terms, search='', **extra):
+        return dict(fingerprint=names.fingerprint(folder, job, collection_terms),
+                    groups=names.find_names(source_cues, job, collection_terms, search), **extra)
+
+    @app.get('/api/jobs/{job_id}/names')
+    def get_names(job_id: str, search: str = ''):
+        job = job_or_404(job_id)
+        folder = job_dir(job_id)
+        if len(search) > 100:
+            raise HTTPException(422, 'Tên tìm kiếm quá dài.')
+        cues = sorted(read_json(folder / 'cues.json', []), key=lambda c: (c['start'], c['end']))
+        return names_result(job, folder, cues, raw_collection_terms(job), search.strip())
+
+    def save_names_change(folder, old, values, job, old_terms, new_terms, changed, *, translated):
+        state = review.load_state(folder)
+        valid = {c['id'] for c in old if c.get('translation_dependency') ==
+                 review.translation_dependency(c, state, old, old_terms)}
+        before = translation_history.save_snapshot(folder, old, source='before-names')
+        # Preserve stable identity for an explicit undo after the source name changes.
+        before['cue_ids'] = [c['id'] for c in old]
+        before['after_originals'] = {c['id']: c.get('original', '') for c in values}
+        before['name_metadata'] = {c['id']: {key: c[key] for key in
+                                  ('name_review', 'name_crop', 'source_mismatch', 'source_partial', 'ocr_empty')
+                                  if key in c} for c in old}
+        atomic_json(folder / 'translation-history' / (before['id'] + '.json'), before)
+        state = dict(state, approval=None, revision=state.get('revision', 0) + 1)
+        atomic_json(folder / 'review-state.json', state)
+        for c in values:
+            if c['id'] in changed and not translated:
+                # A source-only choice requires checking the Vietnamese line again.
+                previous = next(o for o in old if o['id'] == c['id'])
+                c['translation_dependency'] = previous.get('translation_dependency') or review.translation_dependency(previous, state, old, old_terms)
+            elif c['id'] in valid or (translated and c['id'] in changed):
+                c['translation_dependency'] = review.translation_dependency(c, state, values, new_terms)
+        atomic_json(folder / 'cues.json', values)
+        translation_history.save_snapshot(folder, values, source='names')
+        job.update(status='awaiting_review', stage='awaiting_review', progress=45, error=None,
+                   ready_count=0, cue_count=len(values))
+        atomic_json(folder / 'job.json', job)
+
+    @app.post('/api/jobs/{job_id}/names/apply')
+    def apply_names(job_id: str, body: NamesApplyRequest):
+        writable(job_id)
+        folder = job_dir(job_id)
+        if not body.to_vi.strip() or not body.cue_ids:
+            raise HTTPException(422, 'Nhập tên Việt mới và chọn ít nhất một câu.')
+        if body.fix_source and (not re.fullmatch(names.HAN + '+', body.fix_source.from_zh)
+                                or not re.fullmatch(names.HAN + '+', body.fix_source.to_zh)):
+            raise HTTPException(422, 'Tên nguồn cần là chữ Hán.')
+        record_updates = []
+        try:
+            with store.edit_idle_job(job_id, record_updates=record_updates,
+                                     file_transaction=names.rollback_changes(folder)) as job:
+                collection = store.get_record('collection', job.get('collection_id')) if job.get('collection_id') else None
+                collection_terms = (collection or {}).get('terminology', '')
+                if body.scope == 'collection' and not collection:
+                    raise HTTPException(422, 'Video chưa thuộc bộ sưu tập nào.')
+                current = read_json(folder / 'cues.json', [])
+                if body.fingerprint != names.fingerprint(folder, job, collection_terms):
+                    raise HTTPException(409, 'Nội dung đã thay đổi. Hãy mở lại popup sửa tên.')
+                if set(body.cue_ids) - {c['id'] for c in current}:
+                    raise HTTPException(409, 'Danh sách câu đã thay đổi. Hãy mở lại popup sửa tên.')
+                fix = body.fix_source.model_dump() if body.fix_source else None
+                values, changed = names.apply_replacement(current, body.from_vi, body.to_vi.strip(), body.cue_ids, fix)
+                groups = names.find_names(current, job, collection_terms, body.from_vi)
+                forms = {z for g in groups if g['from_vi'] == body.from_vi for z in g['forms_zh']}
+                if fix:
+                    forms = {fix['to_zh']}
+                if not forms and re.fullmatch(names.HAN + '+', body.from_vi):
+                    forms = {body.from_vi}
+                old_terms = names.terminology(job, collection_terms)
+                glossary = {e['zh']: dict(e) for e in job.get('name_glossary', [])}
+                for zh in sorted(forms):
+                    variants = set(glossary.get(zh, {}).get('variants', []))
+                    if fix and fix['from_zh'] != zh:
+                        variants.add(fix['from_zh'])
+                    glossary[zh] = dict(zh=zh, vi=body.to_vi.strip(), variants=sorted(variants))
+                job['name_glossary'] = list(glossary.values())
+                if body.scope == 'collection':
+                    lines = collection_terms.splitlines()
+                    for zh in sorted(forms):
+                        lines = [line for line in lines if not re.match(r'^\s*' + re.escape(zh) + r'\s*(?:→|->|=|:)', line)]
+                        lines.append(zh + ' → ' + body.to_vi.strip())
+                    collection['terminology'] = '\n'.join(lines)
+                    collection_terms = collection['terminology']
+                    record_updates.append(('collection', collection['id'], collection))
+                new_terms = names.terminology(job, collection_terms)
+                if not changed and not forms:
+                    raise HTTPException(422, 'Không tìm thấy tên cần đổi trong các câu đã chọn.')
+                save_names_change(folder, current, values, job, old_terms, new_terms, changed, translated=True)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        saved = store.get_job(job_id)
+        return names_result(saved, folder, values, collection_terms, count=len(changed), cues=values,
+                            message=f'Đã đổi {len(changed)} câu')
+
+    @app.get('/api/jobs/{job_id}/name-crop/{cue_id}')
+    def name_crop(job_id: str, cue_id: str):
+        folder = job_dir(job_id)
+        cue = next((c for c in read_json(folder / 'cues.json', []) if c['id'] == cue_id), None)
+        relative = cue.get('name_crop') if cue else None
+        if not relative or not re.fullmatch(r'name-crops/[A-Za-z0-9_.-]+\.png', relative):
+            raise HTTPException(404, 'Chưa có ảnh chữ của câu này.')
+        path = contained(folder, relative)
+        if not path.is_file():
+            raise HTTPException(404, 'Không tìm thấy ảnh chữ của câu này.')
+        return FileResponse(path, media_type='image/png')
+
+    @app.post('/api/jobs/{job_id}/names/resolve')
+    def resolve_name(job_id: str, body: NameResolveRequest):
+        writable(job_id)
+        folder = job_dir(job_id)
+        try:
+            with store.edit_idle_job(job_id, file_transaction=names.rollback_changes(folder)) as job:
+                collection_terms = raw_collection_terms(job)
+                current = read_json(folder / 'cues.json', [])
+                if body.fingerprint != names.fingerprint(folder, job, collection_terms):
+                    raise HTTPException(409, 'Nội dung đã thay đổi. Hãy mở lại danh sách lỗi.')
+                values = [dict(c) for c in current]
+                cue = next((c for c in values if c['id'] == body.cue_id), None)
+                if cue is None:
+                    raise HTTPException(404, 'Không tìm thấy câu cần sửa.')
+                candidate = next((r for r in cue.get('name_review', [])
+                                  if r.get('position') == body.position and r.get('from_zh') == body.from_zh
+                                  and body.to_zh in r.get('variants', [])), None)
+                if not candidate or cue.get('original', '')[body.position:body.position + len(body.from_zh)] != body.from_zh:
+                    raise HTTPException(409, 'Biến thể tên đã thay đổi. Hãy mở lại danh sách lỗi.')
+                cue['original'] = (cue['original'][:body.position] + body.to_zh +
+                                   cue['original'][body.position + len(body.from_zh):])
+                difference = len(body.to_zh) - len(body.from_zh)
+                cue['name_review'] = [dict(r, position=r['position'] + (difference if r['position'] > body.position else 0))
+                                      for r in cue.get('name_review', []) if r is not candidate]
+                cue.update(status='pending', asr_edits=None, take_url=None, delay=None, overrun=None)
+                for key in ('take_path', 'path', 'source_mismatch', 'source_partial', 'ocr_empty'):
+                    cue.pop(key, None)
+                terms = names.terminology(job, collection_terms)
+                save_names_change(folder, current, values, job, terms, terms, [body.cue_id],
+                                  translated=body.from_zh == body.to_zh)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        saved = store.get_job(job_id)
+        return names_result(saved, folder, values, collection_terms, count=1, cues=values)
 
     async def read_srt_upload(file: UploadFile):
         data = await file.read(2 * 1024 * 1024 + 1)
@@ -465,7 +617,8 @@ def create_app(settings: Settings | None = None, start_worker=True):
         content = await read_srt_upload(file)
         job, folder, stored, dialogue = srt_context(job_id)
         try:
-            return build_preview(parse_indexed_srt(content), dialogue)
+            preview = build_preview(parse_indexed_srt(content), dialogue)
+            return names.check_import(preview, names.glossary_entries(job, raw_collection_terms(job)))
         except ValueError as e:
             raise HTTPException(422, str(e))
 
@@ -816,31 +969,56 @@ def create_app(settings: Settings | None = None, start_worker=True):
         snapshot=translation_history.get_snapshot(job_dir(job_id),snapshot_id)
         if snapshot is None:raise HTTPException(404,'Không tìm thấy bản dịch của video này.')
         current=read_json(job_dir(job_id)/'cues.json',[])
-        matched,unmatched=translation_history.match_cues(snapshot['cues'],current)
+        matched,unmatched=history_matches(snapshot,current)
         indices={id(cue):i for i,cue in enumerate(snapshot['cues'])}
         links=[None]*len(snapshot['cues'])
         for index,old in matched:links[indices[id(old)]]=current[index]['id']
         return dict(snapshot,matches=links,matched_count=len(matched),unmatched_count=unmatched)
+
+    def history_matches(snapshot, current):
+        if snapshot.get('source') != 'before-names' or not snapshot.get('cue_ids'):
+            return translation_history.match_cues(snapshot['cues'], current)
+        # Explicit name edits retain IDs. Only undo against the exact resulting
+        # source and interval, never against an ID recycled by reanalysis.
+        identities = dict(zip(snapshot['cue_ids'], snapshot['cues']))
+        matched = []
+        for index, cue in enumerate(current):
+            old = identities.get(cue['id'])
+            if (old and
+                    old['start'] == cue['start'] and old['end'] == cue['end'] and
+                    snapshot.get('after_originals', {}).get(cue['id']) == cue.get('original', '')):
+                matched.append((index, old))
+        return matched, len(snapshot['cues']) - len(matched)
 
     @app.post('/api/jobs/{job_id}/translation-history/{snapshot_id}/restore')
     def restore_translation_history(job_id: str,snapshot_id: str):
         folder=job_dir(job_id)
         snapshot=translation_history_detail(job_id,snapshot_id)
         try:
-            with store.edit_idle_job(job_id) as job:
+            with store.edit_idle_job(job_id, file_transaction=names.rollback_changes(folder)) as job:
                 review.load_state(folder)
                 cues=read_json(folder/'cues.json',[])
-                matched,unmatched=translation_history.match_cues(snapshot['cues'],cues)
+                matched,unmatched=history_matches(snapshot,cues)
                 if not matched:raise ValueError('Không có câu dịch nào khớp lời gốc và thời gian để khôi phục.')
                 before=translation_history.save_snapshot(folder,cues,source='before_restore')
                 state=review.load_state(folder)
                 for index,old in matched:
                     cues[index].update(text=old['text'],status='pending',asr_edits=None,take_url=None,delay=None,overrun=None)
+                    if snapshot.get('source') == 'before-names':
+                        cues[index]['original'] = old.get('original', '')
+                        if 'name_metadata' in snapshot:
+                            metadata = snapshot['name_metadata'].get(cues[index]['id'], {})
+                            for key in ('name_review', 'name_crop', 'source_mismatch', 'source_partial', 'ocr_empty'):
+                                if key in metadata:
+                                    cues[index][key] = metadata[key]
+                                else:
+                                    cues[index].pop(key, None)
                     for key in ('take_path','path'):cues[index].pop(key,None)
                 for index,_ in matched:
                     cues[index]['translation_dependency']=review.translation_dependency(cues[index],state,cues,terminology_for(job))
                 atomic_json(folder/'cues.json',cues)
                 job.update(status='awaiting_review',stage='awaiting_review',progress=45,error=None,ready_count=0,cue_count=len(cues))
+                atomic_json(folder / 'job.json', job)
         except ValueError as exc:
             raise HTTPException(409,str(exc)) from None
         return dict(matched_count=len(matched),unmatched_count=unmatched,before_snapshot_id=before['id'])
