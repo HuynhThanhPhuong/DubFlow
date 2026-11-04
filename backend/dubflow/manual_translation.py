@@ -1,8 +1,9 @@
 """Chế độ dịch thủ công: lệnh mẫu cho AI chat và nhập SRT Việt khớp theo số thứ tự."""
 from __future__ import annotations
 
-import re
+import hashlib
 import json
+import re
 
 from .address_rules import ADDRESS_RULES, setting_instruction
 from .subtitle_style import is_supplementary
@@ -122,6 +123,7 @@ def match_by_index(blocks: list[dict], ids: list[str]) -> dict[str, str]:
 
 
 TIME_TOLERANCE = 0.3
+INDEX_SHIFT = 1.0
 
 
 def match_by_time(blocks: list[dict], cues: list[dict]) -> dict[str, int]:
@@ -177,6 +179,14 @@ def match_blocks(blocks: list[dict], dialogue: list[dict]) -> tuple[dict[str, st
     return texts, summary
 
 
+def dialogue_fingerprint(dialogue: list[dict]) -> str:
+    """Identifies the dialogue cues a preview was built from (ids, times, Chinese text): commit refuses a preview whose
+    cues changed meanwhile, because ids such as 'ocr-000012' are reused by a new analysis and would receive the wrong line."""
+    raw = json.dumps([[c['id'], round(float(c['start']), 3), round(float(c['end']), 3), str(c.get('original') or '')]
+                      for c in dialogue], ensure_ascii=False)
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
+
+
 def build_preview(blocks: list[dict], dialogue: list[dict]) -> dict:
     """Xem trước không ghi: mỗi khối một dòng (kèm câu được ghép + nhãn vấn đề) và mỗi câu còn trống một dòng."""
     mode, pairs = _pairs(blocks, dialogue)
@@ -198,9 +208,13 @@ def build_preview(blocks: list[dict], dialogue: list[dict]) -> dict:
             issues.append('no_match')
         if stamps[(round(b['start'], 2), round(b['end'], 2))] > 1:
             issues.append('dup_time')
-        if cid is not None and mode == 'time':
+        if cid is not None:
             c = by_id[cid][1]
-            if abs(b['start'] - c['start']) > TIME_TOLERANCE or abs(b['end'] - c['end']) > TIME_TOLERANCE:
+            if mode == 'time':
+                shifted = abs(b['start'] - c['start']) > TIME_TOLERANCE or abs(b['end'] - c['end']) > TIME_TOLERANCE
+            else:  # matched by number: only a block that lies elsewhere in the video shows the numbering is off
+                shifted = min(b['end'], c['end']) <= max(b['start'], c['start']) and abs(b['start'] - c['start']) > INDEX_SHIFT
+            if shifted:
                 issues.append('big_shift')
         rows.append(dict(block=bi, number=b['number'], start=b['start'], end=b['end'], text=b['text'], cue_id=cid,
                          cue_number=by_id[cid][0] if cid else None,
@@ -209,5 +223,6 @@ def build_preview(blocks: list[dict], dialogue: list[dict]) -> dict:
                for i, c in enumerate(dialogue, 1) if c['id'] not in pairs]
     problems = sum(1 for r in rows if r['issues']) + len(empties)
     return dict(mode=mode, total=len(dialogue), matched=len(pairs), problems=problems, rows=rows, empty_cues=empties,
+                fingerprint=dialogue_fingerprint(dialogue),
                 cues=[dict(id=c['id'], number=i, start=c['start'], end=c['end'], original=c.get('original', ''))
                       for i, c in enumerate(dialogue, 1)])

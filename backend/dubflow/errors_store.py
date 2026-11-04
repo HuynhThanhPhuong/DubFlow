@@ -32,6 +32,10 @@ def _write(path: Path, value) -> None:
     tmp.replace(path)
 
 
+def _tag(*parts) -> str:
+    return hashlib.sha1('|'.join(str(p) for p in parts).encode('utf-8')).hexdigest()[:8]
+
+
 def _iso(path: Path) -> str:
     try:
         return datetime.fromtimestamp(Path(path).stat().st_mtime, timezone.utc).isoformat()
@@ -75,14 +79,14 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
     failed_time = _iso(folder / FAILED_FILE)
     for cid in _read(folder / FAILED_FILE, []):
         if cid in number and not text_of.get(cid) and not str(cid).startswith('region:'):
-            add(f'tr:{cid}', 'translate', 'Dịch', failed_time,
+            add(f'tr:{cid}:{_tag(failed_time)}', 'translate', 'Dịch', failed_time,
                 'Gemini không trả bản dịch hợp lệ cho câu này (lỗi tạm thời, hết hạn mức hoặc kết quả hỏng).',
                 cid, ['jump', 'edit', 'retry'])
     for rec in _read(folder / BATCH_FILE, []):
         ids = [i for i in rec.get('cue_ids', []) if i in number and not text_of.get(i)]
         if not ids:
             continue
-        tag = hashlib.sha1('|'.join(ids).encode('utf-8')).hexdigest()[:8]
+        tag = _tag('|'.join(ids), rec.get('time'))  # a later failure of the same cues is a new error
         label = f"Lô {rec.get('batch')}/{rec.get('batches')}" if rec.get('batch') else 'Lô'
         add(f'trb:{tag}', 'translate', 'Dịch', rec.get('time') or failed_time,
             f"{label}: {len(ids)} câu chưa được dịch. Lý do: {rec.get('reason', 'kết quả hỏng')}.",
@@ -93,10 +97,10 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         when = imp.get('time') or _iso(folder / IMPORT_FILE)
         for cid in imp.get('empty', []):
             if cid in number and not text_of.get(cid):
-                add(f'srt-empty:{cid}', 'srt', 'Nhập SRT', when, 'Câu chưa có bản dịch sau lần nhập SRT gần nhất.',
+                add(f'srt-empty:{_tag(when)}:{cid}', 'srt', 'Nhập SRT', when, 'Câu chưa có bản dịch sau lần nhập SRT gần nhất.',
                     cid, ['jump', 'edit', 'retry'])
         for b in imp.get('skipped', []):
-            tag = hashlib.sha1(f"{b.get('number')}|{b.get('text')}".encode('utf-8')).hexdigest()[:8]
+            tag = _tag(b.get('number'), b.get('text'), when)
             label = f"Khối {b['number']}" if b.get('number') is not None else 'Khối'
             add(f'srt-skip:{tag}', 'srt', 'Nhập SRT', when,
                 f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}"', None, ['delete_block'])
@@ -114,17 +118,19 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         if r.get('code') == 'MISSING_TRANSLATION':
             continue
         ids = [i for i in r.get('cue_ids', []) if i in number]
-        add(f"block:{r.get('code')}", 'blocking', 'Xuất', datetime.now(timezone.utc).isoformat(), r.get('message', ''),
+        add(f"block:{r.get('code')}:{_tag(r.get('message', ''))}", 'blocking', 'Xuất', datetime.now(timezone.utc).isoformat(), r.get('message', ''),
             ids[0] if ids else None, ['jump'] if ids else [])
     flags: dict[str, list[dict]] = {}
+    by_id = {c.get('id'): c for c in cues}
     try:
         findings = source_audit.audit_cues(cues, job.get('duration') or 0)
     except Exception:  # noqa: BLE001 - the audit must never break the error list
         findings = []
     when = _iso(folder / 'cues.json')
-    by_id = {c.get('id'): c for c in cues}
     for f in findings:
-        key = f"audit:{f['code']}:{','.join(str(i) for i in f['cue_ids'])}"
+        shown = [by_id[i] for i in f['cue_ids'] if i in by_id]
+        # the content is part of the key: dismissing a finding must not hide another one that reuses the same cue ids
+        key = f"audit:{f['code']}:{','.join(str(i) for i in f['cue_ids'])}:{_tag(*[(c.get('original'), c.get('start'), c.get('end')) for c in shown])}"
         if key in skip:
             continue
         ids = [i for i in f['cue_ids'] if i in number]

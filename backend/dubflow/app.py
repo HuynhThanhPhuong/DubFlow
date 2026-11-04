@@ -468,7 +468,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.post('/api/jobs/{job_id}/translation-srt/commit')
     def commit_translation_srt(job_id: str, body: SrtCommitRequest):
+        from .manual_translation import dialogue_fingerprint
         job, folder, stored, dialogue = srt_context(job_id)
+        if body.fingerprint is not None and body.fingerprint != dialogue_fingerprint(dialogue):
+            raise HTTPException(409, 'Danh sách câu đã thay đổi từ lúc xem trước. Hãy chọn lại file SRT để ghép lại.')
         valid = {c['id'] for c in dialogue}
         texts = {k: v.strip() for k, v in body.assignments.items() if k in valid and v.strip()}
         if not texts:

@@ -13,10 +13,10 @@ from difflib import SequenceMatcher
 
 try:
     from .subtitle_cues import chinese
-    from .subtitle_lines import line_key
+    from .subtitle_lines import is_chinese_text, line_key
 except ImportError:  # top-level import (engine scripts)
     from subtitle_cues import chinese
-    from subtitle_lines import line_key
+    from subtitle_lines import is_chinese_text, line_key
 
 SIMILARITY = .8          # NEAR_DUPLICATE: ratio of the two readings
 DUPLICATE_GAP = 1.0      # NEAR_DUPLICATE: seconds between the two cues
@@ -25,6 +25,11 @@ FRAGMENT_CHARS = 2
 OVERLAP_TOLERANCE = .05  # SAME_REGION_OVERLAP: seconds of overlap that still count as touching
 MISMATCH_BELOW = .4      # OCR_ASR_MISMATCH: source_agreement under this (the pipeline's own flag starts at .6)
 MAX_CHARS_PER_SECOND = 12.0
+NON_SPEECH_KINDS = ('lyrics', 'music', 'note', 'sfx')  # a music note or sound label has no Han and is not junk
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
 
 
 def _finding(code, cues, message, severity='error'):
@@ -73,18 +78,18 @@ def _same_place(a, b):
 def audit_cues(cues, duration):
     """Findings for a list of source cues (dicts with start/end/original and, when known, source/region/cluster/kind/box/
     source_agreement/asr_text). `duration` is the video length in seconds."""
-    rows = [c for c in cues if isinstance(c, dict) and 'start' in c and 'end' in c]
+    rows = [c for c in cues if isinstance(c, dict) and _number(c.get('start')) and _number(c.get('end'))]
     rows.sort(key=lambda c: (float(c['start']), float(c['end'])))
     findings = []
-    chinese_source = any(chinese(c.get('original', '')) for c in rows)
+    chinese_source = is_chinese_text([str(c.get('original') or '') for c in rows])
 
     for c in rows:
         s, e = float(c['start']), float(c['end'])
-        text = c.get('original', '') or ''
+        text = str(c.get('original') or '')
         han = chinese(text)
         if e <= s + 1e-9 or s < -1e-6 or (duration and e > float(duration) + .5):
             findings.append(_finding('BAD_TIME', [c], f"Thời gian câu không hợp lệ hoặc vượt video: {_label(c)}."))
-        if chinese_source and not han:
+        if chinese_source and not han and line_key(text) and c.get('kind') not in NON_SPEECH_KINDS:
             findings.append(_finding('NO_CJK', [c], f"Lời gốc không có chữ Hán nào (nhiều khả năng là rác OCR): {_label(c)}."))
         key = line_key(text)
         if key and e - s <= FRAGMENT_SECONDS + 1e-9 and len(key) <= FRAGMENT_CHARS:

@@ -104,20 +104,23 @@ class ErrorsTests(Base):
         self.assertEqual(r.status_code, 200, r.text)
         data = self.client.get(self.base + '/errors').json()
         keys = {i['key']: i for i in data['items']}
+        by_prefix = lambda prefix: [i for k, i in keys.items() if k.startswith(prefix)]
         self.assertEqual(data['count'], len(data['items']))
-        self.assertIn('tr:a', keys)
-        self.assertEqual((keys['tr:a']['step'], keys['tr:a']['cue_number']), ('Dịch', 1))
-        self.assertIn('retry', keys['tr:a']['actions'])
-        self.assertIn('srt-empty:a', keys)
-        self.assertNotIn('srt-empty:c', keys)
+        self.assertEqual(len(by_prefix('tr:a:')), 1)
+        tr_a = by_prefix('tr:a:')[0]
+        self.assertEqual((tr_a['step'], tr_a['cue_number']), ('Dịch', 1))
+        self.assertIn('retry', tr_a['actions'])
+        empties = [i['cue_id'] for i in by_prefix('srt-empty:')]
+        self.assertIn('a', empties)
+        self.assertNotIn('c', empties)
         skipped = [k for k in keys if k.startswith('srt-skip:')]
         self.assertEqual(len(skipped), 1)
         self.assertIn('delete_block', keys[skipped[0]]['actions'])
         before = data['count']
-        self.assertEqual(self.client.post(self.base + '/errors/dismiss', json={'key': 'tr:a'}).status_code, 200)
+        self.assertEqual(self.client.post(self.base + '/errors/dismiss', json={'key': tr_a['key']}).status_code, 200)
         after = self.client.get(self.base + '/errors').json()
         self.assertEqual(after['count'], before - 1)
-        self.assertNotIn('tr:a', {i['key'] for i in after['items']})
+        self.assertNotIn(tr_a['key'], {i['key'] for i in after['items']})
 
     def test_translated_cue_drops_out_and_empty_state(self):
         atomic_json(self.folder / 'translation-failed.json', ['a'])
@@ -125,7 +128,7 @@ class ErrorsTests(Base):
         cues[0]['text'] = 'Đã sửa tay'
         atomic_json(self.folder / 'cues.json', cues)
         data = self.client.get(self.base + '/errors').json()
-        self.assertNotIn('tr:a', {i['key'] for i in data['items']})
+        self.assertFalse([i for i in data['items'] if i['key'].startswith('tr:a:')])
 
     def test_task_error_log_step(self):
         (self.folder / 'last-error.log').write_text('Traceback…', encoding='utf-8')

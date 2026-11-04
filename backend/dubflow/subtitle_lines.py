@@ -476,6 +476,19 @@ def _asr_outside_text(c, lines, a, b):
 
 
 _NEGATIONS = set('不没别无非未')
+_OTHER_SCRIPT = re.compile(r'[぀-ヿ가-힯]')  # kana, hangul
+
+
+def is_chinese_text(texts, min_share=.3):
+    """True when a list of readings is Chinese: at least `min_share` of them hold a Chinese character and kana / hangul do
+    not dominate. A Japanese or Korean video shares Han characters with Chinese, and one stray character in an English video
+    must not make it Chinese - a reading without Han is only junk in a video that is really Chinese."""
+    texts = [t for t in texts if line_key(t)]
+    with_han = sum(1 for t in texts if chinese(t))
+    if not with_han or with_han < min_share * len(texts):
+        return False
+    other = len(_OTHER_SCRIPT.findall(''.join(texts)))
+    return other * 2 <= len(chinese(''.join(texts)))
 
 
 def _near_text(a, b):
@@ -583,7 +596,8 @@ def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2
        line on screen while the fragment is read (the start of the line read again as it fades), else the next line (at most
        `gap` s away; it then starts earlier, never before the end of the line before), else the line before (at most `gap` s
        back). A fragment that matches nothing stays, flagged source_uncertain."""
-    chinese_source = any(chinese(s.get('text', '')) for s in segs) or any(chinese(c['original']) for c in asrs)
+    texts = [s.get('text', '') for s in segs]
+    chinese_source = is_chinese_text(texts) or (not any(chinese(t) for t in texts) and is_chinese_text([c['original'] for c in asrs]))
     kept = []
     for sg in segs:
         if chinese_source and not chinese(sg.get('text', '')):
@@ -634,6 +648,10 @@ def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2
         before = next((j for j in range(i - 1, -1, -1) if (out[j].get('region'), _is_supp(out[j])) == key), None)
         nk = line_key(out[nxt]['text']) if nxt is not None else ''
         bk = line_key(out[before]['text']) if before is not None else ''
+        if nxt is not None and not _same_line_group(f, out[nxt]):
+            nxt, nk = None, ''  # another cluster / place of the region: not a line this fragment can belong to
+        if before is not None and not _same_line_group(f, out[before]):
+            before, bk = None, ''
         into_before = before is not None and _near_prefix(fk, bk) and float(f['s']) < float(out[before]['e']) - 1e-9
         into_next = nxt is not None and float(out[nxt]['s']) - float(f['e']) <= gap + 1e-6 and _near_prefix(fk, nk)
         if into_before:  # the start of the line already on screen, read again while it fades

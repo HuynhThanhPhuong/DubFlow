@@ -108,6 +108,7 @@ class RenderRequest(BaseModel):
 
 class SrtCommitRequest(BaseModel):
     assignments: dict[str, str] = Field(default_factory=dict, max_length=5000)
+    fingerprint: str | None = Field(default=None, max_length=64)
 
 
 class DeleteCuesRequest(BaseModel):
