@@ -547,6 +547,30 @@ def _same_line_group(a, b):
     return width > 0 and min(ba[2], bb[2]) - max(ba[0], bb[0]) >= .5 * width
 
 
+def _drop_ghosts(rows, gap=.3, stats=None, max_seconds=.5, max_cps=12.0, share=.6):
+    """Dot12 sweep: while one dialogue line fades into the next, the OCR reads a mix of the characters of both - a long text in
+    a fraction of a second (test2 94: 19 characters in 0.2 s). A reading of at most `max_seconds` s that is faster than `max_cps`
+    characters/s, lies in the place of the line before and the line after (at most `gap` s from each) and is made of their
+    characters for at least `share` of its own is such a ghost: dropped (stats['dropped_ghost'])."""
+    keep = []
+    for i, g in enumerate(rows):
+        key = line_key(g['text'])
+        s, e = float(g['s']), float(g['e'])
+        if _is_supp(g) or len(key) < 6 or e - s > max_seconds + 1e-9 or len(key) / max(e - s, 1e-6) <= max_cps:
+            keep.append(g)
+            continue
+        place = lambda o: not _is_supp(o) and _same_line_group(o, g)
+        before = next((o for o in reversed(rows[:i]) if place(o) and float(o['e']) <= s + 1e-6 and s - float(o['e']) <= gap + 1e-6), None)
+        after = next((o for o in rows[i + 1:] if place(o) and float(o['s']) >= e - 1e-6 and float(o['s']) - e <= gap + 1e-6), None)
+        pool = set(line_key(before['text'])) | set(line_key(after['text'])) if before and after else set()
+        if pool and sum(c in pool for c in key) / len(key) >= share:
+            if stats is not None:
+                stats.setdefault('dropped_ghost', []).append(dict(start=s, end=e, text=g['text'], region=g.get('region')))
+            continue
+        keep.append(g)
+    return keep
+
+
 def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2):
     """Dot12: the extra and duplicated readings of the OCR before cues are built (segments sorted by time).
 
@@ -596,6 +620,8 @@ def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2
             continue
         last[key] = len(merged)
         merged.append(sg)
+    # 2b. cross-fade ghosts
+    merged = _drop_ghosts(merged, stats=stats)
     # 3. prefix fragments, from the end so a chain of fragments folds into the line at its end
     out = list(merged)
     for i in range(len(out) - 1, -1, -1):

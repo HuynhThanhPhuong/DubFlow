@@ -98,7 +98,7 @@ def _key(value):
 
 def source_key(cfg):
     """What decides the source cues: whether there are hard subs and where the band is (logos and screen text do not)."""
-    return _key(dict(v=5, no_hard_subs=cfg['no_hard_subs'], subtitles=subtitle_regions(cfg)))
+    return _key(dict(v=6, no_hard_subs=cfg['no_hard_subs'], subtitles=subtitle_regions(cfg)))
 
 
 def source_matches(cfg, key):
