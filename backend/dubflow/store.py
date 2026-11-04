@@ -5,7 +5,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from .font_catalog import DEFAULT_FONT, get_font, legacy_font
+from .font_catalog import DEFAULT_FONT, get_font, legacy_font, pin_subtitle_style
 
 
 def now():
@@ -43,8 +43,11 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             for row in db.execute('SELECT id,body FROM jobs').fetchall():
                 job = json.loads(row['body'])
+                previous = dict(job)
                 if not job.get('subtitle_font'):
                     job['subtitle_font'] = legacy_font(job, self.path.parent/'jobs'/row['id'])
+                pin_subtitle_style(job, self.path.parent/'jobs'/row['id'])
+                if job != previous:
                     db.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(job, ensure_ascii=False), row['id']))
 
     @contextmanager
@@ -70,6 +73,8 @@ class Store:
             prefs = json.loads(record['body']) if record else {}
             job.setdefault('subtitle_font', prefs.get('default_subtitle_font', DEFAULT_FONT))
             get_font(job['subtitle_font'])
+            job.setdefault('subtitle_size', 5.5)
+            job.setdefault('subtitle_italic', job['subtitle_font'] == DEFAULT_FONT)
             db.execute('INSERT INTO jobs VALUES (?,?)', (job['id'], json.dumps(job, ensure_ascii=False)))
         return job
 

@@ -19,13 +19,13 @@ import shutil
 if __package__:
     from .messages import translate_message
     from .textcheck import needs_translation, screen_text_noise
-    from .font_catalog import FONTS, FONTS_DIR, legacy_font
+    from .font_catalog import FONTS, FONTS_DIR, legacy_font, pin_subtitle_style
     from .subtitle_style import is_supplementary
     from . import analysis_regions, procjob
 else:  # engine_cli.py runs this module as a sibling script.
     from messages import translate_message
     from textcheck import needs_translation, screen_text_noise
-    from font_catalog import FONTS, FONTS_DIR, legacy_font
+    from font_catalog import FONTS, FONTS_DIR, legacy_font, pin_subtitle_style
     from subtitle_style import is_supplementary
     import analysis_regions
     import procjob
@@ -1263,14 +1263,20 @@ def ass_time(value):
     c = round(max(0,value)*100)
     return f'{c//360000}:{c//6000%60:02}:{c//100%60:02}.{c%100:02}'
 
-def make_ass(cues, regions, width, height, font_id=None):
+def make_ass(cues, regions, width, height, font_id=None, *, job=None):
     if __package__:
         from .subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round, assign_lanes
     else:
         from subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round, assign_lanes
-    st = style_for(width, height, font_id) if font_id else style_for(width, height)
+    st = style_for(width, height, font_id or 'public-sans', job=job)
     font_id = st['font_id']
     font_size = ass_size(st['size'], font_id)  # libass cell height of the visible size
+    outline_color = '&H002B2B2B' if st.get('outline_color') else '&H00000000'
+    back_color = '&H80000000' if st.get('shadow') else '&HFF000000'
+    italic = -1 if st.get('italic') else 0
+    effects = (r'\i1' if st.get('italic') else r'\i0') if job is not None else ''
+    if st.get('shadow_blur'):
+        effects += r'\blur' + str(st['shadow_blur'])
     out = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -1279,13 +1285,13 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{st['font']},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,-1,0,0,0,100,100,0,0,1,{st['outline']:g},0,2,10,10,{st['margin_v']},1
+Style: Default,{st['font']},{font_size},&H00FFFFFF,&H00FFFFFF,{outline_color},{back_color},-1,{italic},0,0,100,100,0,0,1,{st['outline']:g},{st.get('shadow',0):g},2,10,10,{st['margin_v']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     def event(start,end,text,x,y,size,align=5,styled=False):
-        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({pixel_round(x)},{pixel_round(y)})\\fs{max(8,pixel_round(size))}\\q2}}{text if styled else ass_escape(text)}\n'
+        return f'Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{{\\an{align}\\pos({pixel_round(x)},{pixel_round(y)})\\fs{max(8,pixel_round(size))}\\q2{effects}}}{text if styled else ass_escape(text)}\n'
     if __package__:
         from .subtitle_mask import refined_regions
     else:
@@ -1371,7 +1377,7 @@ def render_key(directory, command, graph_text, meta, mask_files=()):
         else:
             stamps[name] = file_hash(path)
     size = dict(width=meta.get('width'), height=meta.get('height'), fps=meta.get('fps'), duration=meta.get('duration'))
-    key = dict(version=2, fonts={f['id']: file_hash(FONTS_DIR/f['file']) for f in FONTS}, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size)
+    key = dict(version=2, fonts={name: file_hash(FONTS_DIR/name) for f in FONTS for name in (f['file'],f.get('italic_file')) if name}, command=[str(c) for c in command], graph=graph_text, files=stamps, meta=size)
     applied = (read(directory/REGIONS_APPLIED, None) or {}).get('key')
     if applied:  # the analysis regions the masks / clean.mp4 were built from (absent for jobs without drawn regions)
         key['regions'] = applied
@@ -1379,9 +1385,9 @@ def render_key(directory, command, graph_text, meta, mask_files=()):
 
 def render(job_dir, settings, emit):
     directory, job, source, meta = context(job_dir, settings)
-    if not job.get('subtitle_font'):
-        job['subtitle_font'] = legacy_font(job, directory)
-        write(directory/'job.json', job)
+    job['subtitle_font'] = legacy_font(job, directory)
+    pin_subtitle_style(job, directory)
+    write(directory/'job.json', job)
     cues = read(directory/'cues.json', [])
     if any(not c.get('text','').strip() for c in cues):
         raise NeedsReview('Review Vietnamese text before rendering')
@@ -1437,7 +1443,7 @@ def render(job_dir, settings, emit):
             failed.unlink(missing_ok=True)
         else:
             render_warnings.append('Không xóa được sub gốc và logo bằng bộ xóa; video xuất dùng làm mờ thường ở các vùng đó.')
-    (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height'],legacy_font(job, directory)),encoding='utf-8-sig')
+    (directory/'captions.ass').write_text(make_ass(cues,regions,meta['width'],meta['height'],legacy_font(job, directory), job=job),encoding='utf-8-sig')
     ff = getattr(settings,'ffmpeg','ffmpeg')
     cmd = [ff,'-v','error','-y','-filter_complex_threads','2','-i',str(source)]
     if __package__:

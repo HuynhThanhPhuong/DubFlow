@@ -37,8 +37,8 @@ def scenarios():
     }
 
 
-def layouts(font_id='public-sans', width=1280, height=720):
-    st = style.style_for(width, height, font_id)
+def layouts(font_id='public-sans', width=1280, height=720, job=None):
+    st = style.style_for(width, height, font_id, job=job)
     out = {}
     for name, sc in scenarios().items():
         rows = []
@@ -49,10 +49,11 @@ def layouts(font_id='public-sans', width=1280, height=720):
                     rows.append(dict(index=i, t=t, x=round(fit['x'], 6), y=round(fit['y'], 6), size=round(fit['size'], 6),
                                      align=fit['align'], lines=fit['lines'], overflow=bool(fit['overflow'])))
         out[name] = dict(cues=sc['cues'], rows=rows)
-    return dict(font_id=font_id, width=width, height=height, style=st, advances=font_metrics(font_id), scenarios=out)
+    return dict(font_id=font_id, width=width, height=height, style=st, advances=font_metrics(font_id, st.get('italic',False)), scenarios=out)
 
 
 if __name__ == '__main__':
-    path = Path(__file__).parent / 'fixtures' / 'layout-dot13.json'
-    path.write_text(json.dumps(layouts(), ensure_ascii=False, indent=1), encoding='utf-8')
-    print('wrote', path)
+    for name, job in (('layout-dot13.json',None),('layout-dot14.json',{})):
+        path = Path(__file__).parent / 'fixtures' / name
+        path.write_text(json.dumps(layouts(job=job), ensure_ascii=False, indent=1), encoding='utf-8')
+        print('wrote', path)

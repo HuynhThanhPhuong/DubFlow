@@ -156,7 +156,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
                 info['worker_alive'] = info['running_ahead'] or (isinstance(beat.get('time'), (int, float)) and time.time() - beat['time'] < 15)
                 value['queue'] = info
         value['subtitle_font'] = legacy_font(job, folder)
-        value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080), value['subtitle_font'])
+        value['subtitle_style'] = style_for(int(job.get('width') or 1920), int(job.get('height') or 1080), value['subtitle_font'], job=job)
         value['analysis_regions'] = job.get('analysis_regions')
         return value
 
@@ -250,7 +250,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
 
     @app.get('/api/fonts/{name}')
     def font_file(name: str):
-        if name not in {f['file'] for f in FONTS}:
+        if name not in {name for f in FONTS for name in (f['file'], f.get('italic_file')) if name}:
             raise HTTPException(404, 'Không tìm thấy font.')
         return FileResponse(FONTS_DIR / name, media_type='font/ttf', headers={'Cache-Control': 'public, max-age=86400'})
 
@@ -339,7 +339,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
             fields.pop('mode', None)
         try:
             with store.edit_idle_job(job_id) as current:
-                if 'subtitle_font' in fields and fields['subtitle_font'] != current.get('subtitle_font') and current['status'] != 'awaiting_regions':
+                if 'subtitle_font' in fields and fields['subtitle_font'] != current.get('subtitle_font'):
+                    fields.setdefault('subtitle_italic', fields['subtitle_font'] == 'public-sans')
+                if any(k in fields and fields[k] != current.get(k) for k in ('subtitle_font', 'subtitle_size', 'subtitle_italic')) and current['status'] != 'awaiting_regions':
                     current.update(status='awaiting_review', stage='awaiting_review', error=None)
                 current.update(fields)
         except ValueError as e:

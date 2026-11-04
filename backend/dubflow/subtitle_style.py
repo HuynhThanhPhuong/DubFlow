@@ -16,8 +16,8 @@ def pixel_round(value):
     return math.floor(value+.5)
 
 
-def region_units(text, font_id=DEFAULT_FONT):
-    advances = font_metrics(font_id)
+def region_units(text, font_id=DEFAULT_FONT, italic=False):
+    advances = font_metrics(font_id, italic)
     return sum(advances.get(c, 0 if unicodedata.category(c).startswith('M') else 1)
                for c in unicodedata.normalize('NFC', text))
 
@@ -26,12 +26,21 @@ def region_units(text, font_id=DEFAULT_FONT):
 ASS_CELL = 2701 / 2048
 
 
-def style_for(width: int, height: int, font_id=DEFAULT_FONT) -> dict:
+def style_for(width: int, height: int, font_id=DEFAULT_FONT, *, job=None) -> dict:
     font = get_font(font_id)
     # size = visible em size; portrait video uses a smaller ratio.
-    return dict(font=font['family'], font_id=font_id, cell=font['cell'], bold=True, size=pixel_round(height * (.045 if height > width else .055)),
+    st = dict(font=font['family'], font_id=font_id, cell=font['cell'], bold=True, size=pixel_round(height * (.045 if height > width else .055)),
                 outline=pixel_round(3 * height / 1080 * 10)/10, max_lines=2,
                 margin_v=pixel_round(height * .04))
+    if job is not None and job.get('subtitle_size', 5.5) is not None:
+        size = pixel_round(height * job.get('subtitle_size', 5.5) / 100)
+        st.update(size=size, fixed_size=True, max_lines=3,
+                  italic=job.get('subtitle_italic', font_id == DEFAULT_FONT),
+                  outline=size*.06, outline_color='#2b2b2b', shadow=.6, shadow_blur=.8)
+    elif job is not None:
+        st['italic'] = job.get('subtitle_italic', False)
+    return st
+
 
 
 def ass_size(size: float, font_id=DEFAULT_FONT) -> int:
@@ -139,8 +148,10 @@ def region_layout(cue, width: int, height: int, st=None):
     st = st or style_for(width, height)
     font_id = st.get('font_id', DEFAULT_FONT)
     cell = get_font(font_id)['cell']
-    measure = lambda text: region_units(text, font_id)
+    measure = lambda text: region_units(text, font_id, st.get('italic', False))
     fs = lambda size: ass_size(size, font_id)
+    if st.get('fixed_size'):
+        return fixed_region_layout(cue, width, height, st)
     if is_supplementary(cue):
         text = '[' + str(cue.get('text', '')).strip().strip('[]').strip() + ']'
         size = st['size'] * .9  # one size for every auxiliary caption (dot13); only a caption too long for 2 lines shrinks
@@ -194,6 +205,49 @@ def region_layout(cue, width: int, height: int, st=None):
     return dict(x=(x0+x1)/2, y=(y0+y1)/2, align=5, size=size, lines=lines, available=available, overflow=overflow)
 
 
+def fixed_region_layout(cue, width, height, st):
+    """User-sized captions wrap without shrinking, retaining excess text on line three."""
+    auxiliary = is_supplementary(cue)
+    size = st['size'] * (.85 if auxiliary else 1)
+    text = str(cue.get('text', ''))
+    if auxiliary:
+        text = '[' + text.strip().strip('[]').strip() + ']'
+    box = cue.get('box')
+    x = (box[0]+box[2])/2 if box and not auxiliary else width/2
+    x = min(width*.98, max(width*.02, x))
+    band = cue.get('band') if not auxiliary else None
+    left = max(width*.02, band[0] if band else 0)
+    right = min(width*.98, band[2] if band else width)
+    room = max(1, 2*min(x-left, right-x)-2*st['outline'])
+    font_id = st['font_id']
+    measure = lambda value: region_units(value, font_id, st.get('italic', False))
+    visible_size = ass_size(size, font_id)/st['cell']
+    lines = _wrap(text, visible_size, room, measure)
+    overflow = len(lines) > 3 or any(measure(line)*visible_size > room+.01 for line in lines)
+    if len(lines) > 3:
+        lines = lines[:2] + [' '.join(lines[2:])]
+    y = (box[1]+box[3])/2 if box and not auxiliary else height-st['margin_v']
+    return dict(x=x, y=y, align=2 if auxiliary or not box else 5, size=size,
+                lines=lines, available=room+2*st['outline'], overflow=overflow)
+
+
+def safe_fixed_layout(fit, height, st):
+    """Clamp all fixed-size paths, including lanes and auxiliary stacks, to the video safe area."""
+    if not st.get('fixed_size'):
+        return fit
+    fs = ass_size(fit['size'], st['font_id'])
+    block = fs*len(fit['lines'])
+    half = block/2
+    if fit['align'] == 2:
+        low, high = height*.02+block, height*.98
+    else:
+        low, high = height*.02+half, height*.98-half
+    fit['y'] = min(math.floor(high), max(math.ceil(low), fit['y']))
+    if low > high:
+        fit['overflow'] = True
+    return fit
+
+
 SHRINK_LIMIT = .85   # dot13: a caption that does not fit in 2 lines shrinks by 15% at most before it is flagged as overflowing
 SAFE_BOTTOM = .02    # dot13: the text block ends at least this share of the video height above the bottom edge
 
@@ -201,6 +255,8 @@ SAFE_BOTTOM = .02    # dot13: the text block ends at least this share of the vid
 def region_sizes(cues, st):
     """Dot13: one caption size per region = the median Chinese glyph height of the region's dialogue cues, kept between 60% and
     100% of the style size -> {region: size}. Auxiliary captions have their own size (st['size'] * .9, see region_layout)."""
+    if st.get('fixed_size'):
+        return {}
     heights = {}
     for c in cues:
         h = c.get('text_height')
@@ -272,7 +328,7 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
                 top = other['y'] - fs(other['size'])*len(other['lines'])/(1 if other['align']==2 else 2)
                 fit['y'] = min(fit['y'], top-max(4, st['outline']*2))
         base = max(sizes.values()) if sizes else max((d['size'] for d in dialogue), default=None)
-        if base:
+        if base and not st.get('fixed_size'):
             # one auxiliary size for the whole video, tied to the dialogue size (a region's, not the caption on screen)
             sized = region_layout(cue, width, height, dict(st,size=base))
             fit.update(size=sized['size'],lines=sized['lines'])
@@ -281,7 +337,7 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
                 continue
             other = region_layout(cues[i], width, height, st)
             fit['y'] -= fs(other['size'])*len(other['lines'])+max(4,st['outline']*2)
-        return fit
+        return safe_fixed_layout(fit, height, st)
     if cue.get('band') and cue.get('box'):
         box, band = cue['box'], list(cue['band'])
         center = (box[0]+box[2])/2
@@ -317,7 +373,7 @@ def cue_layout(cues, index, width, height, now, st=None, lanes=None):
         fit['y'] = anchor_block(fit['y'], len(fit['lines']), fs(fit['size']), 0, height, height)
     if lanes[index]:
         fit['y'] = lane_y(fit['y'], lanes[index], fs(fit['size']))
-    return fit
+    return safe_fixed_layout(fit, height, st)
 
 
 def reveal_words(cue, now):

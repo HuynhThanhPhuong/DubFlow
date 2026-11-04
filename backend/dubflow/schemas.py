@@ -193,6 +193,8 @@ class Part(BaseModel):
 
 
 class JobUpdate(BaseModel):
+    subtitle_italic: bool = False
+    subtitle_size: FiniteFloat = Field(default=5.5, ge=1, le=10)
     subtitle_font: str = DEFAULT_FONT
 
     @field_validator('subtitle_font')

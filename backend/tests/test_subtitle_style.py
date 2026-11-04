@@ -102,7 +102,7 @@ class FontRouteTests(unittest.TestCase):
     def test_job_json_carries_subtitle_style(self):
         j = self.app.state.store.create_job({'title': 'a', 'mode': 'vietsub', 'width': 1080, 'height': 1920})
         got = self.client.get(f"/api/jobs/{j['id']}").json()
-        self.assertEqual(got['subtitle_style'], style_for(1080, 1920))
+        self.assertEqual(got['subtitle_style'], style_for(1080, 1920, job=got))
 
     def tearDown(self):
         self.client.close()

@@ -6,7 +6,7 @@ from pathlib import Path
 FONTS_DIR = Path(__file__).resolve().parent / 'assets' / 'fonts'
 DEFAULT_FONT = 'public-sans'
 FONTS = (
-    dict(id='public-sans', name='Public Sans', file='PublicSans-Bold.ttf', family='Public Sans', group='Không chân', cell=1.405, ascent=2315/2000, descent=495/2000),
+    dict(id='public-sans', name='Public Sans', file='PublicSans-Bold.ttf', italic_file='PublicSans-BoldItalic.ttf', family='Public Sans', group='Không chân', cell=1.405, ascent=2315/2000, descent=495/2000),
     dict(id='roboto', name='Roboto', file='Roboto-Bold.ttf', family='Roboto', group='Không chân', cell=2701/2048, ascent=2146/2048, descent=555/2048),
     dict(id='be-vietnam-pro', name='Be Vietnam Pro', file='BeVietnamPro-Bold.ttf', family='Be Vietnam Pro', group='Không chân', cell=1.526, ascent=1261/1000, descent=265/1000),
     dict(id='montserrat', name='Montserrat', file='Montserrat-Bold.ttf', family='Montserrat', group='Không chân', cell=1.562, ascent=1109/1000, descent=453/1000),
@@ -27,10 +27,10 @@ def get_font(font_id=DEFAULT_FONT):
         raise ValueError('Phông chữ không hợp lệ.') from None
 
 
-@lru_cache(maxsize=10)
-def font_metrics(font_id=DEFAULT_FONT):
+@lru_cache(maxsize=20)
+def font_metrics(font_id=DEFAULT_FONT, italic=False):
     font = get_font(font_id)
-    return json.loads((FONTS_DIR / Path(font['file']).with_suffix('.metrics.json')).read_text(encoding='utf-8'))
+    return json.loads((FONTS_DIR / Path(font.get('italic_file', font['file']) if italic else font['file']).with_suffix('.metrics.json')).read_text(encoding='utf-8'))
 
 
 def legacy_font(job, directory):
@@ -39,4 +39,14 @@ def legacy_font(job, directory):
 
 
 def public_catalog():
-    return dict(default=DEFAULT_FONT, fonts=[dict(f, url='/api/fonts/'+f['file'], advances=font_metrics(f['id'])) for f in FONTS])
+    return dict(default=DEFAULT_FONT, fonts=[dict(f, url='/api/fonts/'+f['file'], advances=font_metrics(f['id']),
+                italic_url='/api/fonts/'+f['italic_file'] if f.get('italic_file') else None,
+                italic_advances=font_metrics(f['id'], True)) for f in FONTS])
+
+
+def pin_subtitle_style(job, directory):
+    """Persist pre-dot14 exported typography before any output is replaced."""
+    exported = bool(job.get('exported_paths')) or (Path(directory)/'output.mp4').is_file()
+    job.setdefault('subtitle_size', None if exported else 5.5)
+    job.setdefault('subtitle_italic', False if exported else job.get('subtitle_font', DEFAULT_FONT) == DEFAULT_FONT)
+    return job
