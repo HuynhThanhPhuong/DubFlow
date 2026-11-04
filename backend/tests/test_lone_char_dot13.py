@@ -31,8 +31,14 @@ class LoneCharTests(unittest.TestCase):
 
     def test_a_lone_character_that_starts_the_next_line_folds_into_it(self):
         stats = {}
-        cues = build([seg(10.0, 10.4, '好'), seg(10.6, 12.0, '好喝吗')], [], stats)
-        self.assertEqual([(c['original'], c['start']) for c in cues], [('好喝吗', 10.0)])
+        cues = build([seg(10.0, 10.4, '好'), seg(10.6, 12.0, '好喝吗')], [asr(100, 101, '别处')], stats)
+        self.assertEqual([(c['original'], c['start']) for c in cues if c['source'] != 'asr'], [('好喝吗', 10.0)])
+        self.assertNotIn('dropped_single', stats)
+
+    def test_without_any_asr_cue_nothing_can_confirm_so_nothing_is_dropped(self):
+        stats = {}
+        cues = build([seg(13.1, 13.5, '是')], [], stats)
+        self.assertEqual([c['original'] for c in cues], ['是'])
         self.assertNotIn('dropped_single', stats)
 
     def test_a_long_lone_character_is_left_alone(self):

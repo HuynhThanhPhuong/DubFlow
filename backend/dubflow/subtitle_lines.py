@@ -614,7 +614,10 @@ def _drop_lone_chars(rows, asrs, stats, gap=.6, seconds=LONE_SECONDS, margin=LON
     """Dot13: one-character dialogue readings of at most `seconds` s that no ASR cue (within `margin` s) confirms. A real
     one-character line ('喝' with the speech '喝') is kept. An unconfirmed one is folded into the neighbouring line of its
     region when it is the first / last character of it (at most `gap` s away, the line then reaches over it), else dropped
-    (stats['dropped_single']; the pipeline lists them in the analysis warnings)."""
+    (stats['dropped_single']; the pipeline lists them in the analysis warnings). Without any ASR cue (silent video, ASR off or
+    failed) nothing can confirm a reading, so none is dropped (the audit still flags the short unconfirmed ones)."""
+    if not asrs:
+        return rows
     keep = []
     for i, g in enumerate(rows):
         key = line_key(g['text'])
