@@ -1,0 +1,4 @@
+# Installed with: pip install -r requirements/torch.txt --index-url https://download.pytorch.org/whl/cu128
+# 2.8.0 / cu128 is what every Windows runtime uses (torch==2.8.0+cu128). For a CPU-only test box use /whl/cpu (GPU stages refuse to run).
+torch==2.8.0
+torchaudio==2.8.0
