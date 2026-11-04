@@ -529,8 +529,13 @@ export default function App() {
       return;
     }
     if (dirty && !(await saveCues())) return;
-    await deleteCues([id]);
-    setActive(next?.id ?? null);
+    setBusy(true); // a second click while the request is in flight would delete an already gone cue (404)
+    try {
+      await deleteCues([id]);
+      setActive(next?.id ?? null);
+    } finally {
+      setBusy(false);
+    }
   };
   const retryCues = async (ids: string[]) => {
     if (!currentJob) return;

@@ -191,3 +191,38 @@ it("deletes the open cue through the API after a confirm", async () => {
   await waitFor(() => expect(calls).toContain("POST delete"));
   confirm.mockRestore();
 });
+
+it("saves unsaved edits of other cues before deleting a saved cue and never drops them", async () => {
+  location.hash = "#editor?job=job1";
+  const calls: string[] = [];
+  const first = { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr" };
+  const second = { id: "2", start: 3, end: 4, speaker: "A", original: "再见", text: "Tạm biệt", source: "ocr" };
+  stubReset(calls, first);
+  const base = globalThis.fetch as unknown as (p: string, i: RequestInit) => Promise<Response>;
+  let saved: { id: string; text: string }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
+    if (path === "/api/jobs/job1/cues" && (init?.method || "GET") === "GET") return new Response(JSON.stringify([first, second]), { status: 200 });
+    if (path === "/api/jobs/job1/cues" && init?.method === "PUT") {
+      calls.push("PUT cues");
+      saved = JSON.parse(String(init.body));
+      return new Response(String(init.body), { status: 200 });
+    }
+    if (path === "/api/jobs/job1/cues/delete") {
+      calls.push("POST delete");
+      return new Response(JSON.stringify(saved.filter((c) => c.id !== "1")), { status: 200 });
+    }
+    return base(path, init);
+  }));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<App />);
+  const second2 = await screen.findByLabelText("Lời Việt câu 2");
+  fireEvent.change(second2, { target: { value: "Tạm biệt nhé" } });
+  fireEvent.click(screen.getByRole("button", { name: "Chọn và tua câu 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Xoá câu 1" }));
+  await waitFor(() => expect(calls).toContain("POST delete"));
+  expect(calls.indexOf("PUT cues")).toBeGreaterThanOrEqual(0);
+  expect(calls.indexOf("PUT cues")).toBeLessThan(calls.indexOf("POST delete"));
+  expect(saved.find((c) => c.id === "2")?.text).toBe("Tạm biệt nhé");
+  await waitFor(() => expect((screen.getByLabelText("Lời Việt câu 1") as HTMLTextAreaElement).value).toBe("Tạm biệt nhé"));
+  confirm.mockRestore();
+});

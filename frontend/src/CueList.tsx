@@ -47,9 +47,13 @@ function CueRow({
     el.style.height = Math.max(22, el.scrollHeight + 2) + "px";
   }, [cue.text]);
   const flags = cueFlags(cue);
+  // The pipeline's own "picture and speech differ" flag and the audit's OCR_ASR_MISMATCH finding are one issue: count it once.
+  const mismatchAudited = (audit ?? []).some((a) => a.code === "OCR_ASR_MISMATCH");
   const notes = [
     ...(audit ?? []).map((a) => ({ message: a.message, error: a.severity === "error" })),
-    ...flags.map((message) => ({ message, error: false })),
+    ...flags
+      .filter((message) => !(mismatchAudited && message.startsWith("Chữ trên hình và lời nghe được khác nhau")))
+      .map((message) => ({ message, error: false })),
   ];
   const hasError = notes.some((n) => n.error);
   const auxiliary = isSupplementary(cue);

@@ -92,6 +92,15 @@ class SafeAreaTests(unittest.TestCase):
         self.assertLessEqual(block(b)[1], 720*(1-style.SAFE_BOTTOM)+1e-6)
 
 
+    def test_a_region_at_the_top_of_the_frame_never_grows_above_it(self):
+        top = cue(0, 0, 3, LONG, [300, 8, 980, 48], 36, band=[0, 5, 1280, 65])
+        fit = style.cue_layout([top], 0, 1280, 720, 1)
+        self.assertEqual(len(fit['lines']), 2)
+        self.assertGreaterEqual(block(fit)[0], 0)
+        flush = cue(0, 0, 3, LONG, [300, 0, 980, 30], 36, band=[0, 0, 1280, 40])
+        self.assertGreaterEqual(block(style.cue_layout([flush], 0, 1280, 720, 1))[0], 0)
+
+
 class ParityFixtureTests(unittest.TestCase):
     def test_backend_layout_matches_the_shared_fixture_the_browser_mirror_is_tested_against(self):
         stored = json.loads(FIXTURE.read_text(encoding='utf-8'))

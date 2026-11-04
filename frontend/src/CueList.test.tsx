@@ -230,3 +230,15 @@ it("calls onDelete from the delete button of the expanded cue", () => {
   fireEvent.click(screen.getByRole("button", { name: "Xoá câu 1" }));
   expect(onDelete).toHaveBeenCalledWith("c1");
 });
+it("counts a picture/speech mismatch once when the pipeline flag and the audit finding say the same", () => {
+  render(
+    list(
+      { ...sample, auto_flags: ["Chữ trên hình và lời nghe được khác nhau; kiểm tra lời gốc."] },
+      {
+        mode: "dub",
+        audit: { c1: [{ code: "OCR_ASR_MISMATCH", severity: "warn", message: "Chữ trên hình và giọng nói lệch nhiều." }] },
+      },
+    ),
+  );
+  expect(screen.getByText("⚠ 1 điểm cần xem")).toBeTruthy();
+});
