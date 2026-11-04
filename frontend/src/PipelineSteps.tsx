@@ -8,9 +8,11 @@ interface Props {
   job: Job;
   cueCount: number;
   missing: number;
+  /** Cues that get a synthesized voice; supplementary captions are text only. Defaults to cueCount. */
+  spokenCount?: number;
 }
 
-export function PipelineSteps({ job, cueCount, missing }: Props) {
+export function PipelineSteps({ job, cueCount, missing, spokenCount = cueCount }: Props) {
   const running = !!job.stage_step && isBusy(job);
   // Remember when the latest server value arrived so the ETA can tick down between SSE pushes.
   const received = useRef({ key: "", at: Date.now() });
@@ -38,8 +40,8 @@ export function PipelineSteps({ job, cueCount, missing }: Props) {
       : {
           step: "synthesize",
           title: "Tạo giọng & kiểm tra",
-          done: cueCount > 0 && (job.ready_count || 0) >= cueCount,
-          text: `${job.ready_count || 0}/${cueCount} câu có giọng`,
+          done: spokenCount > 0 && (job.ready_count || 0) >= spokenCount,
+          text: `${job.ready_count || 0}/${spokenCount} câu có giọng`,
         },
     {
       step: "render",

@@ -131,6 +131,8 @@ export interface SubtitleFont {
   family: string;
   group: string;
   cell: number;
+  ascent?: number;
+  descent?: number;
   url: string;
   advances: Record<string, number>;
 }

@@ -485,7 +485,10 @@ def create_app(settings: Settings | None = None, start_worker=True):
             value['source_ids']=review.imported_links(value,previous)
             value['id']='srt-'+uuid.uuid4().hex
             exact=next((c for c in previous if abs(c['start']-value['start'])<1e-6 and abs(c['end']-value['end'])<1e-6),None)
-            if exact:value['original']=exact.get('original','')
+            if exact:
+                value['original']=exact.get('original','')
+                for key in ('box','band','region','orientation','text_height','cluster','kind','reveal'):  # layout and supplementary status belong to the source line
+                    if exact.get(key) is not None:value[key]=exact[key]
         atomic_json(folder / 'cues.json', values)
         state=review.load_state(folder)
         current_ids={c['id'] for c in values}

@@ -1219,9 +1219,9 @@ def ass_time(value):
 
 def make_ass(cues, regions, width, height, font_id=None):
     if __package__:
-        from .subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
+        from .subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round, assign_lanes
     else:
-        from subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round
+        from subtitle_style import style_for, fit_lines, ass_size, available_width, cue_layout, cue_intervals, reveal_words, pixel_round, assign_lanes
     st = style_for(width, height, font_id) if font_id else style_for(width, height)
     font_id = st['font_id']
     font_size = ass_size(st['size'], font_id)  # libass cell height of the visible size
@@ -1253,11 +1253,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         right=max(r['x']+r['width'] for r in matches)
         bottom=max(r['y']+r['height'] for r in matches)
         return (left+right)/2,(top+bottom)/2
+    lanes=assign_lanes(cues)
     for index in sorted(range(len(cues)),key=lambda i:cues[i]['start']):
         cue=cues[index]
         pending = None
         for start, end in cue_intervals(cues, index):
-            fit = cue_layout(cues, index, width, height, (start+end)/2, st)
+            fit = cue_layout(cues, index, width, height, (start+end)/2, st, lanes)
             count = reveal_words(cue, start)
             if count is None:
                 text = ass_escape('\n'.join(fit['lines']))

@@ -16,9 +16,20 @@ export function loadFont(font: SubtitleFont) {
   let promise = loaded.get(font.id);
   if (!promise) {
     promise = (async () => {
+      // libass puts the baseline at winAscent inside a winAscent+winDescent line box.
+      // Browsers use hhea/typo metrics, so pin them to the same values as the ASS export.
+      const metrics =
+        font.ascent && font.descent
+          ? {
+              ascentOverride: `${font.ascent * 100}%`,
+              descentOverride: `${font.descent * 100}%`,
+              lineGapOverride: "0%",
+            }
+          : {};
       const face = new FontFace(`DubFlow ${font.id}`, `url("${font.url}")`, {
         weight: "700",
         style: "normal",
+        ...metrics,
       });
       await face.load();
       document.fonts.add(face);

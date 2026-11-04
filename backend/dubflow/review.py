@@ -10,11 +10,11 @@ _SAVE_LOCK=threading.RLock()
 
 if __package__:
     from .pipeline import read, write, cache_key, file_hash
-    from .subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals, style_for
+    from .subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals, style_for, assign_lanes
     from .textcheck import needs_translation, screen_text_noise
 else:
     from pipeline import read, write, cache_key, file_hash
-    from subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals, style_for
+    from subtitle_style import is_supplementary, independent_positions, cue_layout, cue_intervals, style_for, assign_lanes
     from textcheck import needs_translation, screen_text_noise
 
 STATE_FIELDS = ('characters', 'assignments', 'address_rules', 'scene_context', 'omissions')
@@ -204,6 +204,7 @@ def quality_report(folder, job, state=None):
         flag('NO_CUES',[], 'Chưa có nội dung để xuất.', 'error')
     covered=set()
     known={c['id'] for c in state['source_cues']}
+    lane_cache=[]  # assign_lanes(cues) is the same for every cue: compute it once, on first use
     for cue_index,c in enumerate(cues):
         linked=c.get('source_ids') or ([c['id']] if c['id'] in known else [])
         covered.update(linked)
@@ -245,7 +246,9 @@ def quality_report(folder, job, state=None):
             flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
         if text and not is_supplementary(c) and job.get('width') and job.get('height'):
             times = [(a+b)/2 for a,b in cue_intervals(cues,cue_index)] if c.get('band') else [c['start']]
-            if any(cue_layout(cues,cue_index,int(job['width']),int(job['height']),t,style_for(int(job['width']),int(job['height']),job.get('subtitle_font','public-sans')))['overflow'] for t in times):
+            if not lane_cache:lane_cache.append(assign_lanes(cues))
+            style=style_for(int(job['width']),int(job['height']),job.get('subtitle_font','public-sans'))
+            if any(cue_layout(cues,cue_index,int(job['width']),int(job['height']),t,style,lane_cache[0])['overflow'] for t in times):
                 flag('LINES_OVERFLOW',[c['id']], 'Chữ tràn vùng hoặc phải thu nhỏ; nên rút gọn lời Việt.')
         assignment=current_assignment(c,state)
         if not is_supplementary(c) and job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):

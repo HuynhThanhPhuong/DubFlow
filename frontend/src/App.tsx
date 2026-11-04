@@ -41,6 +41,7 @@ import { providerLabels } from "./TranslationSettings";
 import { Button, Empty, Toast } from "./ui";
 import { vietnameseMessage } from "./messages";
 import { Player, Timeline } from "./Player";
+import { isSupplementary } from "./SubtitlePreview";
 import { PipelineSteps } from "./PipelineSteps";
 import { JobActivity } from "./JobActivity";
 import { RegionPicker } from "./RegionPicker";
@@ -777,6 +778,7 @@ export default function App() {
                   <PipelineSteps
                     job={currentJob}
                     cueCount={cues.length}
+                    spokenCount={cues.filter((c) => !isSupplementary(c)).length}
                     missing={missing}
                   />
                   <JobActivity

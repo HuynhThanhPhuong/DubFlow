@@ -203,9 +203,13 @@ def independent_positions(a, b):
                 ba[2] <= bb[0] or bb[2] <= ba[0] or ba[3] <= bb[1] or bb[3] <= ba[1]))
 
 
-def cue_layout(cues, index, width, height, now, st=None):
-    """Layout at one instant; ASS and preview split on the same active boundaries."""
+def cue_layout(cues, index, width, height, now, st=None, lanes=None):
+    """Layout at one instant; ASS and preview split on the same active boundaries.
+
+    `lanes` is assign_lanes(cues); callers laying out many instants compute it once."""
     st = st or style_for(width, height)
+    if lanes is None:
+        lanes = assign_lanes(cues)
     font_id = st.get('font_id', DEFAULT_FONT)
     fs = lambda size: ass_size(size, font_id)
     cue = cues[index]
@@ -215,7 +219,7 @@ def cue_layout(cues, index, width, height, now, st=None):
         dialogue = []
         for i in active:
             if not is_supplementary(cues[i]):
-                other = cue_layout(cues, i, width, height, now, st)
+                other = cue_layout(cues, i, width, height, now, st, lanes)
                 dialogue.append(other)
                 top = other['y'] - fs(other['size'])*len(other['lines'])/(1 if other['align']==2 else 2)
                 fit['y'] = min(fit['y'], top-max(4, st['outline']*2))
@@ -260,7 +264,6 @@ def cue_layout(cues, index, width, height, now, st=None):
         # Keep both lines inside the drawn strip, including its bottom edge.
         half = fs(fit['size'])*len(fit['lines'])/2
         fit['y'] = max(top+half, min(fit['y'], bottom-half))
-    lanes = assign_lanes(cues)
     if lanes[index]:
         fit['y'] = lane_y(fit['y'], lanes[index], fs(fit['size']))
     return fit
