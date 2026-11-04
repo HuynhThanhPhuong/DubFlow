@@ -238,3 +238,16 @@ it("permits synthetic italic for bundled fonts without an italic face", () => {
   // The app root sets font-synthesis:none, so an explicit override is needed.
   expect(caption.style.fontSynthesis).toBe("style");
 });
+
+it("keeps an overflowing third line centered like ASS instead of capping the CSS block", () => {
+  vi.mocked(useSubtitleFont).mockReturnValue({ id: "public-sans", italic: true,
+    font: { id: "public-sans", family: "Public Sans", cell: 1.405, advances: { A: 1, " ": 0.25 } } } as never);
+  const cue = { id: "a", start: 0, end: 2, text: Array(80).fill("A").join(" "),
+    box: [300, 640, 1000, 690], band: [300, 600, 1000, 720] } as Cue;
+  expect(cueLayout([cue], 0, 1280, 720, 1, style).overflow).toBe(true);
+  const { container } = render(<SubtitlePreview cues={[cue]} regions={[]} now={1} width={1280} height={720}
+    rect={{ left: 0, top: 0, width: 1280, height: 720 }} blurOriginal={false} subtitleStyle={style} />);
+  const caption = container.querySelector<HTMLElement>(".vietnamese-preview")!;
+  expect(caption.textContent!.split("\n")).toHaveLength(3);
+  expect(caption.style.maxWidth).toBe("none");
+});

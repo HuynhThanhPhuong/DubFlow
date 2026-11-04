@@ -668,7 +668,7 @@ export function SubtitlePreview({
               style={{
                 left: `${(x / width) * 100}%`,
                 top: `${(y / height) * 100}%`,
-                maxWidth: `${(fit.available / width) * 100}%`,
+                maxWidth: st.fixed_size ? "none" : `${(fit.available / width) * 100}%`,
                 fontSize: ratio ? (fs / cell) * ratio : 16,
                 lineHeight: cell,
                 fontFamily: loaded?.font ? fontFamily(loaded.font) : undefined,
