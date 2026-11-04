@@ -749,6 +749,12 @@ def subband(directory, request):
     def distance(a, b):
         return float(np.abs(a - b).mean())
 
+    def changed(a, b):
+        # One new glyph occupies very little of a wide strip. A mean-only gate
+        # can miss it entirely even though a small set of pixels changes sharply.
+        delta = np.abs(a-b)
+        return float(delta.mean()) >= .8 or np.count_nonzero(delta > 12) >= max(3, delta.size*.0005)
+
     def empty_sample(t, small):
         """A sample nothing was read from. miss: the band still looks like the last one that had a line, so the OCR missed
         it (the line is probably still there); False: the band changed to something without a line (really empty); None: no
@@ -777,7 +783,7 @@ def subband(directory, request):
                 middle = (t, image, shrink(image))
                 continue
             small = shrink(image)
-            if last_small is not None and distance(small, last_small) < .8:
+            if last_small is not None and not changed(small, last_small):
                 text, box, clusters = last_read  # still picture: the same reading
             else:
                 text, box, clusters = read_band(image)
@@ -802,6 +808,16 @@ def subband(directory, request):
             else:
                 samples.append(empty_sample(t, small))
             last_key, middle, prev_small = key, None, small
+        if middle is not None:
+            # The final half-step otherwise stays unread at EOF, ending a cue
+            # one sample early or losing the last character of a growing line.
+            t, image, small = middle
+            if last_small is None or changed(small,last_small):
+                text, box, clusters = read_band(image)
+                reads += 1
+            else:
+                text, box, clusters = last_read
+            samples.append(dict(t=t,text=text,box=box,clusters=clusters) if line_key(text) else empty_sample(t,small))
     finally:
         proc.stdout.close()
         proc.kill()

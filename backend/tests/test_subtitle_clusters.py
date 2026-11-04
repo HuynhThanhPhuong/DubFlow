@@ -144,6 +144,39 @@ class ClusterTests(unittest.TestCase):
 
 
 class EngineClusterTests(unittest.TestCase):
+    def test_sparse_character_growth_in_wide_static_band_is_not_reused(self):
+        import io
+        import sys
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        try:
+            import numpy as np
+            import cv2
+        except ImportError:
+            self.skipTest('OCR environment required')
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'dubflow'))
+        import engine_cli
+        from dubflow.pipeline import read
+        before=np.zeros((60,1000,3),np.uint8)
+        before[10:20,10:16]=255
+        after=before.copy();after[10:20,40:46]=255
+        process=SimpleNamespace(stdout=io.BytesIO(b''.join(f.tobytes() for f in [before,before,after,after,after])),kill=lambda:None,wait=lambda:0)
+        class Reader:
+            def __init__(self,**kwargs):pass
+            def __call__(self,image,**kwargs):
+                grown=bool(image[12,42,0])
+                right=50 if grown else 25
+                return [([[10,10],[right,10],[right,30],[10,30]],'古晋' if grown else '古',.99)],None
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules,{'rapidocr_onnxruntime':SimpleNamespace(RapidOCR=Reader)}),patch('subprocess.Popen',return_value=process):
+            engine_cli.subband(Path(tmp),dict(ffmpeg='unused',source='unused',width=1000,height=200,duration=1,box=[0,100,1000,60],orientation='h'))
+            segments=read(Path(tmp)/'subtrack.json')['segments']
+        self.assertEqual(len(segments),1)
+        self.assertEqual(segments[0]['text'],'古晋')
+        self.assertEqual(segments[0]['reveal'],[dict(t=0,fraction=.5),dict(t=.4,fraction=1)])
+        self.assertEqual(segments[0]['e'],1)
+
     def test_legacy_vertical_only_erase_keeps_source_bytes_without_decoder(self):
         import sys
         import tempfile
