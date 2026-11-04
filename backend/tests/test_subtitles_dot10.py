@@ -229,7 +229,7 @@ class Dot10MetadataApiTests(unittest.TestCase):
         result = self.post('1\n00:00:00,000 --> 00:00:04,000\nVề nhà\n\n2\n00:00:01,000 --> 00:00:04,000\nGió đưa mây'.encode('utf8'))
         self.assertEqual(result.status_code, 200, result.text)
         # An old client can save text without knowing the new metadata fields.
-        legacy = [{k:c[k] for k in ('id','start','end','speaker','original','text')} for c in result.json()]
+        legacy = [{k:c[k] for k in ('id','start','end','speaker','original','text')} for c in result.json()['cues']]
         legacy[0]['text'] = 'Trở về nhà'
         result = self.client.put(base+'/cues', json=legacy)
         self.assertEqual(result.status_code, 200, result.text)

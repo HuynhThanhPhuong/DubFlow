@@ -22,13 +22,14 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
 from .preferences import preferences, translation_ready
+from . import errors_store
 from . import translate_run, timing
 from .translate_api import ProviderError
 from .studio import install_routes
 from .publisher import safe_name
 from .media import atomic_json, contained, parse_srt, poster, probe, read_json, run
 from . import logos as logo_lib
-from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest
+from .schemas import AnalysisRegionsIn, OverlaysIn, TextLogoIn, Cue, JobUpdate, Part, Region, VoiceUpdate, ReviewUpdate, RenderRequest, TranslateRequest, DetectLogosRequest, SrtCommitRequest, DismissRequest
 from . import review
 from . import analysis_regions, lifecycle, translation_history
 from .pipeline import REGIONS_STALE, erase_current, erases_static, regions_stale, without_supplementary_masks
@@ -401,30 +402,27 @@ def create_app(settings: Settings | None = None, start_worker=True):
                            collection_name=(collection or {}).get('name', ''), cues=prompt_cues)
         return Response(text.encode('utf-8'), media_type='text/plain; charset=utf-8')
 
-    @app.post('/api/jobs/{job_id}/translation-srt')
-    async def import_translation_srt(job_id: str, file: UploadFile = File(...)):
-        from .manual_translation import parse_indexed_srt, match_by_index
-        from .dialogue_export import dialogue_source_cues
-        job = writable(job_id)
-        folder = job_dir(job_id)
+    async def read_srt_upload(file: UploadFile):
         data = await file.read(2 * 1024 * 1024 + 1)
         await file.close()
         if len(data) > 2 * 1024 * 1024:
             raise HTTPException(413, 'SRT vượt quá 2 MB.')
+        try:
+            return data.decode('utf-8-sig')
+        except UnicodeError:
+            raise HTTPException(422, 'File phải mã hóa UTF-8.')
+
+    def srt_context(job_id):
+        from .dialogue_export import dialogue_source_cues
+        job = writable(job_id)
+        folder = job_dir(job_id)
         stored = read_json(folder / 'cues.json', [])
         if not stored:
             raise HTTPException(409, 'Chưa có lời gốc. Phân tích video trước khi nhập bản dịch.')
         review.load_state(folder)
-        try:
-            try:
-                content = data.decode('utf-8-sig')
-            except UnicodeError:
-                raise ValueError('File phải mã hóa UTF-8.')
-            blocks = parse_indexed_srt(content)
-            dialogue = dialogue_source_cues(sorted(stored, key=lambda c: (c['start'], c['end'])))
-            texts = match_by_index(blocks, [c['id'] for c in dialogue])
-        except (ValueError, UnicodeError) as e:
-            raise HTTPException(422, str(e))
+        return job, folder, stored, dialogue_source_cues(sorted(stored, key=lambda c: (c['start'], c['end'])))
+
+    def apply_import(job_id, job, folder, stored, texts):
         state = review.load_state(folder)
         collection_terms = terminology_for(job)
         touched = []
@@ -435,10 +433,68 @@ def create_app(settings: Settings | None = None, start_worker=True):
         for c in touched:
             c['translation_dependency'] = review.translation_dependency(c, state, stored, collection_terms)
         atomic_json(folder / 'cues.json', stored)
-        translation_history.save_snapshot(folder,stored,source='ai_chat')
+        translation_history.save_snapshot(folder, stored, source='ai_chat')
         store.update_job(job_id, cue_count=len(stored))
         invalidate(job_id)
-        return stored
+
+    def record_import_issues(folder, empty, skipped):
+        errors_store.save_import_issues(folder, empty, skipped)
+
+    @app.post('/api/jobs/{job_id}/translation-srt')
+    async def import_translation_srt(job_id: str, file: UploadFile = File(...)):
+        from .manual_translation import parse_indexed_srt, match_blocks
+        writable(job_id)
+        content = await read_srt_upload(file)
+        job, folder, stored, dialogue = srt_context(job_id)
+        try:
+            texts, summary = match_blocks(parse_indexed_srt(content), dialogue)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        apply_import(job_id, job, folder, stored, texts)
+        record_import_issues(folder, summary['empty'], summary['skipped'])
+        return dict(cues=stored, summary=summary)
+
+    @app.post('/api/jobs/{job_id}/translation-srt/preview')
+    async def preview_translation_srt(job_id: str, file: UploadFile = File(...)):
+        """Ghép khối SRT với câu thoại nhưng KHÔNG ghi gì; giao diện cho người dùng sửa rồi gọi /commit."""
+        from .manual_translation import parse_indexed_srt, build_preview
+        writable(job_id)
+        content = await read_srt_upload(file)
+        job, folder, stored, dialogue = srt_context(job_id)
+        try:
+            return build_preview(parse_indexed_srt(content), dialogue)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.post('/api/jobs/{job_id}/translation-srt/commit')
+    def commit_translation_srt(job_id: str, body: SrtCommitRequest):
+        job, folder, stored, dialogue = srt_context(job_id)
+        valid = {c['id'] for c in dialogue}
+        texts = {k: v.strip() for k, v in body.assignments.items() if k in valid and v.strip()}
+        if not texts:
+            raise HTTPException(422, 'Không có câu nào để nhập.')
+        apply_import(job_id, job, folder, stored, texts)
+        empty = [dict(id=c['id'], number=n, start=c['start'], end=c['end'])
+                 for n, c in enumerate(dialogue, 1) if c['id'] not in texts]
+        record_import_issues(folder, empty, [])
+        return dict(cues=stored, summary=dict(mode='manual', total=len(dialogue), blocks=len(texts), matched=len(texts),
+                                              empty=empty, skipped=[], empty_blocks=0))
+
+    @app.get('/api/jobs/{job_id}/errors')
+    def job_errors(job_id: str):
+        job = job_or_404(job_id)
+        folder = job_dir(job_id)
+        try:
+            report = review.quality_report(folder, review_job(job))
+        except Exception:  # noqa: BLE001 - the error list must never fail because the report cannot be built
+            report = None
+        return errors_store.collect(folder, job, report)
+
+    @app.post('/api/jobs/{job_id}/errors/dismiss')
+    def dismiss_error(job_id: str, body: DismissRequest):
+        writable(job_id)
+        errors_store.dismiss(job_dir(job_id), body.key)
+        return dict(ok=True)
 
     @app.put('/api/jobs/{job_id}/cues')
     def put_cues(job_id: str, cs: list[Cue]):
@@ -795,7 +851,9 @@ def create_app(settings: Settings | None = None, start_worker=True):
         if any(t['job_id'] == job_id and t['action'] == 'translate' and t['state'] in ('pending', 'running') for t in store.active_tasks()):
             raise HTTPException(409, 'Đang dịch video này.')
         prefs, folder = translate_preflight(job, body.scope)
-        if not translate_run.collect_items(folder, body.scope):
+        if body.scope == 'ids' and not body.cue_ids:
+            raise HTTPException(422, 'Chưa chọn câu nào để dịch.')
+        if not translate_run.collect_items(folder, body.scope, body.cue_ids):
             raise HTTPException(409, 'Không có câu nào cần dịch.')
         request = folder / translate_run.REQUEST_FILE
         # The file is written inside the enqueue transaction, only once this call owns the task.
@@ -805,7 +863,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
             store.update_job(job_id, setting=chosen_setting)
             save_job_file(store.get_job(job_id))
         write_request = lambda: atomic_json(request, dict(scope=body.scope, allow_over_cap=body.allow_over_cap,
-                                                          setting=chosen_setting))
+                                                          setting=chosen_setting, cue_ids=body.cue_ids))
         try:
             return dispatch(job_id, 'translate', write_request)
         except HTTPException as exc:

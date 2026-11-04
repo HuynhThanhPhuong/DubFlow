@@ -64,30 +64,69 @@ class ManualTranslationTests(unittest.TestCase):
         self.assertEqual((s['a']['text'], s['b']['text'], s['c']['text']), ('Xin chào', 'Tạm biệt', 'Cảm ơn'))
         self.assertEqual((s['a']['start'], s['a']['end']), (1.0, 3.0))
         self.assertEqual(s['a']['status'], 'needs_review')
-        self.assertEqual(len(r.json()), 4)
+        self.assertEqual(len(r.json()['cues']), 4)
+        self.assertEqual((r.json()['summary']['mode'], r.json()['summary']['matched'], r.json()['summary']['empty']), ('index', 3, []))
 
-    def test_import_count_mismatch_422_writes_nothing(self):
-        r = self.post(srt('1', '00:00:01,000 --> 00:00:02,000', 'Một'))
+    def test_import_count_mismatch_matches_by_time_and_reports(self):
+        r = self.post(srt('1', '00:00:01,100 --> 00:00:02,900', 'Một', '',
+                          '2', '00:00:09,000 --> 00:00:11,000', 'Ba'))
+        self.assertEqual(r.status_code, 200, r.text)
+        sm = r.json()['summary']
+        self.assertEqual((sm['mode'], sm['matched'], sm['total'], sm['skipped']), ('time', 2, 3, []))
+        self.assertEqual([e['id'] for e in sm['empty']], ['b'])
+        self.assertEqual(sm['empty'][0]['number'], 2)
+        s = self.stored()
+        self.assertEqual((s['a']['text'], s['b']['text'], s['c']['text']), ('Một', '', 'Ba'))
+
+    def test_time_match_uses_largest_overlap_one_block_per_cue_and_skips_extras(self):
+        r = self.post(srt('1', '00:00:01,000 --> 00:00:01,800', 'Mảnh', '',
+                          '2', '00:00:01,500 --> 00:00:03,000', 'Dài hơn', '',
+                          '3', '00:00:20,000 --> 00:00:21,000', 'Lạc', '',
+                          '4', '00:00:06,000 --> 00:00:06,500', '', '',
+                          '5', '00:00:06,100 --> 00:00:08,000', 'Hai'))
+        self.assertEqual(r.status_code, 200, r.text)
+        sm = r.json()['summary']
+        s = self.stored()
+        self.assertEqual(s['a']['text'], 'Dài hơn')
+        self.assertEqual(s['b']['text'], 'Hai')
+        self.assertEqual(sm['matched'], 2)
+        self.assertEqual([b['number'] for b in sm['skipped']], [1, 3])
+        self.assertEqual(sm['empty_blocks'], 1)
+        self.assertEqual([e['id'] for e in sm['empty']], ['c'])
+
+    def test_time_match_prefers_exact_timing_over_overlap(self):
+        r = self.post(srt('1', '00:00:00,500 --> 00:00:03,200', 'Rộng', '',
+                          '2', '00:00:01,000 --> 00:00:03,000', 'Đúng'))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.stored()['a']['text'], 'Đúng')
+
+    def test_nothing_matches_422_writes_nothing(self):
+        r = self.post(srt('1', '00:01:00,000 --> 00:01:02,000', 'Xa'))
         self.assertEqual(r.status_code, 422)
-        self.assertEqual(r.json()['detail'], 'File có 1 câu, video có 3 câu thoại. Hãy giữ nguyên số câu như file SRT Trung đã xuất.')
+        self.assertIn('Không ghép được câu nào', r.json()['detail'])
         self.assertEqual(self.stored()['a']['text'], '')
 
-    def test_import_missing_and_duplicate_numbers(self):
-        r = self.post(srt('1', '00:00:01,000 --> 00:00:02,000', 'Một', '',
-                          '1', '00:00:02,000 --> 00:00:03,000', 'Hai', '',
-                          '4', '00:00:03,000 --> 00:00:04,000', 'Ba'))
+    def test_not_srt_422(self):
+        r = self.post('chỉ là một đoạn văn thường'.encode('utf-8'))
         self.assertEqual(r.status_code, 422)
-        self.assertIn('Thiếu số 2, 3', r.json()['detail'])
-        self.assertIn('Trùng số 1', r.json()['detail'])
-        self.assertEqual(self.stored()['a']['text'], '')
 
-    def test_import_empty_block_reported(self):
+    def test_import_missing_and_duplicate_numbers_fall_back_to_time(self):
+        r = self.post(srt('1', '00:00:01,000 --> 00:00:03,000', 'Một', '',
+                          '1', '00:00:06,000 --> 00:00:08,000', 'Hai', '',
+                          '4', '00:00:09,000 --> 00:00:11,000', 'Ba'))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()['summary']['mode'], 'time')
+        self.assertEqual(self.stored()['c']['text'], 'Ba')
+
+    def test_import_empty_block_counts_as_no_translation(self):
         r = self.post(srt('1', '00:00:01,000 --> 00:00:02,000', 'Một', '',
                           '2', '00:00:02,000 --> 00:00:03,000', '', '',
                           '3', '00:00:03,000 --> 00:00:04,000', 'Ba'))
-        self.assertEqual(r.status_code, 422)
-        self.assertIn('2', r.json()['detail'])
-        self.assertEqual(self.stored()['a']['text'], '')
+        self.assertEqual(r.status_code, 200, r.text)
+        sm = r.json()['summary']
+        self.assertEqual((sm['mode'], sm['matched'], sm['empty_blocks']), ('index', 2, 1))
+        self.assertEqual([e['id'] for e in sm['empty']], ['b'])
+        self.assertEqual(self.stored()['b']['text'], '')
 
     def test_import_bom_crlf_and_multiline(self):
         data = '﻿1\r\n00:00:01,000 --> 00:00:02,000\r\nDòng một\r\nDòng hai\r\n\r\n2\r\n00:00:02,000 --> 00:00:03,000\r\nHai\r\n\r\n3\r\n00:00:03,000 --> 00:00:04,000\r\nBa\r\n'

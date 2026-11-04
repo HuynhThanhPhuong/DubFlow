@@ -23,7 +23,7 @@ USAGE_FILE = 'translation-usage.json'
 FAILED_FILE = 'translation-failed.json'
 RATE_FILE = 'translation-rate.json'
 CONTEXT_META_FILE = 'translation-context-meta.json'
-SCOPES = ('missing', 'all')
+SCOPES = ('missing', 'all', 'ids')
 PREF_KEYS = ('rate_rpm', 'rate_rpd', 'price_in_per_mtok',
              'price_out_per_mtok', 'cost_cap_usd', 'vietsub_cps', 'max_output_tokens', 'max_input_tokens', 'thinking')
 
@@ -63,14 +63,19 @@ def _write(path: Path, value) -> None:
     tmp.replace(path)
 
 
-def collect_items(folder: Path, scope: str) -> list[Item]:
-    """Câu và chữ trên hình cần dịch. 'missing' bỏ qua mọi chỗ đã có lời Việt."""
+def collect_items(folder: Path, scope: str, ids=None) -> list[Item]:
+    """Câu và chữ trên hình cần dịch. 'missing' bỏ qua mọi chỗ đã có lời Việt; 'ids' chỉ dịch (ghi đè) các câu trong ids."""
     items: list[Item] = []
+    only = set(ids or []) if scope == 'ids' else None
     for c in _read(folder / 'cues.json', []):
         zh = str(c.get('original') or '').strip()
+        if only is not None:
+            if zh and str(c.get('id')) in only:
+                items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), '' if is_supplementary(c) else str(c.get('speaker') or ''), 'supplementary' if is_supplementary(c) else 'cue'))
+            continue
         if zh and (scope == 'all' or not str(c.get('text') or '').strip()):
             items.append(Item(str(c['id']), zh, float(c['start']), float(c['end']), '' if is_supplementary(c) else str(c.get('speaker') or ''), 'supplementary' if is_supplementary(c) else 'cue'))
-    for r in _read(folder / 'regions.json', []):
+    for r in ([] if only is not None else _read(folder / 'regions.json', [])):
         if not (r.get('enabled') and r.get('kind') == 'transient' and str(r.get('text') or '').strip() and needs_translation(r.get('text'))):
             continue
         if scope == 'all' or not str(r.get('translation') or '').strip():
@@ -135,7 +140,7 @@ def apply_outcome(folder: Path, items: list[Item], outcome, scope: str, terminol
     done = []
     for c in cues:
         text = texts.get(str(c['id']))
-        if text and (scope == 'all' or not str(c.get('text') or '').strip()):
+        if text and (scope != 'missing' or not str(c.get('text') or '').strip()):
             c['text'] = text
             c['status'] = 'needs_review'
             done.append(c)
@@ -143,7 +148,7 @@ def apply_outcome(folder: Path, items: list[Item], outcome, scope: str, terminol
         c['translation_dependency'] = translation_dependency(c, state, cues, terminology)
     for r in regions:
         text = texts.get(f"region:{r.get('id')}")
-        if text and (scope == 'all' or not str(r.get('translation') or '').strip()):
+        if text and (scope != 'missing' or not str(r.get('translation') or '').strip()):
             r['translation'] = text
     _write(folder / 'cues.json', cues)
     _write(folder / 'regions.json', regions)
@@ -163,7 +168,7 @@ def run_job(folder: Path, settings, job: dict, emit, terminology: str, check_can
     name, key, model = selected(settings)
     label = LABELS.get(name, name)
     mode = job.get('mode') or 'vietsub'
-    items = collect_items(folder, scope)
+    items = collect_items(folder, scope, request.get('cue_ids'))
     if not items:
         return dict(warnings=['Không có câu nào cần dịch.'])
     total = len(items)

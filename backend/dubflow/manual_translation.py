@@ -51,6 +51,16 @@ def prompt_text(mode: str, cps, terminology: str = '', *, setting: str = 'auto',
     return '\n\n'.join(parts) + '\n'
 
 
+def _stamp_seconds(line: str) -> tuple[float, float]:
+    m = TIME.search(line)
+    a, b = re.split(r'\s*-->\s*', m.group(0))
+
+    def sec(t: str) -> float:
+        h, mi, rest = t.split(':')
+        return int(h) * 3600 + int(mi) * 60 + float(rest.replace(',', '.'))
+    return sec(a), sec(b)
+
+
 def parse_indexed_srt(text: str) -> list[dict]:
     """Tách các khối SRT, giữ số thứ tự (None nếu thiếu). Chịu BOM, CRLF, CR và chữ nhiều dòng."""
     text = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
@@ -76,7 +86,8 @@ def parse_indexed_srt(text: str) -> list[dict]:
             elif prev.isdigit():
                 raise ValueError(f'Số thứ tự "{prev}" không hợp lệ, chỉ dùng chữ số 0-9.')
         body = '\n'.join(ln for ln in lines[stamp + 1:] if ln)
-        blocks.append(dict(number=number, text=body))
+        start, end = _stamp_seconds(lines[stamp])
+        blocks.append(dict(number=number, text=body, start=start, end=end))
     if not blocks:
         raise ValueError('Không tìm thấy câu phụ đề SRT hợp lệ.')
     return blocks
@@ -107,7 +118,96 @@ def match_by_index(blocks: list[dict], ids: list[str]) -> dict[str, str]:
         if duplicate:
             bits.append('Trùng số ' + _listing(duplicate))
         raise ValueError('Số thứ tự trong file phải đủ từ 1 đến %d, không trùng. %s.' % (total, '; '.join(bits)))
-    empty = [b['number'] for b in blocks if not b['text'].strip()]
-    if empty:
-        raise ValueError('Có câu chưa có chữ tiếng Việt, số thứ tự: ' + _listing(sorted(empty)) + '.')
-    return {ids[b['number'] - 1]: b['text'] for b in blocks}
+    return {ids[b['number'] - 1]: b['text'] for b in blocks if b['text'].strip()}
+
+
+TIME_TOLERANCE = 0.3
+
+
+def match_by_time(blocks: list[dict], cues: list[dict]) -> dict[str, int]:
+    """Khớp khối -> câu theo dòng thời gian; trả {id câu: vị trí khối}. Mỗi câu và mỗi khối dùng tối đa một lần."""
+    exact, loose = [], []
+    for bi, b in enumerate(blocks):
+        if not b['text'].strip():
+            continue
+        for c in cues:
+            ds, de = abs(b['start'] - c['start']), abs(b['end'] - c['end'])
+            overlap = min(b['end'], c['end']) - max(b['start'], c['start'])
+            if ds <= TIME_TOLERANCE and de <= TIME_TOLERANCE:
+                exact.append((ds + de, bi, c['id']))
+            elif overlap > 0:
+                loose.append((-overlap, bi, c['id']))
+    taken_b, taken_c, out = set(), set(), {}
+    for _, bi, cid in sorted(exact) + sorted(loose):
+        if bi in taken_b or cid in taken_c:
+            continue
+        taken_b.add(bi)
+        taken_c.add(cid)
+        out[cid] = bi
+    return out
+
+
+def _pairs(blocks: list[dict], dialogue: list[dict]) -> tuple[str, dict[str, int]]:
+    """(mode, {id câu: vị trí khối}). Số khối khớp và số thứ tự đủ -> theo số thứ tự; ngược lại theo thời gian."""
+    ids = [c['id'] for c in dialogue]
+    try:
+        match_by_index(blocks, ids)
+    except ValueError:
+        return 'time', match_by_time(blocks, dialogue)
+    return 'index', {ids[b['number'] - 1]: i for i, b in enumerate(blocks) if b['text'].strip()}
+
+
+NO_MATCH = ('Không ghép được câu nào từ file SRT này với video. Hãy kiểm tra lại file AI trả về '
+            '(giữ nguyên dòng thời gian của file SRT Trung đã xuất).')
+
+
+def match_blocks(blocks: list[dict], dialogue: list[dict]) -> tuple[dict[str, str], dict]:
+    """Trả (văn bản theo id câu, tóm tắt). Chỉ lỗi khi không ghép được câu nào."""
+    mode, pairs = _pairs(blocks, dialogue)
+    texts = {cid: blocks[bi]['text'] for cid, bi in pairs.items()}
+    if not texts:
+        raise ValueError(NO_MATCH)
+    used = set(pairs.values())
+    skipped = [dict(number=b['number'], text=b['text'][:80], start=b['start'], end=b['end'])
+               for i, b in enumerate(blocks) if b['text'].strip() and i not in used]
+    empty = [dict(id=c['id'], number=i, start=c['start'], end=c['end'])
+             for i, c in enumerate(dialogue, 1) if c['id'] not in texts]
+    summary = dict(mode=mode, total=len(dialogue), blocks=len(blocks), matched=len(texts), empty=empty,
+                   skipped=skipped, empty_blocks=sum(1 for b in blocks if not b['text'].strip()))
+    return texts, summary
+
+
+def build_preview(blocks: list[dict], dialogue: list[dict]) -> dict:
+    """Xem trước không ghi: mỗi khối một dòng (kèm câu được ghép + nhãn vấn đề) và mỗi câu còn trống một dòng."""
+    mode, pairs = _pairs(blocks, dialogue)
+    if not pairs:
+        raise ValueError(NO_MATCH)
+    owner = {bi: cid for cid, bi in pairs.items()}
+    by_id = {c['id']: (i, c) for i, c in enumerate(dialogue, 1)}
+    stamps: dict[tuple, int] = {}
+    for b in blocks:
+        k = (round(b['start'], 2), round(b['end'], 2))
+        stamps[k] = stamps.get(k, 0) + 1
+    rows = []
+    for bi, b in enumerate(blocks):
+        cid = owner.get(bi)
+        issues = []
+        if not b['text'].strip():
+            issues.append('empty_block')
+        elif cid is None:
+            issues.append('no_match')
+        if stamps[(round(b['start'], 2), round(b['end'], 2))] > 1:
+            issues.append('dup_time')
+        if cid is not None and mode == 'time':
+            c = by_id[cid][1]
+            if abs(b['start'] - c['start']) > TIME_TOLERANCE or abs(b['end'] - c['end']) > TIME_TOLERANCE:
+                issues.append('big_shift')
+        rows.append(dict(block=bi, number=b['number'], start=b['start'], end=b['end'], text=b['text'], cue_id=cid,
+                         cue_number=by_id[cid][0] if cid else None,
+                         original=by_id[cid][1].get('original', '') if cid else '', issues=issues))
+    empties = [dict(id=c['id'], number=i, start=c['start'], end=c['end'], original=c.get('original', ''))
+               for i, c in enumerate(dialogue, 1) if c['id'] not in pairs]
+    problems = sum(1 for r in rows if r['issues']) + len(empties)
+    return dict(mode=mode, total=len(dialogue), matched=len(pairs), problems=problems, rows=rows, empty_cues=empties,
+                cues=[dict(id=c['id'], number=i, start=c['start'], end=c['end'], original=c.get('original', ''))
+                      for i, c in enumerate(dialogue, 1)])
