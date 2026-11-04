@@ -399,7 +399,7 @@ def engine(stage, directory, settings, payload=None, emit=None):
             payload[name] = str(value)
     request = directory/'engine-request.json'
     # gen_omni runs in the OmniVoice environment (asr_python, read-only); every other unlisted stage does too.
-    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','subband','erase','logos') else 'speaker_python' if stage in ('speakers','similarity') else 'asr_python', None)
+    python = getattr(settings, 'tts_python' if stage == 'gen' else 'ocr_python' if stage in ('ocr','subtrack','subband','erase','logos','cueprobe') else 'speaker_python' if stage in ('speakers','similarity') else 'asr_python', None)
     if not python or not Path(python).exists():
         raise NeedsReview(f'{stage}: configured Python environment is unavailable')
     env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONIOENCODING='utf-8', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
@@ -737,6 +737,44 @@ def erase_subtitles(directory, source, meta, settings, emit, warnings, accept_fa
         warnings.append('Chưa xóa được sub gốc trên hình: '+str(exc))
         return
     warnings.extend((read(stamp, {}) or {}).get('warnings') or [])
+
+def cue_cover_rows(directory, source, meta, settings, cues, job, emit, warnings):
+    """Dot13: mask rows that blur the burned-in Chinese under cues the OCR track does not cover (manual cues, ASR-only cues,
+    the uncovered part of a cue). The strip of the cue's region is probed once per (window, region box) - cue-probe-cache.json -
+    and the boxes found are blurred frame by frame; a manual cue with nothing found gets the whole strip. Needs no new clean.mp4."""
+    if __package__:
+        from . import cue_cover
+    else:
+        import cue_cover
+    directory = Path(directory)
+    cfg = analysis_regions.usable((job or {}).get('analysis_regions'))
+    track = read(directory/'subtrack.json', {}) or {}
+    if cfg is None or cfg['no_hard_subs'] or not cues:
+        return []
+    specs = analysis_regions.subtitle_regions(cfg)
+    windows = cue_cover.uncovered_windows(cues, track.get('segments', []), specs, float(meta['duration']))
+    if not windows:
+        return []
+    cache_path = directory/'cue-probe-cache.json'
+    stamp = source_stamp(source)
+    cache = read(cache_path, {}) or {}
+    if cache.get('source') != stamp:
+        cache = dict(source=stamp, probes={})
+    missing = [dict(key=cue_cover.probe_key(w), start=w['start'], end=w['end'], box=w['box']) for w in windows
+               if cue_cover.probe_key(w) not in cache['probes']]
+    if missing and getattr(settings, 'ocr_python', None):
+        emit('rendering', 'Đang dò chữ Trung dưới các câu thêm tay', 85)
+        try:
+            engine('cueprobe', directory, settings, {'source': str(source), 'windows': list({m['key']: m for m in missing}.values()), **meta}, emit=emit)
+            cache['probes'].update(read(directory/'cue-probe.json', {}) or {})
+            write(cache_path, cache)
+        except Cancelled:
+            raise
+        except NeedsReview as exc:
+            warnings.append('Không dò được chữ Trung dưới các câu thêm tay: '+str(exc))
+    rows, notes = cue_cover.cover_regions(windows, cache['probes'], int(meta['width']), int(meta['height']))
+    warnings.extend(notes)
+    return rows
 
 REGIONS_APPLIED = 'regions-applied.json'
 REGIONS_STALE = 'Vùng phân tích đã đổi, hãy phân tích lại trước khi xuất.'
@@ -1415,6 +1453,10 @@ def render(job_dir, settings, emit):
         erased = set((read(directory/'erase.json', {}) or {}).get('static_ids') or [])
         mask_regions = [r for r in mask_regions if r.get('kind') != 'subtitle' and not (r.get('kind') == 'static' and r.get('id') in erased)]
         last = 'cleanv'
+    if getattr(settings,'blur_original',True):
+        mask_regions += refined_regions(cue_cover_rows(directory, source, meta, settings, cues, job,
+                                                       lambda stage, message, progress: emit(stage, message, 86), render_warnings),
+                                        meta['width'], meta['height'], meta['duration'])
     mask_inputs = 0
     paths = {}
     if getattr(settings,'blur_original',True):

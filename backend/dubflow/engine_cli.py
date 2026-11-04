@@ -837,6 +837,54 @@ def subband(directory, request):
                                           samples=len(samples), ocr_reads=reads, segments=segments))
 
 
+def cueprobe(directory, request):
+    """Dot13: look for Chinese text in the strip of a region during given time windows -> cue-probe.json {key: {boxes, found}}.
+
+    Each window {key, start, end, box:[x, y, w, h]} is decoded at 5 fps and every frame is read with a lenient filter (confidence
+    .3, at least one Han character, wider than 1.6 glyph heights): the point is to know where text is, not to read it
+    (cue_cover.boxes_from_samples). The OCR misses frames of a thin spaced-out line, hence the bridging there."""
+    import cv2
+    import numpy as np
+    import subprocess
+    from rapidocr_onnxruntime import RapidOCR
+    from subtitle_cues import chinese
+    from cue_cover import boxes_from_samples
+    directory = Path(directory)
+    reader = RapidOCR(det_limit_side_len=736, det_limit_type='max', intra_op_num_threads=int(request.get('ocr_threads', 4)),
+                      inter_op_num_threads=1, det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
+    step = .2
+    out = {}
+    for window in request['windows']:
+        bx, by, bw, bh = (int(v) for v in window['box'])
+        start, end = float(window['start']), float(window['end'])
+        proc = subprocess.Popen([request['ffmpeg'], '-v', 'error', '-ss', f'{start:.3f}', '-t', f'{end-start:.3f}', '-i', request['source'],
+                                 '-vf', f'fps={1/step:.6f},crop={bw}:{bh}:{bx}:{by}:exact=1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        samples, n = [], 0
+        try:
+            while True:
+                if (directory/'cancel.request').exists():
+                    raise RuntimeError('cancelled')
+                raw = proc.stdout.read(bw*bh*3)
+                if len(raw) < bw*bh*3:
+                    break
+                image = np.frombuffer(raw, np.uint8).reshape(bh, bw, 3)
+                result, _ = reader(image, use_cls=False)
+                rows = [(min(xs), min(ys), max(xs), max(ys)) for poly, text, score in (result or [])
+                        if score >= .3 and chinese(text) for xs, ys in [zip(*poly)]
+                        if max(xs)-min(xs) >= 1.6*max(1, max(ys)-min(ys))]  # a lone glyph-sized patch is the picture, not a bracketed line
+                box = [bx+min(r[0] for r in rows), by+min(r[1] for r in rows), bx+max(r[2] for r in rows), by+max(r[3] for r in rows)] if rows else None
+                samples.append(dict(t=start+n*step, box=box))
+                n += 1
+        finally:
+            proc.stdout.close()
+            proc.kill()
+            proc.wait()
+        boxes = boxes_from_samples(samples, start, end, step, window['box'])
+        out[window['key']] = dict(boxes=boxes, found=bool(boxes), samples=n)
+    write(directory/'cue-probe.json', out)
+
+
 def sample_frames(ffmpeg, source, width, height, duration, target_width=640, step=2.0, limit=150):
     """Sparse grayscale frames downscaled to target_width -> (frames, times, scale)."""
     import numpy as np
@@ -1374,7 +1422,7 @@ def erase(directory, request):
 TAKE_CODE=('decode','snapshot','load_asr','LazyWeights','lazy_weights','read_tensor','cpu_rope_tables','stream_load_state_dict','takes_missing',
            'gen','gen_omni','text_match','token_distance','similarity','pick','_TONES','_Y_ONSET','_canon_token','tokens','apply_pronounce')
 
-STAGES=dict(separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,subband=subband,erase=erase,logos=logos)  # 'speakers' is added lazily by main
+STAGES=dict(cueprobe=cueprobe,separate=separate,transcribe=transcribe,refs=refs,gen=gen,gen_omni=gen_omni,pick=pick,similarity=similarity,ocr=ocr,subtrack=subtrack,subband=subband,erase=erase,logos=logos)  # 'speakers' is added lazily by main
 
 
 def main():
