@@ -22,8 +22,12 @@ def read_regions(directory, request, read_band):
         track = read(directory/'subtrack.json', {})
         x, y, w, h = spec['box']
         for line in track.get('segments', []):
-            # OCR geometry is xyxy. The cue uses the whole selected region.
-            line.update(region=index, box=[x, y, x+w, y+h], orientation=spec['orientation'])
+            # The user band bounds layout; the measured union positions the cue.
+            actual = [line.get('x0', x), line.get('y0', y), line.get('x1', x+w), line.get('y1', y+h)]
+            line.update(region=index, box=actual, band=[x, y, x+w, y+h], orientation=spec['orientation'])
+            if spec['orientation'] == 'v':
+                line['kind'] = 'supplementary'
+                line.pop('reveal', None)
             line.setdefault('text_height', max(1, line['y1']-line['y0']) if spec['orientation'] == 'h' else max(1, min(w, line['x1']-line['x0']) / 2))
         tracks.append(dict(track, region=index, orientation=spec['orientation']))
         segments.extend(track.get('segments', []))
@@ -37,7 +41,10 @@ def read_regions(directory, request, read_band):
 def erase_regions(directory, request, erase_band):
     directory = Path(directory)
     track = read(directory/'subtrack.json', {})
-    tracks = [t for t in track['regions'] if t.get('segments')]
+    tracks = [dict(t, segments=[s for s in t.get('segments', [])
+                               if s.get('orientation') != 'v' and s.get('kind') != 'supplementary'])
+              for t in track['regions'] if t.get('orientation') != 'v' and t.get('kind') != 'supplementary']
+    tracks = [t for t in tracks if t['segments']]
     if not tracks:
         tracks = [dict(version=2, mode='none', box=None, segments=[])]
     stamps = []
@@ -56,7 +63,7 @@ def erase_regions(directory, request, erase_band):
         (directory/'clean.tmp.mp4').replace(directory/'clean.mp4')
     fills = [s.get('fill') for s in stamps]
     fill = 'lama' if all(f=='lama' for f in fills) else 'smooth' if all(f=='smooth' for f in fills) else 'lama+smooth'
-    stamp = dict(stamps[0], version=10, region_passes=len(stamps), fill=fill,
+    stamp = dict(stamps[0], version=11, region_passes=len(stamps), fill=fill,
                  lama=all(s.get('lama') for s in stamps),
                  runtime_fallback=any(s.get('runtime_fallback') for s in stamps),
                  warnings=list(dict.fromkeys(w for s in stamps for w in s.get('warnings', []))),

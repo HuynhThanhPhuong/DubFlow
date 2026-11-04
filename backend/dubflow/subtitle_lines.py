@@ -167,7 +167,7 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
     is its only reading."""
     groups = {}
     for sg in segments:
-        groups.setdefault(sg.get('region'), []).append(sg)
+        groups.setdefault((sg.get('region'), sg.get('cluster')), []).append(sg)
     if len(groups) > 1:
         return sorted([s for rows in groups.values() for s in merge_fragments(rows, gap_same, gap_fuzzy)], key=lambda s: (float(s['s']), float(s['e'])))
     out = []
@@ -175,7 +175,8 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
         votes = dict(sg.get('votes') or {sg.get('text', ''): max(1e-3, float(sg['e']) - float(sg['s']))})
         k = line_key(sg.get('text', ''))
         dur = float(sg['e']) - float(sg['s'])
-        member = dict(sg, votes=votes, _keys=[k], _last_dur=dur, readings=list(sg.get('readings') or [sg.get('text', '')]))
+        member = dict(sg, votes=votes, _keys=[k], _last_dur=dur, readings=list(sg.get('readings') or [sg.get('text', '')]),
+                      _samples=list(sg.get('_samples') or []))
         prev = out[-1] if out else None
         if prev is not None and k and not sg.get('break_before'):
             gap = float(sg['s']) - float(prev['e'])
@@ -197,6 +198,7 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
                 prev['_keys'].append(k)
                 prev['_last_dur'] = dur
                 prev['readings'] = prev['readings'] + member['readings']
+                prev['_samples'].extend(member['_samples'])
                 prev['text'], prev['confidence'] = pick_text(prev['votes'])
                 continue
         out.append(member)
@@ -204,8 +206,15 @@ def merge_fragments(segments, gap_same=1.2, gap_fuzzy=.6):
         text, conf = pick_text(item['votes'])
         item['text'] = text or clean_line(item.get('text', ''))
         item['confidence'] = conf if text else item.get('confidence', 0.0)
+        if item['_samples']:
+            reveal = progressive_reveal(item['_samples'])
+            if reveal:
+                item['reveal'] = reveal
+                item['text'] = clean_line(max(item['_samples'], key=lambda s: len(line_key(s['text'])))['text'])
+            else:
+                item.pop('reveal', None)
         item['s'], item['e'] = round(float(item['s']), 3), round(float(item['e']), 3)
-        for key in ('votes', '_keys', '_last_dur'):
+        for key in ('votes', '_keys', '_last_dur', '_samples'):
             item.pop(key)
     return out
 
@@ -278,7 +287,10 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
     samples = sorted(samples, key=lambda s: float(s['t']))
     keys = [line_key(s.get('text', '')) for s in samples]
     for i, k in enumerate(keys):
-        if len(k) < min_chars and not (k and ((i + 1 < len(keys) and keys[i + 1] == k) or (i and keys[i - 1] == k))):
+        growing = k and i + 1 < len(keys) and len(keys[i+1]) > len(k) and keys[i+1].startswith(k)
+        if k and not growing and i+2 < len(keys) and not keys[i+1] and samples[i+1].get('miss') is not False:
+            growing = len(keys[i+2]) > len(k) and keys[i+2].startswith(k)
+        if len(k) < min_chars and not (k and (growing or (i + 1 < len(keys) and keys[i + 1] == k) or (i and keys[i - 1] == k))):
             keys[i] = ''
     stable = _stable_flags(keys, [float(s['t']) for s in samples], step)
     lines, cur, gap = [], None, []
@@ -294,12 +306,12 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
         join, brk = False, False
         if cur is not None:
             if stable[i] and cur['stable']:
-                join = any(same_line(sk, k) for sk in cur['stable'])
+                join = any(same_line(sk, k) or (len(sk) == 1 and k.startswith(sk)) for sk in cur['stable'])
                 brk = not join and (compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k))
                 if brk and same_display(cur['boxes'], sm.get('box'), len(line_key(cur['best'])), len(k)):
                     join, brk = True, False  # an OCR variant of the line on screen (same place, same width), not another sentence
             else:
-                join = compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k)
+                join = compatible(cur['last_key'], k) or compatible(line_key(cur['best']), k) or (len(cur['last_key']) == 1 and k.startswith(cur['last_key']))
             if join and not _bridgeable(gap, cur['last_key'], k):
                 join, brk = False, True
         if join:
@@ -327,13 +339,32 @@ def lines_from_samples(samples, duration, step=.4, min_chars=2):
         if e <= s:
             continue
         boxes = [samples[i].get('box') for i in ln['idx'] if samples[i].get('box')]
-        row = dict(s=s, e=e, text=ln['best'], votes=ln['votes'], readings=[samples[i]['text'] for i in ln['idx']])
+        row = dict(s=s, e=e, text=ln['best'], votes=ln['votes'], readings=[samples[i]['text'] for i in ln['idx']],
+                   _samples=[dict(t=samples[i]['t'], text=samples[i]['text']) for i in ln['idx']])
+        reveal = progressive_reveal([samples[i] for i in ln['idx']])
+        if reveal:
+            row['reveal'] = reveal
         if ln['brk']:
             row['break_before'] = True
         if boxes:
             row.update(x0=min(b[0] for b in boxes), y0=min(b[1] for b in boxes), x1=max(b[2] for b in boxes), y1=max(b[3] for b in boxes))
         out.append(row)
     return out
+
+
+def progressive_reveal(samples):
+    """Strict prefix growth over >=0.4s, with no shrink or OCR substitutions."""
+    points, previous = [], ''
+    for sample in samples:
+        key = line_key(sample.get('text', ''))
+        if not key or (previous and not key.startswith(previous)):
+            return []
+        if len(key) > len(previous):
+            points.append((float(sample['t']), len(key)))
+        previous = key
+    if len(points) < 2 or points[-1][0]-points[0][0] < .4-1e-9:
+        return []
+    return [dict(t=round(t, 3), fraction=n/len(previous)) for t, n in points]
 
 
 def subtitle_lines(samples, duration, step=.4):
@@ -344,12 +375,24 @@ def subtitle_lines(samples, duration, step=.4):
 
 
 def erase_windows(segments, duration, pad=.15, bridge=.5):
-    """Lines -> [{s, e, line}] sorted and non-overlapping, inside [0, duration].
+    """Lines -> [{s, e, line}] sorted, independently timed per cluster inside [0, duration].
 
     Each line is padded by `pad` on both sides. Neighbours whose padded windows are less than `bridge` apart (or
     overlap) meet half way between the two lines, so no gap shorter than `bridge` is left for the burned-in subtitle
     to show through."""
-    lines = sorted((float(s['s']), float(s['e']), i) for i, s in enumerate(segments) if float(s['e']) > float(s['s']))
+    groups = {}
+    for i, segment in enumerate(segments):
+        if segment.get('orientation') == 'v' or segment.get('kind') == 'supplementary':
+            continue
+        groups.setdefault((segment.get('region'), segment.get('cluster')), []).append((i, segment))
+    if len(groups) > 1:
+        out = []
+        for members in groups.values():
+            for window in erase_windows([s for _, s in members], duration, pad, bridge):
+                out.append(dict(window, line=members[window['line']][0]))
+        return sorted(out, key=lambda w: (w['s'], w['line']))
+    members = next(iter(groups.values()), [])
+    lines = sorted((float(s['s']), float(s['e']), i) for i, s in members if float(s['e']) > float(s['s']))
     wins = [dict(s=max(0.0, a - pad), e=min(float(duration), b + pad), line=i) for a, b, i in lines]
     for k in range(len(wins) - 1):
         cur, nxt = wins[k], wins[k + 1]
@@ -450,7 +493,8 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
         s, e = float(sg['s']), min(float(sg['e']), float(duration))
         if e <= s:
             continue
-        hits = [(c, _overlap(s, e, c['start'], c['end'])) for c in asrs]
+        supplementary = sg.get('kind') == 'supplementary' or sg.get('orientation') == 'v'
+        hits = [] if supplementary else [(c, _overlap(s, e, c['start'], c['end'])) for c in asrs]
         hits = [(c, o) for c, o in hits if o > 1e-9]
         parts = []
         for c, _ in hits:
@@ -467,15 +511,18 @@ def build_source_cues_primary(segments, asr_cues, duration, stats=None, dup_wind
                    source_agreement=_agreement(text, asr_text))
         if all(k in sg for k in ('x0', 'y0', 'x1', 'y1')):
             cue['box'] = [sg['x0'], sg['y0'], sg['x1'], sg['y1']]
-        for field in ('region', 'box', 'orientation', 'text_height'):
+        for field in ('region', 'box', 'orientation', 'text_height', 'band', 'kind', 'reveal', 'cluster'):
             if field in sg:
                 cue[field] = sg[field]
+        if supplementary:
+            cue['kind'] = 'supplementary'
+            cue.pop('reveal', None)
         cue['source_mismatch'] = cue['source_agreement'] < .6
         if hits:
             cue['asr_text'] = asr_text
         out.append(cue)
     dropped = 0
-    ocr_cues = list(out)
+    ocr_cues = [c for c in out if c.get('kind') != 'supplementary' and c.get('orientation') != 'v']
     for c in asrs:
         d = c['end'] - c['start']
         if d <= 0:
@@ -548,7 +595,7 @@ def tidy_asr_cues(cues, near=1.5, min_isolated=.8, repeat=.8, dup_cover=.5):
             continue
         han = chinese(c['original'])
         if len(han) <= 1 or (len(han) <= 2 and all(ch in _STOP for ch in han)):
-            alone = all(o is c or o['end'] <= c['start'] - near or o['start'] >= c['end'] + near for o in cues)
+            alone = all(o is c or o.get('kind') == 'supplementary' or o.get('orientation') == 'v' or o['end'] <= c['start'] - near or o['start'] >= c['end'] + near for o in cues)
             if not (c['end'] - c['start'] >= min_isolated - 1e-9 and alone):
                 removed += 1
                 continue
@@ -564,7 +611,7 @@ def tidy_asr_cues(cues, near=1.5, min_isolated=.8, repeat=.8, dup_cover=.5):
                 removed += 1
                 continue
         out.append(dict(c) if c['source'] == 'asr' else c)
-    ocr = [c for c in out if c['source'] != 'asr']
+    ocr = [c for c in out if c['source'] != 'asr' and c.get('kind') != 'supplementary' and c.get('orientation') != 'v']
     final = []
     for c in out:
         if c['source'] == 'asr':

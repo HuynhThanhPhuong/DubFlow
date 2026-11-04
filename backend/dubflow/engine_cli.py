@@ -692,7 +692,8 @@ def subband(directory, request):
     import numpy as np
     import subprocess
     from rapidocr_onnxruntime import RapidOCR
-    from subtitle_lines import compatible, line_key, subtitle_lines
+    from subtitle_lines import line_key
+    from subtitle_clusters import cluster_rows, clustered_lines
     from subtitle_track import order_lines
     directory = Path(directory)
     ff, source = request['ffmpeg'], request['source']
@@ -706,24 +707,32 @@ def subband(directory, request):
                       inter_op_num_threads=1, det_use_cuda=False, cls_use_cuda=False, rec_use_cuda=False)
 
     def read_band(image):
-        """(text, (x0, y0, x1, y1) in frame pixels) of the band image; ('', None) when nothing is read."""
+        """Text, union box and independent measured clusters in frame coordinates."""
         if request.get('orientation') == 'v':
             from vertical_ocr import unfold_vertical
-            unfolded, glyph_height = unfold_vertical(image)
+            unfolded, glyph_height, glyph_boxes = unfold_vertical(image, return_boxes=True)
             result, _ = reader(unfolded, use_cls=False)
             text = order_lines([(min(xs), min(ys), max(xs), max(ys), text.strip())
                                 for poly, text, score in (result or []) if score >= .6 and text.strip()
                                 for xs, ys in [zip(*poly)]])
-            return text, (bx, by, bx+bw, by+bh) if text else None
+            box = ([bx+min(g[0] for g in glyph_boxes), by+min(g[1] for g in glyph_boxes),
+                    bx+max(g[2] for g in glyph_boxes), by+max(g[3] for g in glyph_boxes)]
+                   if glyph_boxes else [bx, by, bx+bw, by+bh])
+            return text, box if text else None, [dict(text=text, box=box, text_height=glyph_height, orientation='v')] if text else []
         result, _ = reader(image, use_cls=False)
         rows = [(min(xs), min(ys), max(xs), max(ys), text.strip())
                 for box, text, score in (result or []) if score >= .6 and text.strip()
                 for xs, ys in [zip(*box)]]
         if not rows:
-            return '', None
-        box = (max(bx, int(bx + min(r[0] for r in rows))), max(by, int(by + min(r[1] for r in rows))),
-               min(bx + bw, int(bx + max(r[2] for r in rows)) + 1), min(by + bh, int(by + max(r[3] for r in rows)) + 1))
-        return order_lines(rows), box
+            return '', None, []
+        clusters = cluster_rows(rows)
+        for cluster in clusters:
+            x0, y0, x1, y1 = cluster['box']
+            cluster['box'] = [max(bx, int(bx+x0)), max(by, int(by+y0)),
+                              min(bx+bw, int(bx+x1)), min(by+bh, int(by+y1))]
+        box = [min(c['box'][0] for c in clusters), min(c['box'][1] for c in clusters),
+               max(c['box'][2] for c in clusters), max(c['box'][3] for c in clusters)]
+        return order_lines(rows), box, clusters
 
     # exact=1: on a subsampled (yuv420p) picture ffmpeg otherwise rounds an odd size / position down, and the reader below
     # would mix the bytes of neighbouring frames
@@ -731,7 +740,7 @@ def subband(directory, request):
                              '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     n_bytes = bw * bh * 3
     samples, reads = [], 0
-    last_key, last_small, last_read, middle = None, None, ('', None), None
+    last_key, last_small, last_read, middle = None, None, ('', None, []), None
     prev_small, text_small = None, None
 
     def shrink(image):
@@ -769,26 +778,26 @@ def subband(directory, request):
                 continue
             small = shrink(image)
             if last_small is not None and distance(small, last_small) < .8:
-                text, box = last_read  # still picture: the same reading
+                text, box, clusters = last_read  # still picture: the same reading
             else:
-                text, box = read_band(image)
+                text, box, clusters = read_band(image)
                 reads += 1
-                last_small, last_read = small, (text, box)
+                last_small, last_read = small, (text, box, clusters)
             key = line_key(text)
             if middle is not None and last_key is not None:
                 # read the frame between two samples when the reading changes between them (a line appears, goes away or
                 # is replaced), or when it shows something neither neighbour shows (a line that lasts a single frame)
                 d_mp, d_mn, d_pn = distance(middle[2], prev_small), distance(middle[2], small), distance(prev_small, small)
                 blip = min(d_mp, d_mn) >= BLIP_DIFF and min(d_mp, d_mn) >= d_pn + BLIP_MARGIN
-                if bool(last_key) != bool(key) or (key and not compatible(last_key, key)) or blip:
-                    mtext, mbox = read_band(middle[1])
+                if last_key != key or blip:
+                    mtext, mbox, mclusters = read_band(middle[1])
                     reads += 1
                     mkey = line_key(mtext)
-                    samples.append(dict(t=middle[0], text=mtext, box=mbox) if mkey else empty_sample(middle[0], middle[2]))
+                    samples.append(dict(t=middle[0], text=mtext, box=mbox, clusters=mclusters) if mkey else empty_sample(middle[0], middle[2]))
                     if mkey:
                         text_small = middle[2]
             if key:
-                samples.append(dict(t=t, text=text, box=box))
+                samples.append(dict(t=t, text=text, box=box, clusters=clusters))
                 text_small = small
             else:
                 samples.append(empty_sample(t, small))
@@ -798,11 +807,17 @@ def subband(directory, request):
         proc.kill()
         proc.wait()
     segments = []
-    for ln in subtitle_lines(samples, duration, step):
+    for ln in clustered_lines(samples, duration, step):
         box = [ln.get('x0', bx), ln.get('y0', by), ln.get('x1', bx + bw), ln.get('y1', by + bh)]
-        segments.append(dict(s=ln['s'], e=ln['e'], x0=int(box[0]), y0=int(box[1]), x1=int(box[2]), y1=int(box[3]),
-                             text=ln['text'], confidence=ln['confidence'], readings=ln['readings'][:12]))
+        segment = dict(ln, x0=int(box[0]), y0=int(box[1]), x1=int(box[2]), y1=int(box[3]),
+                       box=list(box), band=[bx, by, bx+bw, by+bh], orientation=request.get('orientation', 'h'),
+                       readings=ln['readings'][:12])
+        if request.get('orientation') == 'v':
+            segment['kind'] = 'supplementary'
+            segment.pop('reveal', None)
+        segments.append(segment)
     write(directory/'subtrack.json', dict(version=2, mode='band', box=[bx, by, bw, bh], band=[by, by + bh], fps=fps, step=step,
+                                          orientation=request.get('orientation', 'h'), ocr_version=11,
                                           samples=len(samples), ocr_reads=reads, segments=segments))
 
 
@@ -993,6 +1008,7 @@ def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=
     w, h = x1 - x0, y1 - y0
     acc = [None] * len(windows)
     count = [0] * len(windows)
+    indexes = {id(window): i for i, window in enumerate(windows)}
     proc = subprocess.Popen([ff, '-v', 'error', '-i', source, '-vf', f'fps={fps_arg},crop={w}:{h}:{x0}:{y0}:exact=1,format=gray', '-f', 'rawvideo', '-'],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
@@ -1009,13 +1025,21 @@ def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=
                 first += 1
             if first >= len(windows):
                 break
-            if windows[first]['s'] > t:
+            active, _ = active_segments(windows, first, t, 0)
+            if not active:
                 continue
             mask = glyph_mask(np.frombuffer(raw, np.uint8).reshape(h, w), k)
-            if acc[first] is None:
-                acc[first] = np.zeros((h, w), np.uint16)
-            acc[first] += mask
-            count[first] += 1
+            for window in active:
+                index = indexes[id(window)]
+                part = mask
+                if window.get('cluster') is not None and window.get('tb'):
+                    a, b, c, d = window['tb']
+                    part = np.zeros_like(mask)
+                    part[max(0,b-y0):min(h,d-y0), max(0,a-x0):min(w,c-x0)] = mask[max(0,b-y0):min(h,d-y0), max(0,a-x0):min(w,c-x0)]
+                if acc[index] is None:
+                    acc[index] = np.zeros((h, w), np.uint16)
+                acc[index] += part
+                count[index] += 1
     finally:
         proc.stdout.close()
         proc.kill()
@@ -1026,9 +1050,22 @@ def line_footprints(ff, source, fps_arg, fps, box, windows, k, directory, share=
 def erase(directory, request):
     """Remove burned-in subtitle glyphs and the enabled static regions (logos, fixed text) from every frame
     -> clean.mp4 (video re-encoded, source audio muxed)."""
-    if (read(Path(directory)/'subtrack.json', {}) or {}).get('version') == 3:
+    directory = Path(directory)
+    track = read(directory/'subtrack.json', {}) or {}
+    if track.get('version') == 3:
         from multi_regions import erase_regions
         return erase_regions(directory, request, erase)
+    supplementary = track.get('orientation') == 'v' or track.get('kind') == 'supplementary'
+    segments = [] if supplementary else [s for s in track.get('segments', [])
+                                         if s.get('orientation') != 'v' and s.get('kind') != 'supplementary']
+    if not segments and not clean_static_regions(request, int(request['width']), int(request['height'])):
+        # Also applies to old vertical-only tracks and the empty multi-region pass.
+        shutil.copyfile(request['source'], directory/'clean.tmp.mp4')
+        (directory/'clean.tmp.mp4').replace(directory/'clean.mp4')
+        write(directory/'erase.json', dict(version=11, fill='none', lama=False, frames_touched=0,
+                                           warnings=[], seconds=0, **{k: request[k] for k in
+                                           ('source_hash', 'subtrack_hash', 'source_size', 'source_mtime_ns', 'static_hash') if k in request}))
+        return
     import subprocess
     import cv2
     import numpy as np
@@ -1051,7 +1088,7 @@ def erase(directory, request):
     fps_arg = str(request.get('fps_arg') or request.get('fps') or 25)  # rational such as 30000/1001
     fps = float(Fraction(fps_arg))
     track = read(directory/'subtrack.json', {}) or {}
-    segs = sorted(track.get('segments', []), key=lambda s: s['s'])
+    segs = sorted(segments, key=lambda s: s['s'])
     statics = clean_static_regions(request, width, height)
     if not segs and not statics:
         raise RuntimeError('nothing to erase: no subtitle segments and no static regions')
@@ -1076,7 +1113,8 @@ def erase(directory, request):
             except (KeyError, TypeError, ValueError):
                 return None
 
-        segs = [dict(s=w['s'], e=w['e'], x0=bx0, y0=by0, x1=bx1, y1=by1, tb=text_box(lines[w['line']]))
+        segs = [dict(s=w['s'], e=w['e'], x0=bx0, y0=by0, x1=bx1, y1=by1, tb=text_box(lines[w['line']]),
+                     cluster=lines[w['line']].get('cluster'))
                 for w in erase_windows(lines, float(request['duration']))]
         margin, box_grow = 0.0, 0
         band = [by0, by1]
@@ -1186,6 +1224,11 @@ def erase(directory, request):
                     continue
                 gray_crop = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
                 part = glyph_mask(gray_crop, k)
+                if s.get('cluster') is not None and s.get('tb') is not None:
+                    a, b, c, d = s['tb']
+                    confined = np.zeros_like(part)
+                    confined[max(0,b-y0):min(y1-y0,d-y0), max(0,a-x0):min(x1-x0,c-x0)] = True
+                    part &= confined
                 if track.get('orientation') == 'v':
                     from vertical_ocr import vertical_strokes
                     part = part | vertical_strokes(frame[y0:y1, x0:x1], k)
@@ -1301,7 +1344,7 @@ def erase(directory, request):
     lama_env = dict(model=str(model) if model else None, size=mstat.st_size if mstat else None,
                     mtime_ns=mstat.st_mtime_ns if mstat else None, ort=ort_version,
                     cuda_dll_dir=str(request['cuda_dll_dir']) if request.get('cuda_dll_dir') else None)
-    write(directory/'erase.json', dict(version=10, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
+    write(directory/'erase.json', dict(version=11, lama=lama is not None, provider=provider, fill=fill, lama_env=lama_env,
                                        runtime_fallback=bool(runtime_events), static_tol=static_tol, reuse_tol=reuse_tol,
                                        cuda_dll_dir=request.get('cuda_dll_dir'), warnings=warnings, source_hash=request['source_hash'], subtrack_hash=request['subtrack_hash'],
                                        fps=fps_arg, source_size=request['source_size'], source_mtime_ns=request['source_mtime_ns'],

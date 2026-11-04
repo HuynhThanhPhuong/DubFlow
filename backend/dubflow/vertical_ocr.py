@@ -25,7 +25,7 @@ def _runs(values, gap=0):
     return out
 
 
-def unfold_vertical(image):
+def unfold_vertical(image, return_boxes=False):
     """Return a horizontal glyph strip and measured glyph height, right column first.
 
     Projection separates columns and character rows. Both white outlined captions
@@ -101,5 +101,7 @@ def unfold_vertical(image):
             tiles.append(tile)
             heights.append(b-a)
     if not tiles:
-        return image, min(w, h)
-    return np.concatenate(tiles, axis=1), float(np.median(heights))
+        result = (image, min(w, h))
+        return (*result, []) if return_boxes else result
+    result = (np.concatenate(tiles, axis=1), float(np.median(heights)))
+    return (*result, glyphs) if return_boxes else result

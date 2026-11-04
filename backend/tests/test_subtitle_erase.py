@@ -444,7 +444,7 @@ class EraseStageTest(unittest.TestCase):
             d = self._run(2.0, tmp)
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual(done['version'], 10)
+            self.assertEqual(done['version'], 11)
             self.assertEqual((done['static_hash'], done['static_ids']), ('', []))
             self.assertEqual((done['fill'], done['provider']), ('smooth', None))
             self.assertFalse(done['lama'])  # no model configured: smooth fallback and a warning
@@ -452,7 +452,7 @@ class EraseStageTest(unittest.TestCase):
             self.assertFalse((d / 'clean.tmp.mp4').exists())
             self.assertFalse((d / 'erase-refs').exists())
             stamp = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((stamp['version'], stamp['fps']), (10, '25'))
+            self.assertEqual((stamp['version'], stamp['fps']), (11, '25'))
 
     def test_audio_longer_than_video_is_not_truncation(self):
         import tempfile
@@ -520,7 +520,7 @@ class StaticEraseStageTest(unittest.TestCase):
             ff, d = self._erase(tmp, [region])  # no subtitle segments at all: clean.mp4 is still produced
             self.assertTrue((d / 'clean.mp4').is_file())
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (10, 'sh', ['logo']))
+            self.assertEqual((done['version'], done['static_hash'], done['static_ids']), (11, 'sh', ['logo']))
             self.assertEqual(done['frames_touched'], 0)
             self.assertEqual(done['static_frames'], 25)  # 0.5 s .. 1.5 s at 25 fps
             frames = self._frames(ff, d / 'clean.mp4')
@@ -654,7 +654,7 @@ class BandEraseStageTest(unittest.TestCase):
             # two readings of the same sentence 0.2 s apart: the windows are bridged, the dim frames in between are erased too
             ff, src, d = self._erase(tmp, [dict(s=.6, e=1.2, x0=300, y0=630, x1=560, y1=690, text='a'), dict(s=1.4, e=1.8, x0=300, y0=630, x1=560, y1=690, text='b')])
             done = json.loads((d / 'erase.json').read_text())
-            self.assertEqual((done['version'], done['windows']), (10, 2))
+            self.assertEqual((done['version'], done['windows']), (11, 2))
             before, after = self._frames(ff, src), self._frames(ff, d / 'clean.mp4')
             text = (slice(630, 700), slice(290, 580))
             for n in range(int(.6 * self.FPS), int(1.8 * self.FPS)):
