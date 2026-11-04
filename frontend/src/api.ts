@@ -135,10 +135,10 @@ export const api = {
     data.set("file", file);
     return request<SrtPreview>(`/jobs/${key(id)}/translation-srt/preview`, { method: "POST", body: data });
   },
-  srtCommit: (id: string, assignments: Record<string, string>) =>
+  srtCommit: (id: string, assignments: Record<string, string>, fingerprint?: string) =>
     request<{ cues: Cue[]; summary: SrtImportSummary }>(
       `/jobs/${key(id)}/translation-srt/commit`,
-      json("POST", { assignments }),
+      json("POST", { assignments, fingerprint }),
     ),
   jobErrors: (id: string) => request<JobErrors>(`/jobs/${key(id)}/errors`),
   dismissError: (id: string, errorKey: string) =>

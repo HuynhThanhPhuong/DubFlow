@@ -53,3 +53,11 @@ it("Huỷ changes nothing", () => {
   expect(onCancel).toHaveBeenCalled();
   expect(onApply).not.toHaveBeenCalled();
 });
+
+it("a cue takes one block only: picking it for another block releases the first", () => {
+  const onApply = vi.fn();
+  render(<SrtReviewDialog preview={preview} busy={false} onApply={onApply} onCancel={() => undefined} />);
+  fireEvent.change(screen.getByLabelText("Ghép khối 2 với câu"), { target: { value: "a" } });
+  fireEvent.click(screen.getByRole("button", { name: "Nhập" }));
+  expect(onApply).toHaveBeenCalledWith({ assignments: { a: "Lạc" }, translateIds: [] }, false);
+});

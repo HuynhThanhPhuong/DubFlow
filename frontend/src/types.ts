@@ -48,6 +48,8 @@ export interface SrtPreview {
   matched: number;
   problems: number;
   rows: SrtPreviewRow[];
+  /** identifies the cues the preview was built from; commit is refused when they changed meanwhile */
+  fingerprint?: string;
   empty_cues: SrtPreviewCue[];
   cues: SrtPreviewCue[];
 }

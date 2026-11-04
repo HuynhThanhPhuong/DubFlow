@@ -134,7 +134,7 @@ export function statusModel(job: Job, nowMs: number): StatusPanelModel | null {
   }
   if (job.status === "queued") {
     const q = job.queue;
-    chips.push(q ? `Hàng đợi: vị trí ${q.position}` : "Hàng đợi: đang xếp");
+    chips.push(q && Number.isFinite(q.position) ? `Hàng đợi: vị trí ${q.position}` : "Hàng đợi: đang xếp");
     if (q?.running_ahead) chips.push("Máy đang chạy tác vụ khác");
     if (ago) chips.push(`Cập nhật ${ago}`);
     const stuck = !!q && !q.worker_alive;
@@ -153,7 +153,9 @@ export function statusModel(job: Job, nowMs: number): StatusPanelModel | null {
     const title =
       detail.batch && detail.batches
         ? `Đang dịch lô ${detail.batch}/${detail.batches}${detail.batch_size ? ` · ${detail.batch_size} ${unit}` : ""}`
-        : `Đang dịch ${detail.done}/${detail.total} ${unit}`;
+        : Number.isFinite(detail.done) && Number.isFinite(detail.total)
+          ? `Đang dịch ${detail.done}/${detail.total} ${unit}`
+          : "Đang dịch";
     const warn = retryWarning(detail.note);
     return { title, percent, chips, warn, info: warn ? null : detail.note || null, stuck: false };
   }

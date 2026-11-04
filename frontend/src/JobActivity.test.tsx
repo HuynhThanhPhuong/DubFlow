@@ -193,3 +193,17 @@ describe("PipelineSteps with batches", () => {
     expect([...container.querySelectorAll(".step-meta")][1].textContent).toBe("Đang dịch lô 2/4 · 40/151 câu · còn ~1 phút");
   });
 });
+
+describe("status panel with missing backend fields", () => {
+  it("never prints undefined or NaN", () => {
+    const queued = { ...base, status: "queued", stage: "queued", progress: undefined, queue: {} } as unknown as Job;
+    render(<StatusPanel job={queued} onCancel={() => undefined} />);
+    expect(screen.getByRole("status").textContent).not.toMatch(/undefined|NaN/);
+    cleanup();
+    const translating = { ...base, stage_detail: { note: "chuẩn bị" } } as unknown as Job;
+    render(<StatusPanel job={translating} onCancel={() => undefined} />);
+    const text = screen.getByRole("status").textContent ?? "";
+    expect(text).not.toMatch(/undefined|NaN/);
+    expect(text).toContain("Đang dịch");
+  });
+});

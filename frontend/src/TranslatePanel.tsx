@@ -134,10 +134,11 @@ export function TranslatePanel({
       setWorking(false);
     }
   };
-  const commit = async (assignments: Record<string, string>, translateIds: string[]) => {
-    const result = await api.srtCommit(job.id, assignments);
+  const commit = async (assignments: Record<string, string>, translateIds: string[], fingerprint?: string) => {
+    const result = await api.srtCommit(job.id, assignments, fingerprint);
     onCues(result.cues);
     onNotice(`Đã nhập ${result.summary.matched}/${result.summary.total} câu từ SRT Việt.`);
+    setPreview(null); // the mapping is written: a failure of the Gemini request below must not leave the dialog open
     if (translateIds.length) {
       onJob(await api.translate(job.id, "ids", false, undefined, translateIds));
       onNotice("Đã nhập bản dịch và gửi các câu còn trống tới Gemini.");
@@ -349,7 +350,7 @@ export function TranslatePanel({
           void guard(async () => {
             const result = await api.srtPreview(job.id, file);
             if (result.problems === 0) {
-              await commit(Object.fromEntries(result.rows.filter((r) => r.cue_id).map((r) => [r.cue_id as string, r.text])), []);
+              await commit(Object.fromEntries(result.rows.filter((r) => r.cue_id).map((r) => [r.cue_id as string, r.text])), [], result.fingerprint);
             } else setPreview(result);
           });
         }}
@@ -361,8 +362,7 @@ export function TranslatePanel({
           onCancel={() => setPreview(null)}
           onApply={(result, translateEmpty) =>
             void guard(async () => {
-              await commit(result.assignments, translateEmpty ? result.translateIds : []);
-              setPreview(null);
+              await commit(result.assignments, translateEmpty ? result.translateIds : [], preview.fingerprint);
             })
           }
         />

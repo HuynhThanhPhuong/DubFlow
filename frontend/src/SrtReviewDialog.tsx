@@ -97,7 +97,13 @@ export function SrtReviewDialog({
                 <select
                   aria-label={`Ghép khối ${r.number ?? r.block + 1} với câu`}
                   value={current}
-                  onChange={(e) => setTargets({ ...targets, [r.block]: e.target.value })}
+                  onChange={(e) => {
+                    // a cue takes one block only: choosing it here releases the block that held it
+                    const next = { ...targets, [r.block]: e.target.value };
+                    if (e.target.value)
+                      for (const other of Object.keys(next)) if (Number(other) !== r.block && next[Number(other)] === e.target.value) next[Number(other)] = "";
+                    setTargets(next);
+                  }}
                 >
                   <option value="">Không ghép</option>
                   {choices.map((c) => (
