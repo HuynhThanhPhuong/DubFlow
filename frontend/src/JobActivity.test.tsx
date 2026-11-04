@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JobActivity, StatusPanel } from "./JobActivity";
+import { JobActivity, StatusPanel, useJobErrors } from "./JobActivity";
+import { api } from "./api";
 import { PipelineSteps } from "./PipelineSteps";
 import { agoText, formatClock, liveLine, retryWarning } from "./stepProgress";
 import type { Job } from "./types";
@@ -13,6 +14,25 @@ const base = {
 } as unknown as Job;
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+it("clears the previous job's errors while loading a different job", async () => {
+  const item = { key: "old", kind: "task", severity: "error", step: "Xuất", time: "t", cue_id: null, cue_number: null,
+    message: "Lỗi video trước", actions: ["dismiss"] } as const;
+  let complete: (value: unknown) => void = () => undefined;
+  const pending = new Promise((resolve) => { complete = resolve; });
+  const request = vi.spyOn(api, "jobErrors").mockResolvedValueOnce({ count: 1, items: [item] } as never).mockReturnValueOnce(pending as never);
+  try {
+    const { result, rerender } = renderHook(({ job }) => useJobErrors(job), { initialProps: { job: base } });
+    await waitFor(() => expect(result.current.count).toBe(1));
+    rerender({ job: { ...base, id: "other" } });
+    expect(result.current.items).toEqual([]);
+    expect(result.current.count).toBe(0);
+    complete({ count: 0, items: [] });
+    await waitFor(() => expect(request).toHaveBeenCalledWith("other"));
+  } finally {
+    request.mockRestore();
+  }
+});
 
 describe("liveLine", () => {
   it("formats the clock", () => {
@@ -61,6 +81,24 @@ describe("liveLine", () => {
 
 describe("JobActivity", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(T0 + 30_000); });
+
+  it("counts actionable errors consistently and moves information to activity", () => {
+    const common = { step: "Phân tích", time: "2026-11-02T17:33:44Z", cue_id: null, cue_number: null, actions: ["dismiss"] };
+    const errors = { count: 57, refresh: vi.fn(), items: [
+      { ...common, key: "note", kind: "warning", message: "Đã gộp 3 lời gốc." },
+      { ...common, key: "task", kind: "task", severity: "error", message: "Thiếu tệp. Hãy chọn lại video nguồn." },
+      { ...common, key: "long", kind: "audit", cue_id: "a", cue_number: 1, actions: ["jump", "dismiss"], message: "Câu quá dài." },
+    ], activity: [{ t: common.time, msg: "Đã bỏ chữ nhận diện lẫn." }], onJump: vi.fn() } as never;
+    render(<JobActivity job={{ ...base, activity: [] } as Job} notes={["Thông tin dự án"]} errors={errors} />);
+    expect(screen.getByRole("button", { name: "Xem chi tiết · 2" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    expect(screen.getByRole("tab", { name: "Lỗi (2)" })).toBeTruthy();
+    expect(screen.queryByText("Đã gộp 3 lời gốc.")).toBeNull();
+    expect(screen.getByText("Thiếu tệp. Hãy chọn lại video nguồn.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Hoạt động (2)" }));
+    expect(screen.getByText("Đã gộp 3 lời gốc.")).toBeTruthy();
+    expect(screen.getByText("Đã bỏ chữ nhận diện lẫn.")).toBeTruthy();
+  });
 
   it("lists the worker messages (newest first) in the details popup", () => {
     const job = {

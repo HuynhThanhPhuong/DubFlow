@@ -513,6 +513,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
             raise HTTPException(404, 'Không tìm thấy câu cần xoá.')
         translation_history.save_snapshot(folder, current, source='before-delete')
         values = [c for c in current if c.get('id') not in gone]
+        review.record_deleted_sources(folder, [c for c in current if c.get('id') in gone])
         atomic_json(folder / 'cues.json', values)
         translation_history.save_snapshot(folder, values, source='manual')
         store.update_job(job_id, cue_count=len(values))

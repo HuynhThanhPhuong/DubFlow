@@ -68,6 +68,7 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
     text_of = {c.get('id'): str(c.get('text') or '').strip() for c in cues}
     skip = dismissed(folder)
     items: list[dict] = []
+    activity: list[dict] = []
 
     def add(key, kind, step, time, message, cue_id=None, actions=(), **extra):
         if key in skip:
@@ -75,6 +76,20 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         items.append(dict(key=key, kind=kind, step=step, time=time, cue_id=cue_id, cue_number=number.get(cue_id),
                           severity=extra.pop('severity', 'warn' if kind == 'warning' else 'error'),
                           message=message, actions=list(actions) + ['dismiss'], **extra))
+
+    def note(time, message):
+        activity.append(dict(t=time,msg=message))
+
+    def recovery(message, step, code=None):
+        if 'Hãy' in message or 'hãy' in message:
+            return message
+        instructions={'NO_CUES':'Hãy chọn Phân tích lại hoặc nhập phụ đề để tạo danh sách câu.',
+                      'SCREEN_TEXT_UNTRANSLATED':'Hãy mở Tuỳ chỉnh để dịch hoặc tắt vùng chữ này rồi xuất lại.',
+                      'CUE_IDS':'Hãy tải lại danh sách câu hoặc chọn Phân tích lại để tạo lại mã câu.'}
+        instruction=instructions.get(code) or {'Xuất':'Hãy kiểm tra tệp nguồn và thư mục xuất trong Tuỳ chỉnh rồi xuất lại.',
+                     'Dịch':'Hãy kiểm tra cài đặt dịch rồi bấm Dịch tiếp.',
+                     'Giọng':'Hãy kiểm tra giọng đã chọn rồi xử lý lại.'}.get(step,'Hãy kiểm tra tệp nguồn rồi chọn Phân tích lại.')
+        return message.rstrip()+' '+instruction
 
     failed_time = _iso(folder / FAILED_FILE)
     for cid in _read(folder / FAILED_FILE, []):
@@ -102,24 +117,40 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         for b in imp.get('skipped', []):
             tag = _tag(b.get('number'), b.get('text'), when)
             label = f"Khối {b['number']}" if b.get('number') is not None else 'Khối'
-            add(f'srt-skip:{tag}', 'srt', 'Nhập SRT', when,
-                f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}"', None, ['delete_block'])
-    if (folder / LOG_FILE).exists() and job.get('status') in ('error', 'failed'):
+            if f'srt-skip:{tag}' not in skip:
+                note(when,f'{label} không khớp câu nào nên bị bỏ qua: "{b.get("text", "")}"')
+    if job.get('status') in ('error', 'failed'):
         stage = str(job.get('stage') or '')
         step = _STEP_BY_STAGE.get(stage, 'Phân tích')
-        mtime = _iso(folder / LOG_FILE)
+        mtime = _iso(folder / LOG_FILE) if (folder / LOG_FILE).exists() else job.get('updated_at') or _iso(folder/'cues.json')
         add(f'log:{mtime}', 'task', step, mtime,
-            job.get('error') or 'Tác vụ gần nhất bị lỗi. Xem last-error.log trong thư mục dự án.')
+            recovery(job.get('error') or 'Tác vụ gần nhất bị lỗi.',step))
     for w in job.get('warnings') or []:
         if isinstance(w, str) and w.strip():
-            add('warn:' + hashlib.sha1(w.encode('utf-8')).hexdigest()[:8], 'warning', 'Phân tích',
-                job.get('updated_at') or _iso(folder / 'cues.json'), w.strip())
+            note(job.get('updated_at') or _iso(folder/'cues.json'),w.strip())
+    quality_codes=set()
+    for f in (report or {}).get('flags',[]):
+        ids=[i for i in f.get('cue_ids',[]) if i in number]
+        if not ids or f.get('resolved'):
+            continue
+        code=f.get('code')
+        quality_codes.add(code)
+        if code=='MISSING_TRANSLATION':
+            continue  # all empty lines receive the same edit/retry controls below
+        add(f"quality:{f.get('id') or _tag(code,ids,f.get('message'))}",'blocking' if f.get('severity')=='error' else 'audit',
+            'Xuất',_iso(folder/'cues.json'),f.get('message',''),ids[0],['jump'],
+            severity='error' if f.get('severity')=='error' else 'warn',code=code,cue_ids=ids)
     for r in (report or {}).get('reasons', []):
         if r.get('code') == 'MISSING_TRANSLATION':
             continue
         ids = [i for i in r.get('cue_ids', []) if i in number]
-        add(f"block:{r.get('code')}:{_tag(r.get('message', ''))}", 'blocking', 'Xuất', datetime.now(timezone.utc).isoformat(), r.get('message', ''),
+        if ids and r.get('code') in quality_codes:
+            continue
+        add(f"block:{r.get('code')}:{_tag(r.get('message', ''))}", 'blocking', 'Xuất', _iso(folder/'cues.json'), recovery(r.get('message', ''),'Xuất',r.get('code')),
             ids[0] if ids else None, ['jump'] if ids else [])
+    for cid in number:
+        if not text_of[cid] and not any(i['cue_id']==cid and 'edit' in i['actions'] for i in items):
+            add(f'empty:{cid}','translate','Dịch',_iso(folder/'cues.json'),'Câu chưa có lời Việt. Hãy nhập bản dịch hoặc bấm Dịch lại.',cid,['jump','edit','retry'])
     flags: dict[str, list[dict]] = {}
     by_id = {c.get('id'): c for c in cues}
     try:
@@ -140,7 +171,7 @@ def collect(folder, job: dict, report: dict | None = None) -> dict:
         add(key, 'audit', 'Phân tích', when, f['message_vi'], ids[0] if ids else None,
             (['jump'] if ids else []) + (['delete_cues'] if delete_ids else []),
             severity=f['severity'], code=f['code'], cue_ids=ids, delete_ids=delete_ids)
-    return dict(count=len(items), items=items, cue_flags=flags)
+    return dict(count=len(items), items=items, cue_flags=flags, activity=activity)
 
 
 def _extra_cues(finding: dict, by_id: dict) -> list[str]:

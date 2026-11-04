@@ -49,7 +49,7 @@ class ReviewTests(unittest.TestCase):
     def test_lines_overflow_flag(self):
         long=' '.join(['Hôm nay chúng ta sẽ cùng nhau tìm hiểu một câu chuyện rất dài và thú vị đó nhé các bạn']*2)
         write(self.folder/'cues.json',[dict(self.cues[0],id='long',text=long),dict(self.cues[0],id='ok',start=3,end=4)])
-        report=review.quality_report(self.folder,dict(self.job,width=1920,height=1080))
+        report=review.quality_report(self.folder,dict(self.job,width=1920,height=1080,subtitle_size=None))
         flags=[f for f in report['flags'] if f['code']=='LINES_OVERFLOW']
         self.assertEqual([f['cue_ids'] for f in flags],[['long']])
         self.assertEqual(flags[0]['severity'],'review')

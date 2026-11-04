@@ -40,7 +40,7 @@ class Base(unittest.TestCase):
 class AuditErrorTests(Base):
     def test_audit_findings_become_items_flags_and_are_dismissable(self):
         data = self.errors()
-        audit = [i for i in data['items'] if i['kind'] == 'audit']
+        audit = [i for i in data['items'] if i['key'].startswith('audit:')]
         self.assertEqual([i['code'] for i in audit], ['NO_CJK'])
         item = audit[0]
         self.assertEqual((item['step'], item['severity'], item['cue_id']), ('Phân tích', 'error', 'b'))
@@ -50,7 +50,7 @@ class AuditErrorTests(Base):
         self.assertEqual([f['code'] for f in data['cue_flags']['b']], ['NO_CJK'])
         self.client.post(self.base + '/errors/dismiss', json={'key': item['key']})
         data = self.errors()
-        self.assertFalse([i for i in data['items'] if i['kind'] == 'audit'])
+        self.assertFalse([i for i in data['items'] if i['key'].startswith('audit:')])
         self.assertNotIn('b', data['cue_flags'])
 
     def test_delete_cues_keeps_history_and_removes(self):

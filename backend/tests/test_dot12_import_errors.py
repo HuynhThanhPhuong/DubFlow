@@ -113,9 +113,8 @@ class ErrorsTests(Base):
         empties = [i['cue_id'] for i in by_prefix('srt-empty:')]
         self.assertIn('a', empties)
         self.assertNotIn('c', empties)
-        skipped = [k for k in keys if k.startswith('srt-skip:')]
-        self.assertEqual(len(skipped), 1)
-        self.assertIn('delete_block', keys[skipped[0]]['actions'])
+        self.assertFalse([k for k in keys if k.startswith('srt-skip:')])
+        self.assertTrue(any('không khớp câu nào' in row['msg'] for row in data['activity']))
         before = data['count']
         self.assertEqual(self.client.post(self.base + '/errors/dismiss', json={'key': tr_a['key']}).status_code, 200)
         after = self.client.get(self.base + '/errors').json()

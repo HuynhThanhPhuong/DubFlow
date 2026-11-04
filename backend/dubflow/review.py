@@ -1,6 +1,7 @@
 """Source provenance and revision-bound human review, without model imports."""
 from datetime import datetime, timezone
 from pathlib import Path
+from collections import Counter
 import math
 import re
 import uuid
@@ -51,7 +52,69 @@ def _load_state(folder):
     # this generated-source format; incomplete/manual source mappings still block.
     if _legacy_region_links(folder,cues,state,known):
         state=_replace_source(folder,cues,state,reason='repair-region-source')
+    state=_repair_deleted_sources(folder,cues,state)
     return state
+
+
+def _source_identity(cue):
+    return cache_key({k:cue[k] for k in ('start','end','original','region','box','orientation','cluster') if k in cue})
+
+
+def _save_omissions(folder,state,source_ids):
+    omissions=dict(state.get('omissions',{}))
+    additions={sid:'Đã được người dùng xoá khỏi danh sách Lời dịch.' for sid in source_ids if not omissions.get(sid,'').strip()}
+    if not additions:
+        return state
+    omissions.update(additions)
+    state=dict(state,omissions=omissions,approval=None,revision=state.get('revision',0)+1)
+    write(Path(folder)/'review-state.json',state)
+    return state
+
+
+def record_deleted_sources(folder,deleted_cues):
+    """An explicit deletion is a source omission, including split/merge mappings."""
+    with _SAVE_LOCK:
+        state=load_state(folder)
+        known={c['id'] for c in state['source_cues']}
+        gone={c['id'] for c in deleted_cues}
+        remaining=[c for c in read(Path(folder)/'cues.json',[]) if c['id'] not in gone]
+        covered={sid for c in remaining for sid in (c.get('source_ids') or [c['id']])}
+        deleted={sid for c in deleted_cues for sid in (c.get('source_ids') or [c['id']])}
+        return _save_omissions(folder,state,(deleted & known)-covered)
+
+
+def _repair_deleted_sources(folder,cues,state):
+    """Recover old explicit deletions from the paired snapshots the delete API saved.
+
+    A missing cue alone is never evidence. The immediately following manual
+    snapshot must be an exact subset of the before-delete snapshot.
+    """
+    covered={sid for c in cues for sid in (c.get('source_ids') or [c['id']])}
+    missing={c['id']:c for c in state['source_cues'] if c['id'] not in covered and not state.get('omissions',{}).get(c['id'],'').strip()}
+    if not missing:
+        return state
+    snapshots=[]
+    for path in (Path(folder)/'translation-history').glob('*.json'):
+        snap=read(path,{})
+        if isinstance(snap,dict) and isinstance(snap.get('cues'),list):
+            snapshots.append(snap)
+    snapshots.sort(key=lambda s:(s.get('created_at',''),s.get('id','')))
+    deleted=set()
+    for before,after in zip(snapshots,snapshots[1:]):
+        if before.get('source')!='before-delete' or after.get('source')!='manual':
+            continue
+        old=Counter(cache_key(c) for c in before['cues'])
+        new=Counter(cache_key(c) for c in after['cues'])
+        if new-old or not old-new:
+            continue
+        removed=old-new
+        identities={_source_identity(c) for c in before['cues'] if removed[cache_key(c)]}
+        for sid,c in missing.items():
+            identity=_source_identity(c)
+            # History predates stable IDs. Refuse ambiguous source rows.
+            if identity in identities and sum(_source_identity(s)==identity for s in state['source_cues'])==1:
+                deleted.add(sid)
+    return _save_omissions(folder,state,deleted)
 
 
 def _legacy_region_links(folder,cues,state,known):
@@ -162,7 +225,7 @@ def fingerprint(folder, job, state=None):
     source_identity=[str(path),path.stat().st_size,path.stat().st_mtime_ns] if path and path.is_file() else None
     return cache_key(dict(cues=content(read(folder/'cues.json',[])),
         regions=read(folder/'regions.json',[]), parts=read(folder/'parts.json',[]),
-        job={k:job.get(k) for k in ('mode','duration','voice_id','voice_ref','collection_id','review_terms','subtitle_font')},
+        job={k:job.get(k) for k in ('mode','duration','voice_id','voice_ref','collection_id','review_terms','subtitle_font','subtitle_size','subtitle_italic')},
         source=state['source_cues'],source_video=source_identity,review={k:state.get(k) for k in STATE_FIELDS},
         speaker_basis=state.get('assignment_basis',{}),listener_basis=state.get('listener_basis',{})))
 
@@ -209,7 +272,7 @@ def quality_report(folder, job, state=None):
         linked=c.get('source_ids') or ([c['id']] if c['id'] in known else [])
         covered.update(linked)
         if set(linked)-known:
-            flag('SOURCE_UNKNOWN',[c['id']], 'Liên kết tới ID nguồn không tồn tại.','error')
+            flag('SOURCE_UNKNOWN',[c['id']], 'Câu này đang trỏ tới nội dung nguồn không còn tồn tại. Hãy kiểm tra lời gốc hoặc chọn Phân tích lại.','error')
         s,e=c.get('start'),c.get('end')
         valid=all(isinstance(v,(int,float)) and math.isfinite(v) for v in (s,e)) and 0<=s<e
         if not valid or (duration is not None and e>duration+.05):
@@ -244,12 +307,13 @@ def quality_report(folder, job, state=None):
             flag('SPEECH_TOO_LONG',[c['id']], 'Lời Việt dài hơn thời lượng câu; nên rút gọn để giọng đọc vừa thời gian.')
         if not text and c['id'] in failed_ids:
             flag('TRANSLATE_FAILED',[c['id']], 'Chưa dịch được câu này; hãy dịch tay hoặc bấm Dịch tiếp.')
-        if text and not is_supplementary(c) and job.get('width') and job.get('height'):
+        if text and job.get('width') and job.get('height'):
             times = [(a+b)/2 for a,b in cue_intervals(cues,cue_index)] if c.get('band') else [c['start']]
             if not lane_cache:lane_cache.append(assign_lanes(cues))
-            style=style_for(int(job['width']),int(job['height']),job.get('subtitle_font','public-sans'))
+            style=style_for(int(job['width']),int(job['height']),job.get('subtitle_font','public-sans'),job=job)
             if any(cue_layout(cues,cue_index,int(job['width']),int(job['height']),t,style,lane_cache[0])['overflow'] for t in times):
-                flag('LINES_OVERFLOW',[c['id']], 'Chữ tràn vùng hoặc phải thu nhỏ; nên rút gọn lời Việt.')
+                message='Câu quá dài. Hãy rút gọn lời Việt để vừa tối đa 3 dòng.' if style.get('fixed_size') else 'Chữ tràn vùng hoặc phải thu nhỏ; nên rút gọn lời Việt.'
+                flag('LINES_OVERFLOW',[c['id']], message)
         assignment=current_assignment(c,state)
         if not is_supplementary(c) and job.get('mode')=='dub' and (not assignment.get('speaker_confirmed') or state.get('assignment_basis',{}).get(c['id'])!=role_basis(c)):
             flag('SPEAKER_UNCONFIRMED',[c['id']], 'Nhân vật nói chưa chắc chắn; hệ thống cần phân nhóm giọng hoặc sửa nhãn ngay ở Lời dịch.')
@@ -265,7 +329,7 @@ def quality_report(folder, job, state=None):
             flag('ADDRESS_UNCONFIRMED',[c['id']], 'Máy chưa xác định chắc người nghe/xưng hô; xem lời Việt theo cảnh.')
     for source_id in sorted(known-covered):
         omission=state.get('omissions',{}).get(source_id,'')
-        if not omission.strip():flag('SOURCE_MISSING',[source_id], 'Mất liên kết nội dung nguồn; cần mapping tách/gộp hoặc lý do loại.','error')
+        if not omission.strip():flag('SOURCE_MISSING',[source_id], 'Một câu nguồn chưa có trong danh sách Lời dịch. Hãy chọn Phân tích lại để khôi phục nội dung, hoặc ghi lý do loại câu trong bảng duyệt.','error')
     ordered=sorted(cues,key=lambda c:c.get('start',0))
     normalize=lambda t:re.sub(r'[\W_]+','',t).lower()
     for i,c in enumerate(ordered):

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Job, JobErrorItem, JobErrors } from "./types";
+import type { Job, JobActivityRow, JobErrorItem, JobErrors } from "./types";
 import { api } from "./api";
 import { isBusy } from "./helpers";
 import { statusModel } from "./stepProgress";
@@ -11,9 +11,24 @@ const clock = (iso: string) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("vi-VN", { hour12: false });
 };
 
+const actionable = (item: JobErrorItem) =>
+  Boolean(item.cue_id && item.actions.includes("jump")) ||
+  ((item.kind === "task" || item.kind === "blocking") && item.severity !== "warn");
+
+function activityRows(job: Job, errors?: ErrorTools) {
+  const information = (errors?.items ?? []).filter((item) => !actionable(item));
+  const rows = [
+    ...(job.activity ?? []),
+    ...(errors?.activity ?? []),
+    ...information.map((item) => ({ t: item.time, msg: item.message })),
+  ];
+  return [...new Map(rows.map((row) => [`${row.t}|${row.msg}`, row])).values()]
+    .sort((a, b) => a.t.localeCompare(b.t));
+}
+
 /** Live list of the job's current errors (translation, SRT import, tasks, export blockers); refreshes with the job. */
 export function useJobErrors(job: Job | null) {
-  const [data, setData] = useState<JobErrors>({ count: 0, items: [], cue_flags: {} });
+  const [data, setData] = useState<JobErrors & { jobId?: string }>({ count: 0, items: [], cue_flags: {} });
   const [tick, setTick] = useState(0);
   const id = job?.id;
   const stamp = `${job?.status}|${job?.updated_at}|${job?.stage}`;
@@ -22,7 +37,7 @@ export function useJobErrors(job: Job | null) {
     let alive = true;
     api
       .jobErrors(id)
-      .then((d) => alive && Array.isArray(d?.items) && setData(d))
+      .then((d) => alive && Array.isArray(d?.items) && setData({ ...d, jobId: id }))
       .catch(() => undefined);
     return () => {
       alive = false;
@@ -36,12 +51,15 @@ export function useJobErrors(job: Job | null) {
   useEffect(() => {
     if (!id) setData({ count: 0, items: [], cue_flags: {} });
   }, [id]);
-  return { ...data, refresh: () => setTick((t) => t + 1) };
+  const current = data.jobId === id ? data : { count: 0, items: [], cue_flags: {}, activity: [] };
+  const items = current.items.filter(actionable);
+  return { ...current, items, count: items.length, refresh: () => setTick((t) => t + 1) };
 }
 
 export interface ErrorTools {
   items: JobErrorItem[];
   count: number;
+  activity?: JobActivityRow[];
   refresh: () => void;
   onJump?: (cueId: string) => void;
   onEditCue?: (cueId: string, text: string) => void;
@@ -139,9 +157,9 @@ function ErrorRow({ job, item, tools }: { job: Job; item: JobErrorItem; tools: E
 
 /** Popup with the worker activity log (newest first, live from the job), the project notes and the current errors. */
 export function JobDetailsDialog({ job, notes, errors, onClose }: { job: Job; notes: string[]; errors?: ErrorTools; onClose: () => void }) {
-  const rows = job.activity ?? [];
-  const errs = errors?.items ?? [];
-  const retryable = errs.filter((e) => e.actions.includes("retry") && e.cue_id).map((e) => e.cue_id as string);
+  const rows = activityRows(job, errors);
+  const errs = (errors?.items ?? []).filter(actionable);
+  const retryable = [...new Set(errs.filter((e) => e.actions.includes("retry") && e.cue_id).map((e) => e.cue_id as string))];
   const closeAndJump = errors?.onJump
     ? (id: string) => {
         onClose();
@@ -255,13 +273,13 @@ export function StatusPanel({ job, busy, onCancel }: { job: Job; busy?: boolean;
 export function JobActivity({ job, notes = [], errors }: { job: Job; notes?: string[]; errors?: ErrorTools }) {
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [job.id]);
-  const rows = job.activity ?? [];
-  const n = errors?.count ?? 0;
+  const rows = activityRows(job, errors);
+  const n = (errors?.items ?? []).filter(actionable).length;
   if (!rows.length && !notes.length && !n && !job.translation_context?.setting) return null;
   return (
     <div className="job-activity">
       <Button className="job-activity-more" aria-haspopup="dialog" onClick={() => setOpen(true)}>
-        Xem chi tiết{notes.length + n ? ` · ${notes.length + n}` : ""}
+        Xem chi tiết{n ? ` · ${n}` : ""}
       </Button>
       {open && <JobDetailsDialog job={job} notes={notes} errors={errors} onClose={() => setOpen(false)} />}
     </div>
