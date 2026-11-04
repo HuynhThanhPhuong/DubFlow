@@ -448,23 +448,25 @@ export default function App() {
       setBusy(false);
     }
   }
-  async function saveCues() {
-    if (!job) return;
+  async function saveCues(): Promise<boolean> {
+    if (!job) return false;
     const invalid = validateCues(cues, job.duration);
     if (invalid) {
       setError(invalid);
-      return;
+      return false;
     }
     setBusy(true);
     try {
       const saved = await api.saveCues(job.id, cues);
-      if (selected.current !== job.id) return;
+      if (selected.current !== job.id) return false;
       setCues(saved);
       setDirty(false);
       setNotice("Đã lưu lời dịch.");
       await refresh();
+      return true;
     } catch (e) {
       showError(e);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -513,6 +515,22 @@ export default function App() {
     } catch (e) {
       showError(e);
     }
+  };
+  const deleteOne = async (id: string) => {
+    if (!currentJob || busy) return;
+    const index = cues.findIndex((c) => c.id === id);
+    if (index < 0) return;
+    if (!window.confirm(`Xoá câu ${index + 1} khỏi danh sách? Không hoàn tác được bằng nút Lưu.`)) return;
+    const next = cues[index + 1] ?? cues[index - 1];
+    if (id.startsWith("manual-") && dirty) {
+      // Possibly unsaved: remove locally; the other pending edits stay and are saved with the next Save.
+      setCues((rows) => rows.filter((c) => c.id !== id));
+      setActive(next?.id ?? null);
+      return;
+    }
+    if (dirty && !(await saveCues())) return;
+    await deleteCues([id]);
+    setActive(next?.id ?? null);
   };
   const retryCues = async (ids: string[]) => {
     if (!currentJob) return;
@@ -1035,6 +1053,8 @@ export default function App() {
                       }
                     }}
                     onEdit={modify}
+                    mode={currentJob.mode}
+                    onDelete={(id) => void deleteOne(id)}
                   />
                 </section>
               </div>

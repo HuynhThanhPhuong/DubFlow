@@ -124,3 +124,20 @@ it("shows the 422 message verbatim when importing a Vietnamese SRT fails", async
   fireEvent.change(screen.getByLabelText("Chọn file SRT Việt"), { target: { files: [file] } });
   await screen.findByText("Thiếu số 2, 3 trong file SRT.");
 });
+it("closes the translate popover when the SRT review dialog opens", async () => {
+  location.hash = "#editor?job=job1";
+  const preview = {
+    mode: "time", total: 1, matched: 0, problems: 1, fingerprint: "f", cues: [], empty_cues: [],
+    rows: [{ block: 0, number: 1, start: 50, end: 51, text: "Lạc", cue_id: null, cue_number: null, original: "", issues: ["no_match"] }],
+  };
+  stub({}, [], (path) =>
+    path === "/api/jobs/job1/translation-srt/preview" ? new Response(JSON.stringify(preview), { status: 200 }) : undefined,
+  );
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Dịch ▾" }));
+  await screen.findByRole("button", { name: "Nhập bản dịch từ AI chat" });
+  const file = new File(["x"], "vi.srt", { type: "text/plain" });
+  fireEvent.change(screen.getByLabelText("Chọn file SRT Việt"), { target: { files: [file] } });
+  await screen.findByText("Không khớp câu nào");
+  expect(screen.queryByRole("region", { name: "Công cụ dịch" })).toBeNull();
+});

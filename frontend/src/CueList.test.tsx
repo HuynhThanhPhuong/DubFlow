@@ -168,3 +168,65 @@ it("keeps a focused textarea mounted when its expanded details move it to the ne
   expect(input.value).toBe("Đang gõ");
   expect(screen.getByLabelText("Lời Việt câu 5")).toBe(input);
 });
+
+const sample: Cue = {
+  id: "c1",
+  start: 0,
+  end: 2,
+  speaker: "unconfirmed",
+  original: "你好",
+  text: "Xin chào",
+  source: "ocr+asr",
+  auto_flags: ["Lời Việt dài hơn thời lượng câu; nên rút gọn."],
+};
+const list = (cue: Cue, extra: Record<string, unknown> = {}) => (
+  <CueList
+    cues={[cue]}
+    active="c1"
+    disabled={false}
+    loading={false}
+    error=""
+    onSelect={() => {}}
+    onEdit={() => {}}
+    {...extra}
+  />
+);
+it("hides speaker badge and input in vietsub, shows them in dub", () => {
+  const { unmount } = render(list(sample, { mode: "vietsub" }));
+  expect(screen.queryByText("?")).toBeNull();
+  expect(screen.queryByLabelText("Người nói câu 1")).toBeNull();
+  unmount();
+  render(list(sample, { mode: "dub" }));
+  expect(screen.getByText("?")).toBeTruthy();
+  expect(screen.getByLabelText("Người nói câu 1")).toBeTruthy();
+});
+it("uses plain source labels with tooltips and one merged warning chip", () => {
+  render(
+    list(sample, {
+      mode: "dub",
+      audit: {
+        c1: [{ code: "NO_CJK", severity: "error", message: "Lời gốc không có chữ Hán." }],
+      },
+    }),
+  );
+  expect(screen.getByText("Hình + giọng").getAttribute("title")).toMatch(/cả hai|khớp/);
+  const chip = screen.getByText("⚠ 2 điểm cần xem");
+  expect(chip.className).toContain("error");
+  expect(chip.getAttribute("title")).toContain("Lời gốc không có chữ Hán.");
+  expect(screen.queryByText(/Kiểm tra \d/)).toBeNull();
+  expect(screen.getAllByText("Lời gốc không có chữ Hán.").length).toBeGreaterThan(0);
+});
+it("shows a yellow chip for warnings only, the empty state text and the manual chip", () => {
+  const { unmount } = render(list(sample, { mode: "dub" }));
+  expect(screen.getByText("⚠ 1 điểm cần xem").className).not.toContain("error");
+  unmount();
+  render(list({ ...sample, auto_flags: [], original: "", source: undefined }, { mode: "dub" }));
+  expect(screen.getByText("Thêm tay")).toBeTruthy();
+  expect(screen.getByText("Không có điểm cần xem")).toBeTruthy();
+});
+it("calls onDelete from the delete button of the expanded cue", () => {
+  const onDelete = vi.fn();
+  render(list(sample, { mode: "dub", onDelete }));
+  fireEvent.click(screen.getByRole("button", { name: "Xoá câu 1" }));
+  expect(onDelete).toHaveBeenCalledWith("c1");
+});

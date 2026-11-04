@@ -6,6 +6,12 @@ import { Empty } from "./ui";
 import { Pagination, useCapacity } from "./Pagination";
 import type { PageRange } from "./Pagination";
 
+const SOURCE_LABELS = {
+  ocr: { text: "Chữ trên hình", hint: "Lời Trung lấy từ chữ trên video" },
+  asr: { text: "Giọng nói", hint: "Lời Trung lấy từ nghe giọng nói" },
+  "ocr+asr": { text: "Hình + giọng", hint: "Lời Trung khớp cả chữ trên video và giọng nói" },
+} as const;
+
 function CueRow({
   cue,
   index,
@@ -16,8 +22,12 @@ function CueRow({
   onEdit,
   onEditing,
   audit,
+  showSpeaker,
+  onDelete,
   measuring = false,
 }: {
+  showSpeaker: boolean;
+  onDelete?: (id: string) => void;
   cue: Cue;
   index: number;
   active: boolean;
@@ -37,6 +47,11 @@ function CueRow({
     el.style.height = Math.max(22, el.scrollHeight + 2) + "px";
   }, [cue.text]);
   const flags = cueFlags(cue);
+  const notes = [
+    ...(audit ?? []).map((a) => ({ message: a.message, error: a.severity === "error" })),
+    ...flags.map((message) => ({ message, error: false })),
+  ];
+  const hasError = notes.some((n) => n.error);
   const auxiliary = isSupplementary(cue);
   const label = (s: string) => (measuring ? undefined : s);
   return (
@@ -62,7 +77,7 @@ function CueRow({
             {isSupplementary(cue) && (
               <span title="Lời trang trí, chỉ hiện chữ">Sub phụ</span>
             )}
-            {!auxiliary && (
+            {!auxiliary && showSpeaker && (
               <span
                 title={
                   cue.speaker === "unconfirmed"
@@ -78,30 +93,20 @@ function CueRow({
               </span>
             )}
             {cue.source && (
-              <span title="Nguồn lời gốc">
-                {cue.source === "asr"
-                  ? "nghe"
-                  : cue.source === "ocr"
-                    ? "hình"
-                    : "hình + nghe"}
+              <span title={SOURCE_LABELS[cue.source].hint}>
+                {SOURCE_LABELS[cue.source].text}
               </span>
             )}
-            {!!audit?.length && (
-              <span
-                className={`cue-flag-badge cue-audit-badge${audit.some((a) => a.severity === "error") ? " error" : ""}`}
-                title={audit.map((a) => a.message).join(" · ")}
-                aria-label={label(`${audit.length} lỗi nguồn do kiểm tra tự động`)}
-              >
-                Kiểm tra {audit.length}
-              </span>
+            {!cue.original.trim() && (
+              <span title="Câu do bạn thêm, chưa có lời gốc">Thêm tay</span>
             )}
-            {!!flags.length && (
+            {!!notes.length && (
               <span
-                className="cue-flag-badge"
-                title={flags.join("\n")}
-                aria-label={label(`${flags.length} điểm máy đánh dấu`)}
+                className={`cue-flag-badge cue-audit-badge${hasError ? " error" : ""}`}
+                title={notes.map((n) => n.message).join("\n")}
+                aria-label={label(`${notes.length} điểm cần xem`)}
               >
-                ! {flags.length}
+                ⚠ {notes.length} điểm cần xem
               </span>
             )}
           </span>
@@ -136,22 +141,35 @@ function CueRow({
         >
           <div className="sentence-details">
             <div className="sentence-details-inner">
+              {onDelete && (
+                <div className="cue-delete-row">
+                  <button
+                    type="button"
+                    className="cue-delete"
+                    disabled={disabled}
+                    aria-label={label(`Xoá câu ${index + 1}`)}
+                    onClick={() => onDelete(cue.id)}
+                  >
+                    <span aria-hidden>🗑</span> Xoá câu
+                  </button>
+                </div>
+              )}
               {cue.asr_text && (
                 <p className="cue-asr-text">
                   <strong>Nghe được:</strong>{" "}
                   <span lang="zh">{cue.asr_text}</span>
                 </p>
               )}
-              {!!flags.length ? (
+              {!!notes.length ? (
                 <ul>
-                  {flags.map((flag, i) => (
-                    <li key={i}>{flag}</li>
+                  {notes.map((n, i) => (
+                    <li key={i}>{n.message}</li>
                   ))}
                 </ul>
               ) : (
-                <p className="muted">Không có điểm máy đánh dấu.</p>
+                <p className="muted">Không có điểm cần xem</p>
               )}
-              {!auxiliary && (
+              {!auxiliary && showSpeaker && (
                 <label>
                   Người nói{" "}
                   <input
@@ -238,7 +256,11 @@ export function CueList({
   onSelect,
   onEdit,
   audit,
+  mode,
+  onDelete,
 }: {
+  mode?: string;
+  onDelete?: (id: string) => void;
   audit?: Record<string, CueAuditFlag[]>;
   cues: Cue[];
   active: string | null;
@@ -291,6 +313,13 @@ export function CueList({
   useEffect(() => {
     area.current?.scrollTo?.({ top: 0 });
   }, [current]);
+  useEffect(() => {
+    if (!active) return;
+    const row = Array.from(area.current?.querySelectorAll("[data-cue-id]") ?? []).find(
+      (el) => el.getAttribute("data-cue-id") === active,
+    );
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [active, current]);
   const props = (cue: Cue, index: number) => ({
     cue,
     index,
@@ -301,6 +330,8 @@ export function CueList({
     onEdit,
     onEditing: setEditing,
     audit: audit?.[cue.id],
+    showSpeaker: mode !== "vietsub",
+    onDelete,
   });
   return (
     <>

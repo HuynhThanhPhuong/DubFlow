@@ -139,7 +139,7 @@ it("labels the source of a cue and shows the heard text on mismatch", async () =
   stubReset([], { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr", asr_text: "你们好", source_mismatch: true });
   render(<App />);
   await screen.findByLabelText("Lời Việt câu 1");
-  expect(screen.getByText("hình")).toBeTruthy();
+  expect(screen.getByText("Chữ trên hình")).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Chọn và tua câu 1'}));
   expect(screen.getByText('你们好').closest('p')?.textContent).toContain('Nghe được: 你们好');
 });
@@ -172,4 +172,22 @@ it("clears the paused-updates banner once polling succeeds again", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("deletes the open cue through the API after a confirm", async () => {
+  location.hash = "#editor?job=job1";
+  const calls: string[] = [];
+  stubReset(calls, { id: "1", start: 1, end: 2, speaker: "A", original: "你好", text: "Xin chào", source: "ocr" });
+  const base = globalThis.fetch as unknown as (p: string, i: RequestInit) => Promise<Response>;
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) =>
+    path === "/api/jobs/job1/cues/delete" ? (calls.push("POST delete"), new Response("[]", { status: 200 })) : base(path, init)));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  render(<App />);
+  await screen.findByLabelText("Lời Việt câu 1");
+  fireEvent.click(screen.getByRole("button", { name: "Chọn và tua câu 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Xoá câu 1" }));
+  expect(calls).not.toContain("POST delete");
+  fireEvent.click(screen.getByRole("button", { name: "Xoá câu 1" }));
+  await waitFor(() => expect(calls).toContain("POST delete"));
+  confirm.mockRestore();
 });

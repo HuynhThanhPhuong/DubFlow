@@ -351,7 +351,10 @@ export function TranslatePanel({
             const result = await api.srtPreview(job.id, file);
             if (result.problems === 0) {
               await commit(Object.fromEntries(result.rows.filter((r) => r.cue_id).map((r) => [r.cue_id as string, r.text])), [], result.fingerprint);
-            } else setPreview(result);
+            } else {
+              setOpen(false);
+              setPreview(result);
+            }
           });
         }}
       />

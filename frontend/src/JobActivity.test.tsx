@@ -92,12 +92,14 @@ describe("JobActivity", () => {
     fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
     expect(screen.getByRole("tab", { name: "Lỗi (1)" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText("Gemini không trả bản dịch hợp lệ cho câu này.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Câu 3" }));
-    expect(onJump).toHaveBeenCalledWith("a");
     fireEvent.click(screen.getByRole("button", { name: "Dịch lại" }));
     expect(onRetry).toHaveBeenCalledWith(["a"]);
     expect(screen.getByRole("button", { name: "Bỏ qua" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sửa lời Việt" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Câu 3" }));
+    expect(onJump).toHaveBeenCalledWith("a");
+    expect(screen.queryByRole("dialog")).toBeNull(); // the popup closes when a cue link is used
+    fireEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
     rerender(<JobActivity job={job} errors={{ items: [], count: 0, refresh: vi.fn() } as never} />);
     fireEvent.click(screen.getByRole("tab", { name: "Lỗi (0)" }));
     expect(screen.getByText("Không có lỗi")).toBeTruthy();

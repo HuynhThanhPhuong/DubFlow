@@ -142,6 +142,13 @@ export function JobDetailsDialog({ job, notes, errors, onClose }: { job: Job; no
   const rows = job.activity ?? [];
   const errs = errors?.items ?? [];
   const retryable = errs.filter((e) => e.actions.includes("retry") && e.cue_id).map((e) => e.cue_id as string);
+  const closeAndJump = errors?.onJump
+    ? (id: string) => {
+        onClose();
+        errors.onJump?.(id);
+      }
+    : undefined;
+  const tools = errors ? { ...errors, onJump: closeAndJump } : errors;
   const [tab, setTab] = useState<"activity" | "notes" | "errors">(errs.length ? "errors" : rows.length || !notes.length ? "activity" : "notes");
   const newestFirst = [...rows].reverse();
   return (
@@ -171,7 +178,7 @@ export function JobDetailsDialog({ job, notes, errors, onClose }: { job: Job; no
               )}
               <ol className="job-error-list">
                 {errs.map((e) => (
-                  <ErrorRow key={e.key} job={job} item={e} tools={errors as ErrorTools} />
+                  <ErrorRow key={e.key} job={job} item={e} tools={tools as ErrorTools} />
                 ))}
               </ol>
             </>
