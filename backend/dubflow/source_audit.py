@@ -5,7 +5,7 @@ suspicious in the Chinese source lines a job holds, so the same kind of error se
 a 0.2 s fragment) can be found in any other video. severity 'error' = a source-building bug or an unusable cue; 'warn' =
 needs a human look (the audit cannot know which side is right).
 
-Codes: NO_CJK, NEAR_DUPLICATE, FRAGMENT, SAME_REGION_OVERLAP, OCR_ASR_MISMATCH, TOO_SHORT_FOR_TEXT, BAD_TIME.
+Codes: NO_CJK, NEAR_DUPLICATE, FRAGMENT, UNCONFIRMED_SHORT, SAME_REGION_OVERLAP, OCR_ASR_MISMATCH, TOO_SHORT_FOR_TEXT, BAD_TIME.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ SIMILARITY = .8          # NEAR_DUPLICATE: ratio of the two readings
 DUPLICATE_GAP = 1.0      # NEAR_DUPLICATE: seconds between the two cues
 FRAGMENT_SECONDS = .3
 FRAGMENT_CHARS = 2
+UNCONFIRMED_SECONDS = .65  # UNCONFIRMED_SHORT: a 1-2 character reading this short that only the picture shows
 OVERLAP_TOLERANCE = .05  # SAME_REGION_OVERLAP: seconds of overlap that still count as touching
 MISMATCH_BELOW = .4      # OCR_ASR_MISMATCH: source_agreement under this (the pipeline's own flag starts at .6)
 MAX_CHARS_PER_SECOND = 12.0
@@ -95,6 +96,8 @@ def audit_cues(cues, duration):
         if key and e - s <= FRAGMENT_SECONDS + 1e-9 and len(key) <= FRAGMENT_CHARS:
             findings.append(_finding('FRAGMENT', [c], f"Mảnh quá ngắn ({e - s:.2f} s, {len(key)} ký tự), có thể là chữ cụt: {_label(c)}.",
                                      'warn' if c.get('source_uncertain') else 'error'))
+        elif key and len(key) <= FRAGMENT_CHARS and e - s <= UNCONFIRMED_SECONDS + 1e-9 and c.get('source') == 'ocr' and han and not _supp(c)                 and not (c.get('kind') in NON_SPEECH_KINDS):
+            findings.append(_finding('UNCONFIRMED_SHORT', [c], f"Câu rất ngắn ({len(key)} ký tự, {e - s:.2f} s) chỉ thấy trên hình, không có giọng nói xác nhận; có thể là hoa văn trên hình bị đọc nhầm: {_label(c)}.", 'warn'))
         elif len(han) >= 3 and e > s and len(han) / (e - s) > MAX_CHARS_PER_SECOND:
             findings.append(_finding('TOO_SHORT_FOR_TEXT', [c], f"Câu quá ngắn so với số chữ ({len(han) / (e - s):.0f} chữ/giây, đọc không kịp): {_label(c)}.", 'warn'))
         agreement = c.get('source_agreement')

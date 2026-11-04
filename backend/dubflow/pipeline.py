@@ -540,6 +540,8 @@ def build_source(directory, source, audio, meta, settings, emit, warnings, cfg=N
         cues = build_source_cues_primary(segments, asr_cues, meta['duration'], stats=stats)
         for dropped in stats.get('dropped_ocr', []):
             warnings.append(f"Đã bỏ chữ nhận diện thừa không có chữ Hán: '{dropped['text']}' ({dropped['start']:.1f}-{dropped['end']:.1f} s).")
+        for lone in stats.get('dropped_single', []):
+            warnings.append(f"Đã bỏ chữ 1 ký tự ngắn không có giọng nói xác nhận (có thể là hoa văn trên hình): '{lone['text']}' ({lone['start']:.1f}-{lone['end']:.1f} s).")
         for ghost in stats.get('dropped_ghost', []):
             warnings.append(f"Đã bỏ chữ nhận diện lẫn giữa hai câu đang chuyển ('{ghost['text']}', {ghost['start']:.1f}-{ghost['end']:.1f} s).")
         if stats.get('merged_ocr'):

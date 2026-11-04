@@ -100,7 +100,8 @@ class PrefixFragmentTest(unittest.TestCase):
         self.assertEqual([(c['start'], c['original']) for c in cues], [(140, '前面的一句完全不同的话'), (143.0, '我睁眼见到了你')])
 
     def test_an_unmatched_short_fragment_is_kept_and_flagged(self):
-        cues = build([seg(10, 10.2, '哈'), seg(10.5, 12, '完全不同的一句话')])
+        # dot13: a lone single character with no speech is dropped instead (test_lone_char_dot13); two characters stay and are flagged
+        cues = build([seg(10, 10.2, '哈哈'), seg(10.5, 12, '完全不同的一句话')])
         self.assertEqual(len(cues), 2)
         self.assertTrue(cues[0]['source_uncertain'])
         self.assertNotIn('source_uncertain', cues[1])

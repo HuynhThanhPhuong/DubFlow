@@ -19,6 +19,27 @@ BRACKETS = '[]【】〔〕［］「」『』｢｣'
 _STOP = set('的了我你他她它是在有不就都也和与')
 
 
+READ_SCORE = .6      # OCR confidence from which a reading counts
+LENIENT_SCORE = .45  # dot13: a spaced-out short sub ('[师 尊]') is read at .5-.6; it counts when it is clearly Chinese
+LENIENT_CHARS = 8
+
+
+def accept_reading(text, score):
+    """Dot13: does an OCR row of the subtitle band count? Confidence >= READ_SCORE always. Between LENIENT_SCORE and READ_SCORE
+    only a short reading (at most LENIENT_CHARS characters without brackets) of which at least 3 in 4 are Han: the wide-spaced
+    brackets of test2 '[师尊]' were read at .58 and lost, while junk next to a real line ('00【师]①') stays out."""
+    text = (text or '').strip()
+    if not text:
+        return False
+    if score >= READ_SCORE:
+        return True
+    if score < LENIENT_SCORE:
+        return False
+    core = [c for c in text if c not in BRACKETS and not c.isspace()]
+    han = chinese(text)
+    return bool(core) and len(core) <= LENIENT_CHARS and len(han) >= .75*len(core)
+
+
 def line_key(text):
     """Letters and digits only (NFKC): the part of a reading that identifies the sentence."""
     text = unicodedata.normalize('NFKC', text or '')
@@ -584,6 +605,45 @@ def _drop_ghosts(rows, gap=.3, stats=None, max_seconds=.5, max_cps=12.0, share=.
     return keep
 
 
+LONE_SECONDS = .65   # dot13: a one-character reading this short ...
+LONE_ASR_MARGIN = .3  # ... needs an ASR cue with that character within this many seconds, else it is folded away or dropped
+
+
+def _drop_lone_chars(rows, asrs, stats, gap=.6, seconds=LONE_SECONDS, margin=LONE_ASR_MARGIN):
+    """Dot13: one-character dialogue readings of at most `seconds` s that no ASR cue (within `margin` s) confirms. A real
+    one-character line ('喝' with the speech '喝') is kept. An unconfirmed one is folded into the neighbouring line of its
+    region when it is the first / last character of it (at most `gap` s away, the line then reaches over it), else dropped
+    (stats['dropped_single']; the pipeline lists them in the analysis warnings)."""
+    keep = []
+    for i, g in enumerate(rows):
+        key = line_key(g['text'])
+        s, e = float(g['s']), float(g['e'])
+        if _is_supp(g) or len(key) != 1 or not chinese(key) or e - s > seconds + 1e-9:
+            keep.append(g)
+            continue
+        if any(_overlap(s - margin, e + margin, c['start'], c['end']) > 1e-9 and key in chinese(c['original']) for c in asrs):
+            keep.append(g)
+            continue
+        place = lambda o: not _is_supp(o) and o.get('region') == g.get('region') and _same_line_group(o, g)
+        nxt = next((o for o in rows[i + 1:] if place(o)), None)
+        before = next((o for o in reversed(rows[:i]) if place(o)), None)
+        target = None
+        if nxt is not None and 0 <= float(nxt['s']) - e <= gap + 1e-6 and line_key(nxt['text']).startswith(key):
+            nxt['s'] = min(float(nxt['s']), s)
+            target = nxt
+        elif before is not None and 0 <= s - float(before['e']) <= gap + 1e-6 and line_key(before['text']).endswith(key):
+            before['e'] = max(float(before['e']), e)
+            target = before
+        if stats is None:
+            continue
+        if target is not None:
+            stats.setdefault('merged_ocr', []).append(dict(start=min(s, float(target['s'])), end=max(e, float(target['e'])),
+                                                           texts=[g['text'], target['text']], kept=target['text']))
+        else:
+            stats.setdefault('dropped_single', []).append(dict(start=s, end=e, text=g['text'], region=g.get('region')))
+    return keep
+
+
 def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2):
     """Dot12: the extra and duplicated readings of the OCR before cues are built (segments sorted by time).
 
@@ -636,6 +696,8 @@ def clean_ocr_segments(segs, asrs, stats=None, gap=.6, frag_max=.3, frag_chars=2
         merged.append(sg)
     # 2b. cross-fade ghosts
     merged = _drop_ghosts(merged, stats=stats)
+    # 2c. dot13: a short lone character the speech does not confirm is the picture (a pendant, a pattern), not a subtitle
+    merged = _drop_lone_chars(merged, asrs, stats, gap=gap, seconds=LONE_SECONDS)
     # 3. prefix fragments, from the end so a chain of fragments folds into the line at its end
     out = list(merged)
     for i in range(len(out) - 1, -1, -1):

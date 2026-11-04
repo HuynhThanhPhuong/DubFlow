@@ -692,7 +692,7 @@ def subband(directory, request):
     import numpy as np
     import subprocess
     from rapidocr_onnxruntime import RapidOCR
-    from subtitle_lines import line_key
+    from subtitle_lines import accept_reading, line_key
     from subtitle_clusters import cluster_rows, clustered_lines
     from subtitle_track import order_lines
     directory = Path(directory)
@@ -713,7 +713,7 @@ def subband(directory, request):
             unfolded, glyph_height, glyph_boxes = unfold_vertical(image, return_boxes=True)
             result, _ = reader(unfolded, use_cls=False)
             text = order_lines([(min(xs), min(ys), max(xs), max(ys), text.strip())
-                                for poly, text, score in (result or []) if score >= .6 and text.strip()
+                                for poly, text, score in (result or []) if accept_reading(text, score)
                                 for xs, ys in [zip(*poly)]])
             box = ([bx+min(g[0] for g in glyph_boxes), by+min(g[1] for g in glyph_boxes),
                     bx+max(g[2] for g in glyph_boxes), by+max(g[3] for g in glyph_boxes)]
@@ -721,7 +721,7 @@ def subband(directory, request):
             return text, box if text else None, [dict(text=text, box=box, text_height=glyph_height, orientation='v')] if text else []
         result, _ = reader(image, use_cls=False)
         rows = [(min(xs), min(ys), max(xs), max(ys), text.strip())
-                for box, text, score in (result or []) if score >= .6 and text.strip()
+                for box, text, score in (result or []) if accept_reading(text, score)
                 for xs, ys in [zip(*box)]]
         if not rows:
             return '', None, []
@@ -833,7 +833,7 @@ def subband(directory, request):
             segment.pop('reveal', None)
         segments.append(segment)
     write(directory/'subtrack.json', dict(version=2, mode='band', box=[bx, by, bw, bh], band=[by, by + bh], fps=fps, step=step,
-                                          orientation=request.get('orientation', 'h'), ocr_version=11,
+                                          orientation=request.get('orientation', 'h'), ocr_version=12,
                                           samples=len(samples), ocr_reads=reads, segments=segments))
 
 
