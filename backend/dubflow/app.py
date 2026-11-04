@@ -232,7 +232,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
     @app.get('/api/health')
     def health():
         cache = Path(settings.model_cache)
-        capabilities = dict(ffmpeg=Path(settings.ffmpeg).exists(), voice_synthesis=Path(settings.tts_python).exists() and (cache / 'models--openbmb--VoxCPM2').exists(),
+        capabilities = dict(ffmpeg=Path(settings.ffmpeg).exists() or bool(shutil.which(settings.ffmpeg)), voice_synthesis=Path(settings.tts_python).exists() and any((cache / sub / 'models--openbmb--VoxCPM2').exists() for sub in ('', 'hub')),
                             transcription=Path(settings.asr_python).exists(), ocr=Path(settings.ocr_python).exists(),
                             automatic_translation=translation_ready(preferences(store,settings)),
                             douyin_download=False)

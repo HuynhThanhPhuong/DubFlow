@@ -270,11 +270,12 @@ def open_lama(model, dll_dir=None):
     cuda_listed = 'CUDAExecutionProvider' in ort.get_available_providers()
     if not cuda_listed:
         warning = 'LaMa runs on CPU (slow): this onnxruntime has no CUDA provider (install onnxruntime-gpu)'
-    elif not dll_dir or not os.path.isdir(dll_dir):
+    elif os.name == 'nt' and (not dll_dir or not os.path.isdir(dll_dir)):
         warning = f'LaMa runs on CPU (slow): CUDA/cuDNN DLL folder missing ({dll_dir or "not configured"})'
     else:
-        os.add_dll_directory(str(dll_dir))
-        os.environ['PATH'] = str(dll_dir) + os.pathsep + os.environ.get('PATH', '')
+        if os.name == 'nt':  # Windows needs the DLL folder; Linux resolves CUDA libraries through the system loader
+            os.add_dll_directory(str(dll_dir))
+            os.environ['PATH'] = str(dll_dir) + os.pathsep + os.environ.get('PATH', '')
         so = ort.SessionOptions()
         so.log_severity_level = 3
         try:

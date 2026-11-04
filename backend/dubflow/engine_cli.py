@@ -29,8 +29,16 @@ def snapshot(model, cache):
     return snapshot_download(model, cache_dir=cache, local_files_only=True)
 
 
+def require_cuda(what):
+    """GPU-only steps fail early with a readable message on machines without a usable CUDA GPU."""
+    import torch
+    if not torch.cuda.is_available():
+        raise RuntimeError(f'{what} cần GPU NVIDIA có CUDA (torch.cuda.is_available() = False). Máy chỉ có CPU không chạy được bước này; không có tuỳ chọn model CPU nhỏ hơn trong code.')
+
+
 def load_asr(request):
     import torch
+    require_cuda('Nhận dạng giọng nói (Whisper large-v3-turbo)')
     from transformers import pipeline
     model = snapshot('openai/whisper-large-v3-turbo', request.get('asr_cache'))
     return pipeline('automatic-speech-recognition', model=model, dtype=torch.float16, device='cuda:0')
@@ -44,6 +52,7 @@ def separate(directory, request):
     from demucs.apply import apply_model
     # Demucs uses torch.hub, not HF. Resolve the checkpoint BEFORE get_model so
     # its loader can never fall through to torch.hub.load_state_dict_from_url.
+    require_cuda('Tách giọng/nhạc nền (Demucs)')
     checkpoint = Path(torch.hub.get_dir())/'checkpoints/955717e8-8726e21a.th'
     if not checkpoint.exists():
         raise RuntimeError(translate_message(f'Installed HTDemucs checkpoint missing: {checkpoint}'))
@@ -197,6 +206,7 @@ def gen(directory, request):
     import soundfile as sf
     import torch
     from voxcpm import VoxCPM
+    require_cuda('Tạo giọng (VoxCPM2)')
     tasks = request['tasks']
     # The stock loader creates a full FP32 model before converting its LM to
     # BF16, then maps a second FP32 checkpoint. On this 16 GB Windows machine
@@ -273,6 +283,7 @@ def gen_omni(directory, request):
         snapshot(name, request.get('asr_cache'))
     except Exception as exc:  # noqa: BLE001 - any hub error means the local copy is unusable
         raise RuntimeError(translate_message(f'OmniVoice model {name} is not in the local cache: {exc}')) from None
+    require_cuda('Tạo giọng dự phòng (OmniVoice)')
     from omnivoice import OmniVoice
     model = OmniVoice.from_pretrained(name, device_map='cuda:0', dtype=torch.float16)
     rate = model.sampling_rate

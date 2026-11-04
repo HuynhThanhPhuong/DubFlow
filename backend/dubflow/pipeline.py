@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import subprocess
 import tempfile
@@ -1159,7 +1159,11 @@ def synthesize(job_dir, settings, emit):
             engine('refs', directory, settings, {'source':str(directory/'vocals.wav'), 'cues':cues}, emit=emit)
             write(directory/'reference-inputs.json',dict(signature=ref_signature))
         refs = read(directory/'speaker-refs.json', {})
-        primer_data = read(Path(getattr(settings,'vi_prompt',None) or VI_PROMPT))
+        primer_file = Path(getattr(settings,'vi_prompt',None) or VI_PROMPT)
+        primer_data = read(primer_file)
+        if primer_data and primer_data.get('path') and not Path(primer_data['path']).is_file():
+            # the stored path may come from another machine (e.g. a Windows drive path); the audio sits next to the json
+            primer_data['path'] = str(primer_file.with_name(PureWindowsPath(primer_data['path']).name))
         if not primer_data or not primer_data.get('text','').strip():
             raise NeedsReview('Thiếu đoạn mồi tiếng Việt đã kiểm chứng (vi-prompt.json). Hãy khôi phục mẫu đã cài sẵn; hệ thống không tự tải model hoặc mẫu giọng.')
         primer = ref_record(primer_data, directory)

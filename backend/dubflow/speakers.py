@@ -1,4 +1,5 @@
 """Local speaker candidates on ASR segments; explicitly not continuous diarization."""
+import os
 from pathlib import Path
 
 
@@ -34,7 +35,9 @@ def load_encoder():
     from speechbrain.inference.speaker import EncoderClassifier
     from speechbrain.utils.fetching import LocalStrategy
     from pipeline import ROOT
-    model=ROOT/'repo-tests/models/speaker-ecapa-voxceleb'
+    model=Path(os.environ['DUBFLOW_SPEAKER_MODEL']) if os.environ.get('DUBFLOW_SPEAKER_MODEL') else ROOT/'repo-tests/models/speaker-ecapa-voxceleb'
+    if not model.is_dir() and not os.environ.get('DUBFLOW_SPEAKER_MODEL'):
+        model=ROOT/'models/speaker-ecapa-voxceleb'
     required=['hyperparams.yaml','embedding_model.ckpt','mean_var_norm_emb.ckpt','classifier.ckpt','label_encoder.txt']
     if any(not (model/f).is_file() for f in required):raise ValueError('Thiếu model phân nhóm giọng local; không tự tải thêm.')
     torch.set_num_threads(4)
