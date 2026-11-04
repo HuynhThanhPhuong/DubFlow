@@ -112,3 +112,19 @@ class Dot14StyleTests(unittest.TestCase):
         from tests.gen_layout_fixture import layouts
         fixture=Path(__file__).parent/'fixtures/layout-dot14.json'
         self.assertEqual(json.loads(fixture.read_text(encoding='utf-8')),layouts(job={}))
+
+    def test_patch_accepts_bounded_style_fields_and_preserves_other_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=create_app(Settings(data_dir=Path(tmp)),start_worker=False)
+            job=app.state.store.create_job(dict(title='Giữ tên',status='done',width=1280,height=720))
+            (Path(tmp)/'jobs'/job['id']).mkdir(parents=True)
+            with TestClient(app) as client:
+                url='/api/jobs/'+job['id']
+                response=client.patch(url,json=dict(subtitle_size=7,subtitle_italic=False))
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(response.json()['subtitle_size'],7)
+                self.assertFalse(response.json()['subtitle_italic'])
+                self.assertEqual(response.json()['title'],'Giữ tên')
+                for value in (0,10.1,'nan',None):
+                    self.assertEqual(client.patch(url,json=dict(subtitle_size=value)).status_code,422)
+                self.assertEqual(client.patch(url,json=dict(subtitle_italic='invalid')).status_code,422)

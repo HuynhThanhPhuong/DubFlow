@@ -320,6 +320,7 @@ def create_app(settings: Settings | None = None, start_worker=True):
             review.load_state(job_dir(job_id))
         return public_job(job)
 
+    @app.patch('/api/jobs/{job_id}')
     @app.put('/api/jobs/{job_id}')
     def update_job(job_id: str, values: JobUpdate):
         previous = writable(job_id)
